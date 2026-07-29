@@ -89,6 +89,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="진행 막대 표시 (tqdm 미설치 시 로그로 대체)",
     )
     p.add_argument(
+        "--ask-key",
+        action="store_true",
+        help="OpenAI 키를 입력받습니다 (화면·히스토리에 남지 않음)",
+    )
+    p.add_argument(
+        "--key-file",
+        metavar="경로",
+        help="키가 담긴 파일에서 읽습니다 (첫 줄만 사용)",
+    )
+    p.add_argument(
         "--check",
         action="store_true",
         help="환경·LLM 연결만 확인하고 종료 (파일 처리 안 함)",
@@ -168,6 +178,43 @@ def _process(src: Path, out_root: Path, args) -> None:
             print(f"    {path}")
 
 
+def _apply_key(args) -> None:
+    """명령행 옵션으로 지정한 API 키를 적용한다.
+
+    입력: args — 파싱된 명령행 인자
+    출력: 없음 (환경변수 설정)
+    예외: 파일을 읽지 못하거나 내용이 비면 OSError/ValueError
+
+    비고:
+        키를 인자로 직접 받지 않는다. ``--api-key sk-...`` 형태는 셸
+        히스토리와 프로세스 목록(`ps`)에 그대로 남기 때문이다.
+        입력받거나(``--ask-key``) 파일에서 읽는다(``--key-file``).
+    """
+    key = ""
+    if getattr(args, "key_file", None):
+        path = Path(args.key_file).expanduser()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        key = next((l.strip() for l in lines if l.strip()), "")
+        if not key:
+            raise ValueError(f"{path} 에 키가 없습니다 (빈 파일).")
+    elif getattr(args, "ask_key", False):
+        import getpass
+
+        key = getpass.getpass("OpenAI 키: ").strip()
+        if not key:
+            raise ValueError("입력이 비었습니다.")
+
+    if key:
+        import os
+
+        os.environ["OPENAI_API_KEY"] = key
+        from docstruct.core.config import rebuild_settings
+        from docstruct.checks import invalidate_caches
+
+        rebuild_settings()
+        invalidate_caches()
+
+
 def _print_check() -> int:
     """환경과 LLM 연결을 확인해 출력한다.
 
@@ -206,6 +253,12 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else (logging.WARNING if args.quiet else logging.INFO),
         format="%(levelname)-7s %(name)s: %(message)s",
     )
+
+    try:
+        _apply_key(args)
+    except (OSError, ValueError) as exc:
+        print(f"키 설정 실패: {exc}", file=sys.stderr)
+        return 1
 
     if args.check:
         return _print_check()
