@@ -15,7 +15,7 @@ import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-from docstruct.core.config import get_settings
+from docstruct.core.config import get_settings, resolve_device
 
 _log = logging.getLogger(__name__)
 
@@ -23,11 +23,41 @@ if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
 
+def _reachable(url: str, timeout: float = 3.0) -> bool:
+    """엔드포인트에 TCP 연결이 되는지 빠르게 확인한다.
+
+    입력: url — 대상 주소, timeout — 연결 대기 초
+    출력: 연결되면 True
+    비고:
+        HTTP 요청이 아니라 소켓 연결만 본다. 응답 내용은 관심 없고
+        "닿는가"만 알면 되므로 빠르고 부작용이 없다.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host, port = parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _picture_description_options() -> Any | None:
     """그림 설명 VLM 옵션을 만든다.
 
-    입력: 없음 (설정의 docling_picture 사용)
-    출력: PictureDescriptionApiOptions. 미설정이면 None
+    입력: 없음 (설정의 docling_picture, llm_fallback 사용)
+    출력: PictureDescriptionApiOptions. 쓸 수 없으면 None
+    비고:
+        이 호출은 **docling 이 직접** 수행한다. docling 내부 재시도가
+        5회 × 연결 타임아웃이라, 서버가 죽어 있으면 그림 하나당 수 분씩
+        멈춘다. 우리 LLM 클라이언트의 폴백 로직도 개입하지 못한다.
+
+        그래서 컨버터를 만들기 전에 한 번 확인해, 닿지 않으면
+        대비 엔드포인트로 바꾸거나 그림 설명을 끈다.
     """
     from docling.datamodel.pipeline_options import PictureDescriptionApiOptions
 
@@ -36,10 +66,30 @@ def _picture_description_options() -> Any | None:
     if endpoint is None:
         return None
 
+    headers = endpoint.headers()
+
+    if not _reachable(endpoint.url):
+        backup = settings.llm_fallback
+        if backup is not None and _reachable(backup.url):
+            _log.warning(
+                "그림 설명 엔드포인트에 연결할 수 없어 대비 엔드포인트로 전환합니다 "
+                "— %s (%s)", backup.model, backup.url,
+            )
+            endpoint, headers = backup, backup.headers()
+        else:
+            _log.warning(
+                "그림 설명 엔드포인트(%s)에 연결할 수 없어 그림 캡션을 생략합니다. "
+                "(docling 내부 재시도로 문서 처리가 크게 지연되는 것을 막기 위함)",
+                endpoint.url,
+            )
+            return None
+
     return PictureDescriptionApiOptions(
         url=endpoint.url,
         params={"model": endpoint.model},
-        prompt=endpoint.prompt or "Describe this image concisely and accurately in Korean.",
+        headers=headers,
+        prompt=getattr(endpoint, "prompt", None)
+        or "Describe this image concisely and accurately in Korean.",
         timeout=int(endpoint.timeout),
         picture_area_threshold=settings.picture_area_threshold,
     )
@@ -103,54 +153,6 @@ def _ocr_options() -> Any:
 
     # fallback: tesseract — tesseract 는 3글자 코드.
     return TesseractCliOcrOptions(lang=_ocr_langs(["kor", "eng"]))
-
-
-def device_available(name: str) -> bool:
-    """요청한 연산 장치를 실제로 쓸 수 있는지 확인한다.
-
-    입력: name — auto | cpu | cuda | mps
-    출력: 사용 가능하면 True
-    비고:
-        torch 가 없으면 cpu 만 True 다. cuda/mps 는 torch 로 확인하며,
-        확인 중 예외가 나면 사용 불가로 본다.
-    """
-    if name in ("auto", "cpu"):
-        return True
-    try:
-        import torch
-    except ImportError:
-        return False
-    try:
-        if name == "cuda":
-            return bool(torch.cuda.is_available())
-        if name == "mps":
-            backend = getattr(torch.backends, "mps", None)
-            return bool(backend and backend.is_available())
-    except Exception:   # 드라이버 문제 등으로 확인 자체가 실패할 수 있다
-        return False
-    return False
-
-
-def resolve_device() -> tuple[str, str | None]:
-    """설정된 장치를 검사해 실제로 쓸 장치를 정한다.
-
-    입력: 없음 (설정의 device 사용)
-    출력:
-        device  실제로 쓸 장치 이름
-        note    대체가 일어났으면 그 사유, 아니면 None
-    비고:
-        Docling 은 쓸 수 없는 장치를 지정하면 예외를 던지고 변환 전체가
-        실패한다. 여기서 미리 걸러 CPU 로 내리고 사유를 남긴다.
-    """
-    requested = get_settings().device
-    if device_available(requested):
-        return requested, None
-
-    reason = {
-        "cuda": "CUDA 를 쓸 수 없습니다 (GPU 미탑재이거나 CPU 전용 PyTorch)",
-        "mps": "MPS 를 쓸 수 없습니다 (Apple Silicon 아님 또는 미지원 PyTorch)",
-    }.get(requested, f"{requested} 를 쓸 수 없습니다")
-    return "cpu", f"{reason} — CPU 로 처리합니다"
 
 
 def _accelerator_options():
@@ -320,7 +322,7 @@ def get_document_converter() -> "DocumentConverter":
     # Windows 비 UTF-8 로케일에서 Docling 이 모델을 로드하며 torch.compile 을
     # 호출하는데, 그 경로가 cp949 로 UTF-8 템플릿을 읽다 죽습니다.
     # 모델 로딩 직전에 우회를 걸어둡니다 (해당 환경에서만 동작).
-    from docstruct.winfix import apply as _apply_winfix
+    from docstruct.core.winfix import apply as _apply_winfix
 
     _apply_winfix(verbose=False)
 

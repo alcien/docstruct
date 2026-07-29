@@ -30,8 +30,8 @@ rm -rf .git dist
 git init
 git branch -M main
 git add -A
-git commit -m "docstruct 0.1.14"
-git tag v0.1.14
+git commit -m "docstruct 0.1.15"
+git tag v0.1.15
 
 # 4. 올리기 전 점검 — 아무것도 안 나와야 함
 git grep -n "218\.145\|183\.96" HEAD -- "src/**/*.py"
@@ -45,7 +45,7 @@ git push -u origin main --tags
 설치:
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.14"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
 ```
 
 ## 이후 갱신
@@ -125,17 +125,17 @@ git push origin main
 
 # 새 버전 배포
 # (pyproject.toml 의 version 을 먼저 수정)
-git commit -am "0.1.14"
-git tag v0.1.14
+git commit -am "0.1.15"
+git tag v0.1.15
 git push origin main --tags
 ```
 
 ### 태그를 잘못 달았을 때
 
 ```bash
-git tag -d v0.1.14                    # 로컬 삭제
-git push origin :refs/tags/v0.1.14    # 원격 삭제
-git tag -a v0.1.14 -m "0.1.14"        # 다시 달기
+git tag -d v0.1.15                    # 로컬 삭제
+git push origin :refs/tags/v0.1.15    # 원격 삭제
+git tag -a v0.1.15 -m "0.1.15"        # 다시 달기
 git push origin --tags
 ```
 
@@ -143,7 +143,7 @@ git push origin --tags
 
 ```bash
 pip install --force-reinstall --no-cache-dir \
-  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.15"
+  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
 ```
 
 ---

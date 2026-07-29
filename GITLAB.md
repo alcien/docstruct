@@ -84,7 +84,7 @@ GitLab 에서 바로잡습니다.
 쓰면 애초에 겪지 않습니다.**
 
 ```bash
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.14"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.18"
 ```
 
 `.gitignore` 가 `.env`(실값), `dist/`, `__pycache__` 를 제외합니다.
@@ -97,20 +97,20 @@ pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.14"
 pip install "docstruct @ git+https://183.96.152.133/mjseo/docstruct.git"
 
 # 버전 고정 (권장 — 태그)
-pip install "docstruct @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.14"
+pip install "docstruct @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.18"
 
 # 포맷별 의존성 함께
-pip install "docstruct[hwp] @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.14"
-pip install "docstruct[all] @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.14"
+pip install "docstruct[hwp] @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.18"
+pip install "docstruct[all] @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.18"
 
 # SSH (키가 등록되어 있을 때)
-pip install "docstruct @ git+ssh://git@183.96.152.133/mjseo/docstruct.git@v0.1.14"
+pip install "docstruct @ git+ssh://git@183.96.152.133/mjseo/docstruct.git@v0.1.18"
 ```
 
 `requirements.txt` 에 넣을 때도 같은 문자열을 씁니다.
 
 ```
-docstruct[hwp] @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.14
+docstruct[hwp] @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.18
 ```
 
 ## 3. 비공개 저장소 인증
@@ -207,7 +207,7 @@ git push --tags
 설치한 쪽:
 
 ```bash
-pip install -U "docstruct @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.14"
+pip install -U "docstruct @ git+https://183.96.152.133/mjseo/docstruct.git@v0.1.18"
 ```
 
 git 설치는 캐시가 남을 수 있으므로 같은 태그를 다시 밀었다면
@@ -220,7 +220,7 @@ git 설치는 캐시가 남을 수 있으므로 같은 태그를 다시 밀었�
 | 항목 | 결과 |
 |------|------|
 | `git+` 주소로 설치 | 성공 |
-| 태그 지정 (`@v0.1.14`) | 성공 |
+| 태그 지정 (`@v0.1.18`) | 성공 |
 | extras (`[hwp]`) 동시 설치 | 성공 — bs4·lxml·olefile 함께 설치됨 |
 | `docstruct` CLI 등록 | 성공 |
 | 설치본으로 문서 구조화 → JSON | 성공 |

@@ -122,6 +122,16 @@ def source_label(source: str, ratio: float | None = None) -> str:
     return label
 
 
+#: 단계 라벨. ``GPU_ACCELERATED`` 에 속한 단계만 GPU 로 빨라집니다.
+#: (부분 문자열 매칭은 "재추출"이 "추출"에 걸리므로 쓰지 않습니다.)
+STAGE_EXTRACT = "추출 (백엔드+레이아웃+TableFormer+OCR)"
+STAGE_RENDER = "페이지 렌더 (pypdfium2)"
+STAGE_ASSESS = "표 평가 LLM (원격)"
+STAGE_FILL = "표 재추출 LLM (원격)"
+
+GPU_ACCELERATED = frozenset({STAGE_EXTRACT})
+
+
 @dataclass
 class TraceStep:
     """파이프라인 단계 하나의 실행 기록.

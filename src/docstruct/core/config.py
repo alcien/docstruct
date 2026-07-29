@@ -210,6 +210,54 @@ def _warn_wrapped_lines(path: Path, raw_values: dict[str, str | None]) -> None:
         )
 
 
+def device_available(name: str) -> bool:
+    """요청한 연산 장치를 실제로 쓸 수 있는지 확인한다.
+
+    입력: name — auto | cpu | cuda | mps
+    출력: 사용 가능하면 True
+    비고:
+        torch 가 없으면 cpu 만 True 다. cuda/mps 는 torch 로 확인하며,
+        확인 중 예외가 나면 사용 불가로 본다.
+    """
+    if name in ("auto", "cpu"):
+        return True
+    try:
+        import torch
+    except ImportError:
+        return False
+    try:
+        if name == "cuda":
+            return bool(torch.cuda.is_available())
+        if name == "mps":
+            backend = getattr(torch.backends, "mps", None)
+            return bool(backend and backend.is_available())
+    except Exception:   # 드라이버 문제 등으로 확인 자체가 실패할 수 있다
+        return False
+    return False
+
+
+def resolve_device() -> tuple[str, str | None]:
+    """설정된 장치를 검사해 실제로 쓸 장치를 정한다.
+
+    입력: 없음 (설정의 device 사용)
+    출력:
+        device  실제로 쓸 장치 이름
+        note    대체가 일어났으면 그 사유, 아니면 None
+    비고:
+        Docling 은 쓸 수 없는 장치를 지정하면 예외를 던지고 변환 전체가
+        실패한다. 여기서 미리 걸러 CPU 로 내리고 사유를 남긴다.
+    """
+    requested = get_settings().device
+    if device_available(requested):
+        return requested, None
+
+    reason = {
+        "cuda": "CUDA 를 쓸 수 없습니다 (GPU 미탑재이거나 CPU 전용 PyTorch)",
+        "mps": "MPS 를 쓸 수 없습니다 (Apple Silicon 아님 또는 미지원 PyTorch)",
+    }.get(requested, f"{requested} 를 쓸 수 없습니다")
+    return "cpu", f"{reason} — CPU 로 처리합니다"
+
+
 def device_status() -> str:
     """연산 장치 상태를 한 줄로 알려준다.
 
@@ -220,12 +268,7 @@ def device_status() -> str:
     비고: 서버 기동 로그나 상태 조회에 쓴다.
     """
     settings = get_settings()
-    try:
-        from docstruct.converters.pdf.docling_backend import resolve_device
-
-        device, note = resolve_device()
-    except ImportError:
-        return f"{settings.device} (docling 미설치 — PDF 처리 불가)"
+    device, note = resolve_device()
 
     threads = f", {settings.num_threads}스레드" if settings.num_threads else ""
     if note is None:
@@ -484,12 +527,7 @@ class Settings:
             f"{self.llm_concurrency}개" + (" (순차)" if self.llm_concurrency == 1 else ""),
             True,
         ))
-        try:
-            from docstruct.converters.pdf.docling_backend import resolve_device
-
-            effective, note = resolve_device()
-        except ImportError:
-            effective, note = self.device, None
+        effective, note = resolve_device()
         rows.append((
             "연산 장치",
             effective

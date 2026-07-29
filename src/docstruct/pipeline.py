@@ -30,14 +30,9 @@ SUPPORTED_SUFFIXES = (".hwp", ".hwpx", ".pdf")
 # ↑ registry.supported_suffixes() 와 동일해야 합니다 (import 순서상 상수로 유지,
 #   docstruct/__init__ 의 자가 검증이 불일치를 잡습니다).
 
-#: 단계 라벨. ``GPU_ACCELERATED`` 에 속한 단계만 GPU 로 빨라집니다.
-#: (부분 문자열 매칭은 "재추출"이 "추출"에 걸리므로 쓰지 않습니다.)
-STAGE_EXTRACT = "추출 (백엔드+레이아웃+TableFormer+OCR)"
-STAGE_RENDER = "페이지 렌더 (pypdfium2)"
-STAGE_ASSESS = "표 평가 LLM (원격)"
-STAGE_FILL = "표 재추출 LLM (원격)"
-
-GPU_ACCELERATED = frozenset({STAGE_EXTRACT})
+from docstruct.models import (  # noqa: F401  (하위호환 재노출)
+    GPU_ACCELERATED, STAGE_ASSESS, STAGE_EXTRACT, STAGE_FILL, STAGE_RENDER,
+)
 
 
 def source_format(path: Path) -> str:

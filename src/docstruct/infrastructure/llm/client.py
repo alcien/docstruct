@@ -31,6 +31,10 @@ _UNREACHABLE_LOCK = threading.Lock()
 #: 대비 엔드포인트 전환을 알렸는지 (한 번만 로그)
 _FALLBACK_ANNOUNCED = False
 
+#: 연결 대기 상한(초). 응답 대기(cfg["timeout"])와 별개다.
+#: 서버가 죽어 있을 때 첫 실패까지의 시간을 결정한다.
+CONNECT_TIMEOUT = 5.0
+
 
 class LLMUnreachableError(RuntimeError):
     """엔드포인트에 연결할 수 없어 호출을 건너뛴 경우."""
@@ -45,8 +49,12 @@ def mark_unreachable(url: str, model: str, reason: str) -> None:
     with _UNREACHABLE_LOCK:
         if (url, model) not in _UNREACHABLE:
             _UNREACHABLE[(url, model)] = reason
+            has_backup = get_settings().llm_fallback is not None
             _log.warning(
-                "%s 연결 불가 — 이후 LLM 호출을 건너뜁니다 (%s)", url, reason
+                "%s 연결 불가 (%s) — 이후 호출은 %s",
+                url, reason,
+                "대비 엔드포인트로 보냅니다" if has_backup
+                else "건너뜁니다 (대비책 없음 — OPENAI_API_KEY 를 넣으면 전환됩니다)",
             )
 
 
@@ -70,6 +78,10 @@ def reset_unreachable() -> None:
     with _UNREACHABLE_LOCK:
         _UNREACHABLE.clear()
         _FALLBACK_ANNOUNCED = False
+
+#: 연결 대기 상한(초). 응답 대기(cfg["timeout"])와 별개다.
+#: 서버가 죽어 있을 때 첫 실패까지의 시간을 결정한다.
+CONNECT_TIMEOUT = 5.0
 
 _adapter_cache: dict[tuple[str, str], Any] = {}
 
@@ -216,7 +228,12 @@ def _requests_fallback(
     for attempt in range(MAX_RETRIES):
         try:
             response = requests.post(
-                cfg["url"], json=payload, headers=headers, timeout=cfg["timeout"]
+                cfg["url"],
+                json=payload,
+                headers=headers,
+                # (연결, 응답) 을 분리한다. 연결은 금방 되거나 안 되거나이므로
+                # 오래 기다릴 이유가 없다. 응답 생성은 오래 걸릴 수 있다.
+                timeout=(CONNECT_TIMEOUT, cfg["timeout"]),
             )
         except requests.exceptions.ConnectionError as exc:
             # 연결 자체가 안 되는 상태는 재시도해도 같다.
@@ -285,22 +302,24 @@ def invoke_llm(
         잘못된 응답은 전환 대상이 아니다 — 그건 설정 문제이지 가용성
         문제가 아니기 때문이다.
     """
-    explicit_cfg = cfg is not None
-
+    primary = get_settings().llm
     if cfg is None:
-        endpoint = get_settings().llm
-        if endpoint is None:
+        if primary is None:
             raise RuntimeError(
                 "LLM API 미설정 — .env 의 DOCLING_TABLE_API_URL 을 확인하세요."
             )
-        cfg = endpoint.as_dict()
+        cfg = primary.as_dict()
+
+    # 폴백 대상은 "기본 엔드포인트로 보낸 요청"이다.
+    # 호출부가 성능상 cfg 를 미리 얻어 넘기는 경우(assess/fill)도 포함해야 하므로,
+    # cfg 를 줬는지가 아니라 **주소가 기본 엔드포인트와 같은지**로 판단한다.
+    is_primary = primary is not None and cfg.get("url") == primary.url
 
     try:
         return _invoke_one(prompt, cfg, span_name=span_name, image_urls=image_urls)
     except LLMUnreachableError:
-        # 호출부가 cfg 를 직접 준 경우는 그 엔드포인트만 쓰겠다는 뜻이므로
-        # 임의로 다른 곳에 보내지 않는다.
-        if explicit_cfg:
+        # 기본 엔드포인트가 아닌 곳(호출부가 지정한 다른 주소)은 그대로 둔다.
+        if not is_primary:
             raise
         backup = _fallback_cfg()
         if backup is None:

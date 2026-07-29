@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from docstruct.models import IMAGE, TABLE, TEXT, PageDocument
+from docstruct.models import GPU_ACCELERATED, IMAGE, TABLE, TEXT, PageDocument
 
 
 def write_json(doc: PageDocument, path: str | Path) -> Path:
@@ -134,8 +134,6 @@ def write_pipeline_report(doc: PageDocument, path: str | Path) -> Path:
     if doc.timings and total > 0:
         lines += ["", f"## 단계별 소요 시간 (총 {total:.1f}초)", ""]
         lines += ["| 단계 | 초 | 비중 | GPU 영향 |", "|------|----|------|----------|"]
-        from docstruct.pipeline import GPU_ACCELERATED
-
         for label, sec in sorted(doc.timings.items(), key=lambda kv: -kv[1]):
             gpu = "O" if label in GPU_ACCELERATED else "X"
             lines.append(f"| {label} | {sec:.1f} | {sec / total * 100:.0f}% | {gpu} |")

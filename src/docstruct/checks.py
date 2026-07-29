@@ -20,7 +20,7 @@ import shutil
 from typing import Any
 
 from docstruct.core.config import get_settings, loaded_env_path, reload_config
-from docstruct import winfix
+from docstruct.core import winfix
 
 
 def _version_note() -> str:

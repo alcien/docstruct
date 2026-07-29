@@ -59,13 +59,19 @@ logging.getLogger("docling").setLevel(logging.WARNING)
 from docstruct import build_document
 from docstruct import preview, report
 from docstruct.checks import show_environment, reload_environment, show_llm_check
-from docstruct import winfix
+from core import winfix
 
 # Windows 비 UTF-8 로케일(cp949)에서 PyTorch/Docling 초기화가 죽는 문제를 우회합니다.
 # 해당 환경이 아니면 아무 일도 하지 않습니다.
 winfix.apply()
 
 print(f"APP_ROOT = {APP_ROOT}")
+
+# 받은 압축본이 최신인지 확인합니다. 오래된 것을 쓰면 이미 고친 오류가
+# 다시 나타납니다 (예: NameError: name '_render_page_images' is not defined).
+_v = APP_ROOT / "VERSION"
+print(f"버전     = {_v.read_text(encoding='utf-8').strip() if _v.is_file() else '(VERSION 파일 없음 — 옛 압축본)'}")
+
 show_environment()
 '''.strip())
 
@@ -82,6 +88,29 @@ code('''
 # .env 를 방금 고쳤다면 이 셀을 실행하세요 (커널 재시작 불필요).
 from docstruct.checks import reload_environment
 reload_environment()
+'''.strip())
+
+md("""
+### API 키 (선택)
+
+사내 LLM 에 연결이 안 될 때 **대비책**으로 OpenAI 를 쓰려면 키가 필요합니다.
+키를 노트북 셀에 직접 적으면 **저장 시 파일에 그대로 남으므로**,
+아래처럼 입력받아 쓰세요.
+
+키가 없어도 파싱·표 추출은 그대로 동작합니다 (표 판정·재추출만 생략).
+""")
+
+code('''
+# 필요할 때만 실행하세요. 입력한 키는 화면에도 파일에도 남지 않습니다.
+# import docstruct, getpass
+# docstruct.set_api_key(getpass.getpass("OpenAI 키: "))
+
+# 사내 LLM 주소·모델을 바꾸려면
+# docstruct.configure(llm_url="http://다른주소:11060/v1", llm_concurrency=8)
+
+# 현재 적용값 확인
+from docstruct.checks import show_environment
+show_environment()
 '''.strip())
 
 # ---------------------------------------------------------------- 2. 파일 선택

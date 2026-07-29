@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.14"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,7 +29,7 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.14"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
 ```
 
 노트북 UI(파일 선택 위젯)가 필요하면 `[notebook]` 을 붙이세요.
@@ -313,7 +313,18 @@ notebooks/preview_colab.ipynb   Google Colab
 ```
 
 파일을 고르고 실행하면 요약 · 처리 경로 · 표 판정 전후 비교 · 본문 · 이미지를
-순서대로 보여줍니다. Colab 노트북에는 GPU 확인, OpenAI 연동, 비용 추정,
+순서대로 보여줍니다.
+
+**API 키는 1번 셀 아래 "API 키 (선택)" 셀에서** 넣습니다. 노트북 셀에 키를
+직접 적으면 저장 시 파일에 남으므로, 입력받아 쓰세요.
+
+```python
+import docstruct, getpass
+docstruct.set_api_key(getpass.getpass("OpenAI 키: "))
+```
+
+Colab 노트북은 `colab.configure_openai()` 가 Secrets 의 `OPENAI_API_KEY` 를
+자동으로 읽습니다. Colab 노트북에는 GPU 확인, OpenAI 연동, 비용 추정,
 결과 반출이 포함되어 있습니다.
 
 ---
@@ -392,6 +403,8 @@ setx PYTHONUTF8 1
 | 파일 | 내용 |
 |------|------|
 | `INSTALL.md` | 설치·설정·문제 해결 |
+| `BUGFIXES.md` | 원본 대비 수정한 버그 |
+| `RESTRUCTURE.md` | 계층 구조 재편 검토 |
 | `GIT.md` | git 명령어 (공개/사내 저장소) |
 | `GITHUB.md` | GitHub 배포 |
 | `GITLAB.md` | 사내 GitLab 배포 |
