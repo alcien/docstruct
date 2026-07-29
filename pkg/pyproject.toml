@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docstruct"
+version = "0.1.11"
+description = "HWP/HWPX/PDF 문서를 페이지 단위로 구조화해 JSON 으로 내보내는 라이브러리"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "CSLEE AI Engineering" }]
+keywords = ["hwp", "hwpx", "pdf", "document", "parsing", "table", "korean"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Natural Language :: Korean",
+]
+
+# 기본 설치로 HWP·HWPX·PDF 를 모두 처리할 수 있게 합니다.
+# 무거운 것은 docling(및 그것이 끌고 오는 torch)뿐인데, 포맷을 가려 쓰기보다
+# 한 번에 갖추는 편이 운영에 낫다고 보고 기본에 넣었습니다.
+dependencies = [
+    # 공통
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "tqdm>=4.66",
+    "beautifulsoup4>=4.12",          # HTML 파싱 (파서는 표준 html.parser 사용)
+
+    # HWP (바이너리)
+    "pyhwp>=0.1b15",                 # hwp5html 실행파일이 함께 설치됨
+    "olefile>=0.47",
+    "six>=1.16",                     # pyhwp 가 쓰면서 선언하지 않는 의존성
+
+    # HWPX
+    "python-hwpx>=1.0",
+
+    # PDF
+    "docling>=2.26",
+    # docling 배포물에는 코드가 없다 (메타패키지). 실제 docling/ 모듈은
+    # docling-slim 이 제공하므로 명시해 둔다 — 이것만 빠지면
+    # "pip show docling 은 되는데 import 는 실패" 상태가 된다.
+    "docling-slim>=2.26",
+    "docling-core>=2.0",
+    "pypdfium2>=4.30",               # 페이지 PNG 렌더
+    "pillow>=10.0",
+    # OCR. 구 rapidocr-onnxruntime 은 requires-python 이 <3.13 이라
+    # Python 3.13 설치를 막는다. docling 이 쓰는 신규 rapidocr 을 따라간다.
+    "rapidocr>=3.9.1,<4",
+    "onnxruntime>=1.7,<2; python_version < '3.14'",
+]
+
+[project.optional-dependencies]
+# 노트북 UI (preview.ipynb 의 파일 선택 위젯)
+notebook = [
+    "ipywidgets>=8.0",
+    "ipython>=8.0",
+]
+# 하위호환용 별칭 — 기본 설치에 이미 포함되어 있습니다.
+pdf = []
+hwp = []
+hwpx = []
+all = ["docstruct[notebook]"]
+
+dev = [
+    "pytest>=8.0",
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+    "build>=1.0",
+]
+
+[project.scripts]
+docstruct = "docstruct.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/cslee/docstruct#readme"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/docstruct"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/docstruct",
+    "README.md",
+    "WINDOWS.md",
+    ".env.example",
+]
