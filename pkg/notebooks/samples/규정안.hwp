@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<HWPML Version="2.8">
+ <BODY>
+  <SECTION>
+   <P><TEXT><CHAR>제1장 총칙</CHAR></TEXT></P>
+   <P><TEXT><CHAR>제1조(목적) 이 규정은 문서 구조화 파이프라인의 검증을 목적으로 한다.</CHAR></TEXT></P>
+   <P><TEXT><CHAR>◦ 표와 본문이 섞인 경우를 확인한다.</CHAR></TEXT></P>
+   <P><TEXT>
+    <TABLE>
+     <ROW><CELL><TEXT><CHAR>구분</CHAR></TEXT></CELL><CELL><TEXT><CHAR>2025년</CHAR></TEXT></CELL><CELL><TEXT><CHAR>2026년</CHAR></TEXT></CELL></ROW>
+     <ROW><CELL><TEXT><CHAR>예산</CHAR></TEXT></CELL><CELL><TEXT><CHAR>452</CHAR></TEXT></CELL><CELL><TEXT><CHAR>1,800</CHAR></TEXT></CELL></ROW>
+     <ROW><CELL><TEXT><CHAR>인원</CHAR></TEXT></CELL><CELL><TEXT><CHAR>12</CHAR></TEXT></CELL><CELL><TEXT><CHAR>31</CHAR></TEXT></CELL></ROW>
+    </TABLE>
+   </TEXT></P>
+   <P><TEXT><CHAR>제2조(적용범위) 본 규정은 전 부서에 적용한다.</CHAR></TEXT></P>
+   <P><TEXT><PICTURE/></TEXT></P>
+  </SECTION>
+ </BODY>
+</HWPML>

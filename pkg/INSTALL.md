@@ -23,7 +23,7 @@ python -m pip show docstruct        # Version 이 0.1.3 이상인지
 git config --global credential.allowUnsafeRemotes true
 
 # 버전 고정 (권장)
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
 
 # 최신
 pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git"
@@ -35,7 +35,7 @@ docling 등을 따로 깔 필요가 없습니다.
 노트북 UI(파일 선택 위젯)가 필요할 때만 extras 를 붙이세요.
 
 ```bash
-pip install "docstruct[notebook] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
+pip install "docstruct[notebook] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
 ```
 
 `[hwp]` `[hwpx]` `[pdf]` 는 빈 별칭으로 남겨 두었으므로 기존 명령을 써도
@@ -52,17 +52,17 @@ pip install "docstruct[notebook] @ git+http://183.96.152.133/mjseo/docstruct.git
 설치됩니다 (같은 이름의 무관한 패키지가 존재합니다).
 
 ```
-docstruct[hwp,pdf] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11
+docstruct[hwp,pdf] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12
 ```
 
 ### 업데이트
 
 ```bash
-pip install -U "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
+pip install -U "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
 
 # 같은 태그를 다시 밀었다면 캐시를 비웁니다
 pip install --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
 ```
 
 ## 대안 — wheel 파일 전달
@@ -71,10 +71,10 @@ git·인증·GCM 설정이 전부 불필요합니다. 막힐 여지가 가장 �
 
 ```bash
 # 배포 측
-python -m build --wheel          # dist/docstruct-0.1.11-py3-none-any.whl
+python -m build --wheel          # dist/docstruct-0.1.12-py3-none-any.whl
 
 # 설치 측
-pip install docstruct-0.1.11-py3-none-any.whl
+pip install docstruct-0.1.12-py3-none-any.whl
 pip install --find-links \\파일서버\share\python docstruct
 ```
 
@@ -133,7 +133,7 @@ warning: remote HEAD refers to nonexistent ref, unable to checkout
 
 > GitLab → Settings → Repository → Branch defaults → Default branch
 
-태그를 붙여 설치하면 이 문제를 겪지 않습니다 (`@v0.1.11`).
+태그를 붙여 설치하면 이 문제를 겪지 않습니다 (`@v0.1.12`).
 
 ## 버전 올리기
 
@@ -150,7 +150,7 @@ git push origin main --tags
 설치하는 쪽:
 
 ```bash
-pip install -U "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
+pip install -U "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
 ```
 
 ## 설정 — 기본값이 들어 있습니다

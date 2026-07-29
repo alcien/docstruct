@@ -1,5 +1,7 @@
 # GitHub 로 배포하기
 
+> git 명령어는 `GIT.md` 에 정리되어 있습니다.
+
 사내 GitLab 과 방식은 같습니다. 다만 **공개 저장소라면 사내 정보가 소스에
 들어가지 않도록** 먼저 정리해야 합니다.
 
@@ -7,13 +9,13 @@
 
 ```bash
 # 공개 저장소
-pip install "docstruct @ git+https://github.com/<사용자>/docstruct.git@v0.1.11"
+pip install "docstruct @ git+https://github.com/<사용자>/docstruct.git@v0.1.12"
 
 # 비공개 저장소 (토큰 필요)
-pip install "docstruct @ git+https://<token>@github.com/<사용자>/docstruct.git@v0.1.11"
+pip install "docstruct @ git+https://<token>@github.com/<사용자>/docstruct.git@v0.1.12"
 
 # SSH 키가 등록되어 있으면
-pip install "docstruct @ git+ssh://git@github.com/<사용자>/docstruct.git@v0.1.11"
+pip install "docstruct @ git+ssh://git@github.com/<사용자>/docstruct.git@v0.1.12"
 ```
 
 `requirements.txt` 에도 같은 문자열을 씁니다.
@@ -138,5 +140,5 @@ jobs:
 설치:
 
 ```bash
-pip install https://github.com/<사용자>/docstruct/releases/download/v0.1.9/docstruct-0.1.11-py3-none-any.whl
+pip install https://github.com/<사용자>/docstruct/releases/download/v0.1.9/docstruct-0.1.12-py3-none-any.whl
 ```

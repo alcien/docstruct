@@ -9,12 +9,12 @@ HWP / HWPX / PDF를 페이지 단위로 파싱해 **본문 markdown + 표 메타
 # Windows 는 한 번만
 git config --global credential.allowUnsafeRemotes true
 
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
 
 # 포맷별 의존성 (필요한 것만)
-pip install "docstruct[hwp] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
-pip install "docstruct[pdf] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
-pip install "docstruct[all] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.11"
+pip install "docstruct[hwp] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
+pip install "docstruct[pdf] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
+pip install "docstruct[all] @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.12"
 ```
 
 인증·오류 대응과 wheel 배포는 `INSTALL.md` 를 보세요.

@@ -251,7 +251,7 @@ def _in_container() -> bool:
         return False
 
 
-def _proxy_hint() -> str:
+def _proxy_hint(host: str = "") -> str:
     """프록시 환경변수가 설정되어 있으면 알린다.
 
     입력: 없음
@@ -276,7 +276,7 @@ def _proxy_hint() -> str:
         f"\n         프록시가 설정되어 있습니다: {names}\n"
         f"         NO_PROXY={no_proxy}\n"
         "         사내 주소는 프록시를 거치지 않도록 NO_PROXY 에 넣으세요.\n"
-        "         예: set NO_PROXY=218.145.29.207,localhost,127.0.0.1"
+        f"         예: set NO_PROXY={host or '<엔드포인트 호스트>'},localhost,127.0.0.1"
     )
 
 
@@ -317,7 +317,7 @@ def _connection_hint(exc: Exception, url: str) -> str:
     else:
         cause = f"{type(exc).__name__}"
 
-    tail = _proxy_hint()
+    tail = _proxy_hint(host)
     if _in_container():
         tail = (
             "\n         컨테이너 안에서 실행 중입니다. 호스트는 되는데 여기서만 "
