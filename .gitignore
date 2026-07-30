@@ -1,0 +1,39 @@
+# 빌드 산출물
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# 파이썬
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# 설정 (실값이 들어가므로 절대 커밋하지 않는다)
+.env
+# 사이트 전용 기본값 — 사내 주소가 들어가므로 공개 저장소에 올리지 않는다
+src/docstruct/core/site_defaults.py
+.env.local
+.env.*.local
+
+# 노트북 실행 흔적
+notebooks/out/
+notebooks/_work/
+.ipynb_checkpoints/
+
+# 테스트·도구
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# 에디터·OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

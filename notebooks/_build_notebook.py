@@ -1,0 +1,401 @@
+"""preview.ipynb 생성 스크립트."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+CELLS: list[tuple[str, str]] = []
+
+
+def md(text: str) -> None:
+    CELLS.append(("markdown", text.strip("\n")))
+
+
+def code(text: str) -> None:
+    CELLS.append(("code", text.strip("\n")))
+
+
+# ---------------------------------------------------------------- 0. 안내
+md("""
+# 문서 파싱 결과 확인
+
+HWP / HWPX / PDF를 첨부하면 **파싱·구조화 결과**를 바로 확인합니다.
+
+| 셀 | 내용 |
+|----|------|
+| 1 | 환경 점검 — 어떤 파서·LLM이 실제로 동작하는지 |
+| 2 | 파일 선택 (업로드 / 폴더에서 고르기 / 경로 직접 입력) |
+| 3 | 옵션 |
+| 4 | **실행** |
+| 5~8 | 요약 · 표 판정 · 본문 · 이미지 |
+| 9 | 파일로 저장 |
+
+> 처음이면 **`위→아래로 한 번 전부 실행`** 하세요. 이후에는 4번 셀만 다시 돌리면 됩니다.
+""")
+
+# ---------------------------------------------------------------- 1. 환경
+md("## 1. 환경 점검")
+
+code('''
+import sys, warnings
+from pathlib import Path
+
+# docstruct 패키지가 있는 디렉터리를 sys.path에 올립니다 (노트북 위치와 무관하게 동작).
+_here = Path.cwd().resolve()
+for _cand in (_here, *_here.parents):
+    if (_cand / "docstruct").is_dir():
+        sys.path.insert(0, str(_cand))
+        APP_ROOT = _cand
+        break
+else:
+    raise RuntimeError("docstruct 패키지를 찾을 수 없습니다. 노트북을 app/ 아래에서 실행하세요.")
+
+warnings.filterwarnings("ignore")
+
+import logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(name)s: %(message)s")
+logging.getLogger("docling").setLevel(logging.WARNING)
+
+from docstruct import build_document
+from docstruct import preview, report
+from docstruct.checks import show_environment, reload_environment, show_llm_check
+from core import winfix
+
+# Windows 비 UTF-8 로케일(cp949)에서 PyTorch/Docling 초기화가 죽는 문제를 우회합니다.
+# 해당 환경이 아니면 아무 일도 하지 않습니다.
+winfix.apply()
+
+print(f"APP_ROOT = {APP_ROOT}")
+
+# 받은 압축본이 최신인지 확인합니다. 오래된 것을 쓰면 이미 고친 오류가
+# 다시 나타납니다 (예: NameError: name '_render_page_images' is not defined).
+_v = APP_ROOT / "VERSION"
+print(f"버전     = {_v.read_text(encoding='utf-8').strip() if _v.is_file() else '(VERSION 파일 없음 — 옛 압축본)'}")
+
+show_environment()
+'''.strip())
+
+md("""
+⚠️ 표시가 있어도 그 항목만 건너뛰고 나머지는 정상 동작합니다.
+LLM이 미설정이면 표 평가·재추출 없이 **순수 파싱 결과**만 나옵니다.
+
+**`.env`를 방금 고쳤다면** 커널을 재시작할 필요 없이 아래 셀만 다시 실행하세요.
+이 노트북처럼 프로세스가 오래 사는 환경에서는 최초 로드 값이 캐시되기 때문에,
+파일만 고치고 이 셀을 건너뛰면 여전히 옛 값으로 동작합니다.
+""")
+
+code('''
+# .env 를 방금 고쳤다면 이 셀을 실행하세요 (커널 재시작 불필요).
+from docstruct.checks import reload_environment
+reload_environment()
+'''.strip())
+
+md("""
+### API 키 (선택)
+
+사내 LLM 에 연결이 안 될 때 **대비책**으로 OpenAI 를 쓰려면 키가 필요합니다.
+키를 노트북 셀에 직접 적으면 **저장 시 파일에 그대로 남으므로**,
+아래처럼 입력받아 쓰세요.
+
+키가 없어도 파싱·표 추출은 그대로 동작합니다 (표 판정·재추출만 생략).
+""")
+
+code('''
+# 필요할 때만 실행하세요. 입력한 키는 화면에도 파일에도 남지 않습니다.
+# import docstruct, getpass
+# docstruct.set_api_key(getpass.getpass("OpenAI 키: "))
+
+# 사내 LLM 주소·모델을 바꾸려면
+# docstruct.configure(llm_url="http://다른주소:11060/v1", llm_concurrency=8)
+
+# 현재 적용값 확인
+from docstruct.checks import show_environment
+show_environment()
+'''.strip())
+
+# ---------------------------------------------------------------- 2. 파일 선택
+md("""
+## 2. 파일 선택
+
+셋 중 아무거나 쓰면 됩니다 — **[파일 첨부]** 버튼, **samples/ 드롭다운**,
+또는 **경로 직접 입력**(가장 우선).
+
+선택하면 바로 아래에 파일명이 표시됩니다. 표시가 안 바뀌면 아직 안 잡힌 것입니다.
+""")
+
+code("""
+from docstruct.nbui import FilePicker
+from docstruct.pipeline import SUPPORTED_SUFFIXES
+
+picker = FilePicker(
+    work_dir=APP_ROOT / "notebooks" / "_work",     # 첨부한 파일이 저장되는 곳
+    sample_dir=APP_ROOT / "notebooks" / "samples", # 미리 넣어둔 문서
+    suffixes=SUPPORTED_SUFFIXES,
+)
+picker.display()
+""".strip())
+
+md("""
+> **위젯이 안 보이거나 반응이 없다면** — `pip install ipywidgets` 후 커널을 재시작하세요.
+> 그래도 안 되면 아래처럼 경로를 직접 넣으면 동일하게 동작합니다.
+>
+> ```python
+> picker.set_path("/경로/문서.pdf")
+> ```
+>
+> 선택은 **다음 셀을 실행하는 순간** 위젯에서 직접 읽습니다. 콜백에 의존하지 않으므로
+> 같은 파일을 다시 올려도, Run All 로 순서가 꼬여도 4번 셀만 다시 실행하면 반영됩니다.
+""")
+
+# ---------------------------------------------------------------- 3. 옵션
+md("""
+## 3. 옵션
+
+| 옵션 | 설명 |
+|------|------|
+| `ASSESS_TABLES` | 표를 LLM으로 판정 (table / text / image + 품질) |
+| `FILL_TABLES` | 판정이 **wrong·insufficient** 인 표만 LLM 재추출 |
+| `FILL_ALL` | 품질 무시하고 모든 표 재추출 — 비용 큼 |
+| `RENDER_PAGES` | 표가 있는 PDF 페이지를 PNG로 렌더 (판정 정확도 ↑) |
+
+**표 파싱이 어디서 깨지는지 보고 싶다면** `ASSESS_TABLES=True`, `FILL_TABLES=False` 조합이 가장 유용합니다.
+판정 근거만 보고 원본 markdown은 손대지 않습니다.
+""")
+
+code('''
+ASSESS_TABLES = True    # 표 판정
+FILL_TABLES   = True    # 불량 표 재추출
+FILL_ALL      = False   # 전체 재추출
+RENDER_PAGES  = True    # 페이지 PNG 렌더
+RENDER_SCALE  = 2.0
+
+SRC = picker.resolve()          # ← 지금 이 순간의 위젯 상태를 읽습니다
+OUT_DIR = APP_ROOT / "notebooks" / "out" / SRC.stem
+
+print(f"대상 파일  : {SRC}")
+print(f"출력 디렉터리: {OUT_DIR}")
+'''.strip())
+
+# ---------------------------------------------------------------- 4. 실행
+md("""
+## 4. 실행
+
+PDF는 첫 실행 때 Docling 모델을 내려받느라 몇 분 걸릴 수 있습니다. 이후에는 캐시를 씁니다.
+""")
+
+code('''
+import time
+
+_t0 = time.perf_counter()
+doc = build_document(
+    SRC,
+    assess_tables=ASSESS_TABLES,
+    fill_tables=FILL_TABLES,
+    fill_all=FILL_ALL,
+    render_pages=RENDER_PAGES,
+    out_dir=OUT_DIR,
+    render_scale=RENDER_SCALE,
+)
+print(f"\\n완료 — {time.perf_counter() - _t0:.1f}초")
+'''.strip())
+
+# ---------------------------------------------------------------- 5. 요약
+md("## 5. 요약")
+code("preview.show_summary(doc)")
+
+# ---------------------------------------------------------------- 6. 표
+md("""
+### 처리 경로
+
+각 페이지가 **어떤 경로로** 처리됐는지 보여줍니다.
+**텍스트 레이어** = PDF 내장 텍스트를 읽음, **OCR** = 이미지 인식, **혼합** = 둘 다,
+**추출 실패** = 본문이 비어 확인 필요, **미측정** = 파싱은 정상이나 출처 구분 불가
+(Docling 이 셀 데이터를 보관하지 않아서 — `DOCLING_GENERATE_PARSED_PAGES=true` 로 측정 가능).
+HWP 는 `hwpml-xml`/`pyhwp-html`(표 보존) vs `olefile-text`(**표 손실**) 로 갈립니다.
+""")
+
+code("preview.show_pipeline(doc)")
+
+md("""
+## 6. 표 판정
+
+`재추출` 열이 ✅ 인 표는 아래에 **전(빨강) / 후(초록)** 이 나란히 표시됩니다.
+""")
+code("preview.show_tables(doc)")
+
+code('''
+# 특정 표만 자세히 보기
+# for page, t in doc.all_tables():
+#     if t.id == "table_3":
+#         from IPython.display import HTML, display
+#         display(HTML(preview.table_detail_html(page, t)))
+'''.strip())
+
+# ---------------------------------------------------------------- 7. 본문
+md("""
+## 7. 본문
+
+각 페이지 위에 **처리 경로** 항목이 접혀 있습니다. 펼치면 그 페이지가 어떤 모듈을
+거쳤는지 순서대로 나옵니다 — XML 을 파싱했는지, 내장 텍스트 레이어를 읽었는지,
+스캔이라 OCR 했는지, 표를 LLM 으로 다시 뽑았는지까지.
+
+```
+  1. converters.pdf.converter     PDF 페이지 로드 — backend=pypdfium2
+  2. docling.ocr                  OCR 수행 (스캔 페이지) — rapidocr · 96셀 전부 OCR
+  3. docstruct.extractors.pdf     요소 분류 — 텍스트블록 9 · 표 1 · 그림 2
+  4. docstruct.tables.docling     TableItem → GFM markdown — 1개 (병합셀 grid 복원)
+  5. docstruct.media.page_render  페이지 PNG 렌더 — pypdfium2 · 2.0x
+  6. docstruct.tables.assess      LLM 표 판정 — table_2:table/insufficient  (2.1s)
+  7. docstruct.tables.fill        LLM 표 재추출 — table_2 교체  (3.4s)
+  8. docstruct.tables.tags        표 블록 정규화
+```
+
+`!` 는 경고(폴백·실패), `–` 는 생략된 단계입니다.
+
+그 아래 **레이아웃 인식** 을 펼치면 레이아웃 모델(RT-DETR)이 각 영역에 붙인
+라벨과 좌표, 그리고 파이프라인이 그것으로 무엇을 했는지가 나옵니다.
+표가 이상할 때 원인을 가르는 데 씁니다 —
+라벨이 `그림`/`본문` 이면 모델 오인식, 라벨은 `표` 인데 내용이 깨졌으면 변환 문제,
+`버려짐` 이면 영역은 잡았으나 텍스트가 안 나온 경우입니다.
+
+`<table N>` 태그는 markdown에서 보이지 않으므로 **▦ table N** 라벨로 바꿔 표시합니다.
+표 자체는 실제 표로 렌더링됩니다.
+""")
+
+code('''
+try:
+    import ipywidgets as W
+    from IPython.display import display
+
+    if len(doc.pages) > 1:
+        slider = W.IntSlider(
+            min=0, max=len(doc.pages) - 1, value=0,
+            description="페이지", continuous_update=False,
+            layout=W.Layout(width="520px"),
+        )
+        show_img = W.Checkbox(value=True, description="페이지 이미지 함께 보기")
+        out = W.Output()
+
+        def _render(*_):
+            with out:
+                out.clear_output(wait=True)
+                preview.show_page(doc.pages[slider.value], show_image=show_img.value)
+
+        slider.observe(_render, names="value")
+        show_img.observe(_render, names="value")
+        display(W.VBox([W.HBox([slider, show_img]), out]))
+        _render()
+    else:
+        preview.show_page(doc.pages[0])
+except ImportError:
+    preview.show_pages(doc, limit=5)
+'''.strip())
+
+code('''
+# 전체 페이지를 한 번에 훑기
+# preview.show_pages(doc, show_image=False)
+'''.strip())
+
+# ---------------------------------------------------------------- 8. 이미지
+md("## 8. 추출된 이미지")
+code("preview.show_images(doc)")
+
+# ---------------------------------------------------------------- 9. 저장
+md("## 9. 파일로 저장")
+
+code('''
+paths = [
+    report.write_markdown(doc, OUT_DIR / "document.md"),
+    report.write_json(doc, OUT_DIR / "document.json"),
+    report.write_tables_report(doc, OUT_DIR / "tables.md"),
+]
+for p in paths:
+    print(f"  {p}")
+'''.strip())
+
+code('''
+# 의미 경로(목차) 추출 — 페이지당 LLM 1회가 추가로 듭니다.
+# from docstruct.outline.builder import build_outline, outline_to_markdown
+# from IPython.display import Markdown, display
+#
+# nodes = build_outline(doc)
+# (OUT_DIR / "outline.md").write_text(outline_to_markdown(nodes), encoding="utf-8")
+# display(Markdown(outline_to_markdown(nodes)))
+'''.strip())
+
+# ---------------------------------------------------------------- 10. 트러블슈팅
+md("""
+---
+
+## 자주 겪는 상황
+
+**본문이 비어 있음 (PDF)**
+스캔 문서인데 OCR이 안 돈 경우입니다. Docling은 기본적으로 텍스트 레이어가 없는 영역만 OCR합니다.
+깨진 텍스트 레이어가 얹혀 있으면 OCR을 건너뜁니다 → `converters/pdf/docling_backend.py` 의
+`build_pdf_pipeline_options()` 에서 `pipeline_options.ocr_options.force_full_page_ocr = True` 를 시도해 보세요.
+
+**표가 이상하게 잘림**
+`tables.md` 또는 6번 셀에서 판정을 먼저 확인하세요. `insufficient` 는 대개 페이지 경계 분할입니다.
+`RENDER_PAGES=True` 여야 재추출 품질이 나옵니다.
+
+**표 판정이 전부 `미평가`**
+LLM 미설정입니다. 1번 셀 점검 결과를 확인하고 `.env` 의 `DOCLING_TABLE_API_URL` 을 채우세요.
+
+**`.env`를 고쳤는데 여전히 옛 값이 쓰임**
+1번 셀 바로 아래 `reload_environment()` 셀을 실행하세요. 노트북은 커널이 계속 떠 있어서
+파일을 고쳐도 이미 읽어들인 값이 프로세스에 남아 있습니다.
+그래도 안 바뀌면 로그에 `이미 프로세스에 설정되어 있어 무시됩니다` 경고가 없는지 보세요 —
+쉘/도커에서 같은 이름으로 이미 `export` 된 값이 있으면 `.env`보다 그게 우선입니다.
+
+**URL을 채웠는데 접속이 안 됨 (`/v1/chat` 에서 끊긴 것 같다는 경고)**
+`.env` 파일을 에디터로 열어 URL이 한 줄로 되어 있는지 확인하세요. 자동 줄바꿈 때문에
+`.../v1/chat` 다음 줄에 `completions` 만 남는 경우가 흔합니다 — 1번 셀 로그에
+경고가 뜨면 그 줄 번호를 알려줍니다.
+
+**이미지 설명이 전부 없음**
+`DOCLING_PICTURE_API_URL` 미설정이거나, 그림이 `DOCLING_PICTURE_AREA_THRESHOLD`(기본 0.01) 보다 작아
+Docling이 건너뛴 경우입니다.
+
+**HWP 표가 깨짐**
+`hwp5html` 이 없으면 olefile 폴백으로 떨어지고 이때 **표 구조가 통째로 사라집니다**.
+1번 셀의 `HWP 파싱` 항목을 확인하세요.
+
+**파일을 골랐는데 반영이 안 될 때**
+선택은 `picker.resolve()` 가 호출되는 **그 순간** 위젯에서 직접 읽습니다.
+따라서 파일을 바꾼 뒤에는 **옵션 셀 → 실행 셀** 순서로 다시 실행하면 됩니다.
+(`SRC` 는 옵션 셀에서 확정됩니다.)
+
+위젯 자체가 안 보이면 `pip install ipywidgets` 후 커널 재시작,
+그래도 안 되면 `picker.set_path("/경로/문서.pdf")` 로 우회하세요.
+
+**다른 파일로 바꿔 돌리기**
+새 파일을 첨부하거나 드롭다운에서 고른 뒤, 옵션 셀 → 실행 셀만 다시 실행하면 됩니다.
+""")
+
+# ---------------------------------------------------------------- 빌드
+nb = {
+    "cells": [
+        {
+            "cell_type": kind,
+            "id": f"cell-{i:02d}",
+            "metadata": {},
+            "source": src.splitlines(keepends=True),
+            **({"execution_count": None, "outputs": []} if kind == "code" else {}),
+        }
+        for i, (kind, src) in enumerate(CELLS)
+    ],
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3",
+        },
+        "language_info": {"name": "python", "version": "3.11"},
+    },
+    "nbformat": 4,
+    "nbformat_minor": 5,
+}
+
+out = Path(__file__).resolve().parent / "preview.ipynb"
+out.write_text(json.dumps(nb, ensure_ascii=False, indent=1), encoding="utf-8")
+print(f"생성: {out}  (셀 {len(CELLS)}개)")
