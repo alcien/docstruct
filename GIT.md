@@ -45,7 +45,11 @@ git push -u origin main --tags
 설치:
 
 ```bash
+<<<<<<< HEAD
 pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
+=======
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.20"
+>>>>>>> dfec027 (마무리중)
 ```
 
 ## 이후 갱신
@@ -143,13 +147,62 @@ git push origin --tags
 
 ```bash
 pip install --force-reinstall --no-cache-dir \
+<<<<<<< HEAD
   "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
+=======
+  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.20"
+>>>>>>> dfec027 (마무리중)
 ```
 
 ---
 
 ## 자주 겪는 오류
 
+<<<<<<< HEAD
+=======
+### `! [rejected] main -> main (fetch first)`
+
+```
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally.
+```
+
+GitHub 에서 저장소를 만들 때 **"Add a README" / LICENSE / .gitignore 를
+체크**하면 원격에 초기 커밋이 하나 생깁니다. 로컬은 `git init` 으로 따로
+시작했으므로 두 이력이 서로 무관해 push 가 거부됩니다.
+
+먼저 원격에 뭐가 있는지 봅니다.
+
+```bash
+git fetch origin
+git log --oneline origin/main
+git ls-tree --name-only origin/main
+```
+
+**초기 커밋 하나뿐이면 강제로 밀면 됩니다.**
+
+```bash
+git push --force origin main --tags
+```
+
+원격 이력을 덮어쓰지만, 어차피 GitHub 이 만든 README 하나뿐이므로
+잃을 것이 없습니다. (이미 협업 중인 저장소라면 쓰지 마세요.)
+
+**LICENSE 등 원격 파일을 살리고 싶다면** 합칩니다.
+
+```bash
+git pull --allow-unrelated-histories --no-rebase origin main
+# README.md 가 충돌하면 내 것을 택한다
+git checkout --ours README.md
+git add README.md
+git commit -m "Merge GitHub 초기 커밋"
+git push origin main --tags
+```
+
+> 다음부터는 **GitHub 에서 저장소를 만들 때 아무것도 체크하지 마세요.**
+> 빈 저장소면 이 문제가 없습니다.
+
+>>>>>>> dfec027 (마무리중)
 **`error: src refspec main does not match any`**
 
 로컬 브랜치가 `main` 이 아닙니다.

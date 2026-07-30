@@ -186,6 +186,42 @@ def _log_conversion_result(path: str, result) -> None:
         )
 
 
+<<<<<<< HEAD
+=======
+def _raise_if_model_download_failed(exc: Exception) -> None:
+    """모델 내려받기 실패면 원인을 알려주고 다시 던진다.
+
+    입력: exc — convert() 에서 나온 예외
+    출력: 없음. 해당하면 RuntimeError, 아니면 그대로 반환
+    비고:
+        Docling 은 레이아웃 모델과 TableFormer 를 처음 쓸 때 HuggingFace 에서
+        내려받는다. 폐쇄망이나 프록시 환경에서 여기서 막히는데, 원래 예외
+        (LocalEntryNotFoundError 등)만 봐서는 원인을 알기 어렵다.
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    markers = (
+        "LocalEntryNotFound", "HfHubHTTPError", "huggingface",
+        "snapshot_download", "OfflineMode", "GatedRepo",
+    )
+    if not any(m.lower() in text.lower() for m in markers):
+        return
+
+    raise RuntimeError(
+        "Docling 모델을 내려받지 못했습니다.\n"
+        "  Docling 은 레이아웃 모델과 TableFormer 를 처음 쓸 때\n"
+        "  HuggingFace 에서 가져옵니다. 폐쇄망이면 미리 받아 두세요.\n"
+        "\n"
+        "  인터넷이 되는 곳에서:\n"
+        "    python -c \"from docling.utils.model_downloader import download_models;"
+        " download_models()\"\n"
+        "  그다음 ~/.cache/docling 폴더를 이 장비로 복사하세요.\n"
+        "\n"
+        "  HWP·HWPX 만 다룬다면 이 단계가 필요 없습니다.\n"
+        f"  원래 오류: {text[:200]}"
+    ) from exc
+
+
+>>>>>>> dfec027 (마무리중)
 def _docling_install_hint(executable: str) -> str:
     """docling 을 못 쓸 때의 원인별 안내 문구를 만든다.
 
@@ -268,7 +304,15 @@ class PdfConverter(BaseConverter):
         from docstruct.converters.pdf.docling_backend import get_document_converter
 
         converter = get_document_converter()
+<<<<<<< HEAD
         result = converter.convert(self.path)
+=======
+        try:
+            result = converter.convert(self.path)
+        except Exception as exc:
+            _raise_if_model_download_failed(exc)
+            raise
+>>>>>>> dfec027 (마무리중)
         _log_conversion_result(self.path, result)
         _log_picture_items(result)
 

@@ -439,23 +439,47 @@ class DocStruct:
         """
         return self.document.to_dict()
 
+<<<<<<< HEAD
+=======
+    def to_json_str(self, *, indent: int = 2) -> str:
+        """구조화 결과를 JSON 문자열로 얻는다 (파일 저장 없음).
+
+        입력: indent — 들여쓰기 칸 수. None 이면 한 줄로 압축
+        출력: JSON 문자열
+        비고:
+            파이썬 자료구조로 다루려면 to_dict(), 파일로 쓰려면 to_json() 을
+            쓴다. 이 메서드는 HTTP 응답 본문이나 로그처럼 문자열이 필요할 때
+            쓴다.
+        """
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
+
+>>>>>>> dfec027 (마무리중)
     def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> Path:
         """구조화 결과를 JSON 파일로 저장한다.
 
         입력:
             path    저장 경로. 생략하면 원본 파일명 옆에 <문서명>.json
             indent  들여쓰기 칸 수
+<<<<<<< HEAD
         출력: 저장된 Path
+=======
+        출력: 저장된 Path (내용이 아니라 **경로**)
+        비고: 내용이 필요하면 to_dict() 또는 to_json_str() 을 쓴다.
+>>>>>>> dfec027 (마무리중)
         """
         if path is None:
             base = self._source or Path("document")
             path = base.with_suffix(".json")
         path = Path(path).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
+<<<<<<< HEAD
         path.write_text(
             json.dumps(self.to_dict(), ensure_ascii=False, indent=indent),
             encoding="utf-8",
         )
+=======
+        path.write_text(self.to_json_str(indent=indent), encoding="utf-8")
+>>>>>>> dfec027 (마무리중)
         _log.info("JSON 저장: %s", path)
         return path
 
@@ -575,6 +599,28 @@ class DocStructBatch:
         """
         return DocStruct(**self._options).get(key, default)
 
+<<<<<<< HEAD
+=======
+    def options(self) -> dict[str, Any]:
+        """지정한 설정 전체.
+
+        입력: 없음
+        출력: {키: 값} — 명시적으로 set 한 것만
+        """
+        return dict(self._options)
+
+    def reset(self) -> "DocStructBatch":
+        """설정과 실행 결과를 지운다 (대상 파일 목록은 유지).
+
+        입력: 없음
+        출력: self
+        """
+        self._options.clear()
+        self._documents = []
+        self._failures = []
+        return self
+
+>>>>>>> dfec027 (마무리중)
     # ── 실행 -----------------------------------------------------------
     @property
     def paths(self) -> list[Path]:
@@ -696,6 +742,46 @@ class DocStructBatch:
         _log.info("JSON 저장: %s 아래 %d건", out, len(written))
         return written
 
+<<<<<<< HEAD
+=======
+    def to_json_str(self, *, indent: int = 2) -> str:
+        """전체 결과를 JSON 문자열로 얻는다 (파일 저장 없음).
+
+        입력: indent — 들여쓰기 칸 수. None 이면 한 줄로 압축
+        출력: JSON 문자열 (to_dict() 와 같은 구조)
+        """
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
+
+    def save(self, out_dir: str | Path, *, unique: bool = False) -> dict[str, list[Path]]:
+        """문서별로 산출물 전체를 저장한다.
+
+        입력:
+            out_dir  저장 디렉터리. 문서마다 하위 폴더가 생긴다
+            unique   True 면 실행마다 별도 폴더를 만들어 충돌을 피한다
+        출력: {문서명: [저장된 경로]}
+        비고: DocStruct.save() 를 문서마다 호출한다 (json + md 4종).
+        """
+        out = Path(out_dir).expanduser()
+        if unique:
+            out.mkdir(parents=True, exist_ok=True)
+            out = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{time.strftime('%Y%m%d-%H%M%S')}_{os.getpid()}_", dir=out
+                )
+            )
+
+        written: dict[str, list[Path]] = {}
+        for doc in self._documents:
+            stem = Path(doc.filename).stem
+            holder = DocStruct.__new__(DocStruct)
+            holder._source = Path(doc.filename)
+            holder._options = dict(self._options)
+            holder._document = doc
+            written[stem] = list(holder.save(out / stem).values())
+        _log.info("산출물 저장: %s 아래 %d건", out, len(written))
+        return written
+
+>>>>>>> dfec027 (마무리중)
     def summary(self) -> list[str]:
         """배치 처리 요약.
 

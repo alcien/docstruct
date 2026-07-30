@@ -24,7 +24,11 @@ python tools/verify_package.py .venv/bin/python      # + 실제 import 검증
 
 ```bash
 pip install build
+<<<<<<< HEAD
 python -m build --wheel        # dist/docstruct-0.1.18-py3-none-any.whl
+=======
+python -m build --wheel        # dist/docstruct-0.1.20-py3-none-any.whl
+>>>>>>> dfec027 (마무리중)
 python -m build                # sdist 도 함께
 ```
 
@@ -32,8 +36,13 @@ python -m build                # sdist 도 함께
 
 | 방법 | 명령 | 적합한 경우 |
 |------|------|-------------|
+<<<<<<< HEAD
 | wheel 직접 전달 | `pip install ./docstruct-0.1.18-py3-none-any.whl` | 소수 인원, 폐쇄망 |
 | git 저장소 | `pip install git+ssh://git@183.96.152.133/mjseo/docstruct.git@v0.1.18` | 사내 git 이 있을 때 |
+=======
+| wheel 직접 전달 | `pip install ./docstruct-0.1.20-py3-none-any.whl` | 소수 인원, 폐쇄망 |
+| git 저장소 | `pip install git+ssh://git@183.96.152.133/mjseo/docstruct.git@v0.1.20` | 사내 git 이 있을 때 |
+>>>>>>> dfec027 (마무리중)
 | 사내 PyPI | `pip install --index-url https://pypi.내부/simple docstruct` | 여러 팀 배포 |
 | 공개 PyPI | `twine upload dist/*` | 외부 공개 시 |
 
