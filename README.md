@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.26"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.29"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,7 +29,7 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.26"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.29"
 ```
 
 노트북 UI(파일 선택 위젯)가 필요하면 `[notebook]` 을 붙이세요.
@@ -314,8 +314,9 @@ for page in ds.pages:
 ## 노트북
 
 ```
-notebooks/preview.ipynb         로컬
-notebooks/preview_colab.ipynb   Google Colab
+notebooks/preview.ipynb         문서 하나 확인 (로컬)
+notebooks/preview_colab.ipynb   문서 하나 확인 (Google Colab)
+notebooks/batch_review.ipynb    폴더 일괄 처리 → 개별 분석
 ```
 
 파일을 고르고 실행하면 요약 · 처리 경로 · 표 판정 전후 비교 · 본문 · 이미지를

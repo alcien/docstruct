@@ -346,6 +346,16 @@ class PageDocument:
     #: 단계별 소요 시간(초). 어디에 시간이 쓰였는지 판단하는 근거.
     timings: dict[str, float] = field(default_factory=dict)
 
+    @property
+    def page_count(self) -> int:
+        """페이지 수.
+
+        입력: 없음
+        출력: pages 의 길이
+        비고: to_dict() 의 page_count 와 같은 값. 객체에서도 바로 읽게 둔다.
+        """
+        return len(self.pages)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "filename": self.filename,

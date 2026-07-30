@@ -269,6 +269,12 @@ def _applied(env_overrides: dict[str, str]) -> Iterator[None]:
 
     with _RUN_LOCK:
         saved = {k: os.environ.get(k) for k in env_overrides}
+        # 이미 같은 값이 들어가 있으면 다시 세울 이유가 없다.
+        # 배치에서 문서마다 컨버터를 새로 만드는 것을 막는다
+        # (Docling 은 컨버터를 새로 만들 때 모델을 다시 로드한다).
+        if all(saved.get(k) == v for k, v in env_overrides.items()):
+            yield
+            return
         try:
             os.environ.update(env_overrides)
             rebuild_settings()
@@ -675,19 +681,25 @@ class DocStructBatch(_SettingsMixin):
         self._documents = []
         self._failures = []
 
+        from docstruct.pipeline import build_document
+
+        run_kwargs = self._run_kwargs()
         bar = ProgressBar(len(self._paths), "문서 처리", unit="건", enabled=show)
+
+        # 설정은 **한 번만** 적용한다. 문서마다 적용·해제를 반복하면
+        # 그때마다 Docling 컨버터가 버려져 모델을 다시 로드한다.
         try:
-            for path in self._paths:
-                bar.update(0, path.name)
-                try:
-                    ds = DocStruct(path, **self._options).run()
-                    self._documents.append(ds.document)
-                except Exception as exc:
-                    _log.warning("%s 처리 실패: %s", path.name, exc)
-                    self._failures.append((path, exc))
-                    if stop_on_error:
-                        raise
-                bar.update(1, path.name)
+            with _applied(self._env_overrides()):
+                for path in self._paths:
+                    bar.update(0, path.name)
+                    try:
+                        self._documents.append(build_document(path, **run_kwargs))
+                    except Exception as exc:
+                        _log.warning("%s 처리 실패: %s", path.name, exc)
+                        self._failures.append((path, exc))
+                        if stop_on_error:
+                            raise
+                    bar.update(1, path.name)
         finally:
             bar.close()
 

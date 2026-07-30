@@ -154,6 +154,21 @@ docstruct.preview.show_page(ds.pages[0])
 ds.save("out/문제문서")
 ```
 
+> 이 흐름을 그대로 담은 노트북이 `notebooks/batch_review.ipynb` 에 있습니다.
+
+### 성능
+
+`DocStructBatch` 는 설정을 **한 번만** 적용하고 전체를 그 안에서 처리합니다.
+문서마다 적용·해제를 반복하면 그때마다 Docling 컨버터가 버려져
+**모델을 다시 로드**하기 때문입니다 (0.1.29 이전에는 그랬습니다).
+
+문서는 순차 처리합니다. 병렬화는 LLM 호출 쪽(`llm_concurrency`)에서
+일어나며, 이쪽이 대부분의 시간을 차지합니다.
+
+```python
+batch.set(llm_concurrency=8)     # 표 평가·재추출 동시 호출
+```
+
 ### 전형적인 흐름
 
 ```python

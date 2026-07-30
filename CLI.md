@@ -184,7 +184,7 @@ docstruct 보고서.pdf --key-file ~/.openai_key
 
 ```
 === 환경 ===
-  OK   docstruct       0.1.26 (설치본) — /path/to/docstruct
+  OK   docstruct       0.1.29 (설치본) — /path/to/docstruct
   OK   파이썬           3.12.3 — /path/to/python
   OK   설정 출처         내장 기본값 (.env 없음)
   OK   PDF 파싱         docling

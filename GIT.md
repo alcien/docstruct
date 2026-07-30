@@ -45,7 +45,7 @@ git push -u origin main --tags
 설치:
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.26"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.29"
 ```
 
 ## 이후 갱신
@@ -143,7 +143,7 @@ git push origin --tags
 
 ```bash
 pip install --force-reinstall --no-cache-dir \
-  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.26"
+  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.29"
 ```
 
 ---
