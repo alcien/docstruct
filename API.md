@@ -79,6 +79,103 @@ files = ds.save("out/")                # {'document': Path, 'markdown': Path, ..
 
 ---
 
+## 어느 것을 쓰나
+
+**"분석용 / 처리용" 이 아닙니다.** 처리 경로 추적은 양쪽 모두에 있습니다.
+
+| | `DocStruct` | `DocStructBatch` |
+|--|-------------|------------------|
+| 쓰는 때 | 문서 **하나를 깊게** | 문서 **여럿을 넓게** |
+| 접근 | `ds.tables` — 바로 | `b.documents[i]` — 한 단계 더 |
+| 실패 | 예외를 던짐 | `failures` 에 모으고 계속 진행 |
+| `to_dict()` | 문서 구조 | `{total, succeeded, failed, documents, failures}` |
+| 추적 | 있음 | **있음** (문서마다) |
+
+### 추적은 양쪽 다 됩니다
+
+배치 결과도 `trace` · `layout` · `timings` 를 그대로 갖습니다.
+
+```python
+b = DocStructBatch("문서모음/").run()
+
+for doc in b.documents:
+    page = doc.pages[0]
+    print(doc.filename, page.trace.summary())   # 'docling · OCR 92% · 표3 · 평가'
+    print(page.trace.log())                      # 순차 실행 로그
+    print(doc.timings)                           # 단계별 소요 시간
+```
+
+`b.save("out/")` 하면 문서마다 `pipeline.md` · `layout.md` 까지 나옵니다.
+
+### 실패를 예외로 받을지 데이터로 받을지
+
+이것이 실질적인 갈림길입니다.
+
+```python
+DocStruct("깨진.hwp").run()          # RuntimeError — 여기서 멈춤
+b = DocStructBatch("깨진.hwp").run()  # 예외 없음
+b.failures                            # [(Path, RuntimeError)]
+b.to_dict()                           # {'total': 1, 'succeeded': 0, 'failed': 1, ...}
+```
+
+파일이 하나여도 서버·배치 잡에서는 `DocStructBatch` 가 편합니다 —
+파일이 하나든 백 개든 같은 코드로 다룹니다.
+
+### 입력 방향
+
+| | 받나 |
+|--|------|
+| `DocStruct("파일.pdf")` | O |
+| `DocStruct("폴더/")` | **X** — `IsADirectoryError` 로 `DocStructBatch` 안내 |
+| `DocStructBatch("폴더/")` | O |
+| `DocStructBatch("파일.pdf")` | O — 1건짜리 목록 |
+
+문서 하나를 다룰 때 `ds.tables` 는 명확하지만, 폴더에서는 "어느 문서의
+표인지" 가 모호해집니다. 반대로 목록의 원소가 하나인 것은 모호하지 않으므로
+`DocStructBatch` 는 파일 하나를 받습니다.
+
+CLI 는 폴더를 그대로 받습니다 — 반환값이 없고 파일로만 출력하므로
+그 모호함이 없습니다.
+
+### 오가는 방법
+
+배치 결과 중 하나를 파고들려면 `DocStruct.from_document()` 로 되돌립니다.
+
+```python
+b = DocStructBatch("문서모음/", progress=True).run()
+print(b.summary())                       # 성공 47 / 실패 3
+
+for path, exc in b.failures:
+    print(path.name, exc)
+
+ds = DocStruct.from_document(b.documents[12])   # 12번째를 문서처럼
+print(ds.pages[0].trace.log())
+docstruct.preview.show_page(ds.pages[0])
+ds.save("out/문제문서")
+```
+
+### 전형적인 흐름
+
+```python
+# ① 여럿 돌리기
+b = DocStructBatch("문서모음/", progress=True).run()
+
+# ② 실패·이상 확인
+print(b.summary())
+for path, exc in b.failures:
+    print(path.name, exc)
+
+# ③ 이상한 문서 하나를 파고들기
+ds = DocStruct.from_document(b.documents[3])
+print(ds.pages[0].trace.log())        # 어느 단계가 문제였는지
+docstruct.preview.show_layout(ds.document)   # 레이아웃 오인식인지
+```
+
+### 구현
+
+설정 관리(`set` `get` `options`)는 `_SettingsMixin` 에 공통으로 두고,
+결과의 모양이 다른 부분만 각자 구현합니다.
+
 ## `DocStructBatch` — 여러 문서
 
 ```python
@@ -155,6 +252,73 @@ ds.set(gpu=True)
 ```
 
 ---
+
+## 처리 경로 확인
+
+문서마다 어떤 경로로 처리됐는지 기록됩니다.
+
+```python
+page = ds.pages[0]
+
+page.trace.summary()      # 'hwpml-xml · 표1 · 평가'
+page.trace.log()          # 순차 실행 로그 전문
+page.trace.steps          # [TraceStep, ...]
+page.layout               # [LayoutItem, ...]  레이아웃 인식 결과 (PDF)
+
+doc = ds.document
+doc.timings               # {'추출': 2.4, '표 평가 LLM (원격)': 0.2, ...}
+doc.pipeline              # 이 실행에 적용된 설정
+doc.failed_pages          # 파싱 실패로 빠진 페이지
+```
+
+```
+  1. converters.hwp.hwpml       HWPML(XML) 직접 파싱 — 표 구조 보존
+  2. docstruct.tables.markdown  표 블록 placeholder 삽입 — <table N> 1개
+  3. docstruct.tables.assess    LLM 표 판정 — table_1:table/wrong  (0.1s)
+! 4. docstruct.tables.fill      재추출 불가 — 페이지 이미지도 원본 HTML도 없음
+  5. docstruct.tables.tags      표 블록 정규화
+```
+
+`!` 경고 · `–` 생략 · `✕` 실패. LLM 단계에는 소요 시간이 붙습니다.
+
+### 노트북 표시 — `docstruct.preview`
+
+| 함수 | 내용 |
+|------|------|
+| `show_document(doc)` | 요약 → 처리 경로 → 표 판정 → 본문 전체 |
+| `show_summary(doc)` | 문서 요약 표 |
+| `show_pipeline(doc)` | 페이지별 처리 경로 표 |
+| `show_tables(doc)` | 표 판정 + 재추출 전/후 비교 |
+| `show_images(doc)` | 추출된 그림 + LLM 설명 |
+| `show_page(page)` | 페이지 하나 (처리 경로·이미지·본문) |
+| `show_pages(doc)` | 모든 페이지 |
+| `show_trace(page)` | 실행 로그만 |
+| `show_layout(doc)` | 레이아웃 인식 결과 |
+
+`show_*` 는 IPython 이 필요합니다 (`pip install "docstruct[notebook]"`).
+없으면 터지지 않고 안내만 출력합니다.
+
+HTML 문자열만 필요하면 `*_html()` 을 씁니다 — IPython 없이도 동작합니다.
+
+```python
+docstruct.preview.summary_html(doc)      # str
+docstruct.preview.pipeline_html(doc)     # str
+docstruct.preview.trace_log_html(page)   # str
+docstruct.preview.layout_html(page)      # str
+```
+
+### 파일 출력 — `docstruct.report`
+
+| 함수 | 산출물 |
+|------|--------|
+| `write_json(doc, 경로)` | `document.json` |
+| `write_markdown(doc, 경로)` | `document.md` |
+| `write_tables_report(doc, 경로)` | `tables.md` |
+| `write_pipeline_report(doc, 경로)` | `pipeline.md` |
+| `write_layout_report(doc, 경로)` | `layout.md` |
+| `summary_lines(doc)` | 콘솔용 문자열 목록 |
+
+`DocStruct.save()` 가 이 다섯을 한 번에 호출합니다.
 
 ## 모델 클래스
 

@@ -19,11 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-<<<<<<< HEAD
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
-=======
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.20"
->>>>>>> dfec027 (마무리중)
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.26"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -33,11 +29,7 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-<<<<<<< HEAD
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
-=======
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.20"
->>>>>>> dfec027 (마무리중)
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.26"
 ```
 
 노트북 UI(파일 선택 위젯)가 필요하면 `[notebook]` 을 붙이세요.
@@ -128,13 +120,9 @@ ds = DocStruct("보고서.pdf")
 ds.set(assess_tables=True, fill_tables=True)
 ds.run()
 
-<<<<<<< HEAD
-ds.to_json("결과.json")          # JSON 하나
-=======
 ds.to_dict()                     # dict  — 파이썬 자료구조
 ds.to_json_str()                 # str   — JSON 문자열 (파일 저장 없음)
 ds.to_json("결과.json")           # Path  — 파일 저장 (반환은 경로)
->>>>>>> dfec027 (마무리중)
 ds.save("out/")                  # json + md 4종
 ds.save("out/", unique=True)     # 여러 사람이 같은 경로를 쓸 때
 
@@ -144,6 +132,10 @@ print("\n".join(ds.summary()))   # 콘솔 요약
 ```
 
 ### 여러 문서
+
+`DocStruct` 는 문서 하나를 깊게, `DocStructBatch` 는 여럿을 넓게 다룹니다.
+**처리 경로 추적은 양쪽 모두에 있습니다** — 자세한 구분은 `API.md` 의
+"어느 것을 쓰나" 를 보세요.
 
 ```python
 from docstruct import DocStructBatch
@@ -222,7 +214,7 @@ echo "OPENAI_API_KEY=sk-..." > .env
 | `--scale N` | 페이지 렌더 배율 (기본 2.0) |
 | `-q` / `-v` | 요약만 / DEBUG 로그 |
 
-종료 코드: 0 성공, 1 실패, 2 인자 오류
+종료 코드: 0 성공, 1 실패, 2 인자 오류. 자세한 내용은 `CLI.md` 를 보세요.
 
 ---
 
@@ -416,10 +408,8 @@ setx PYTHONUTF8 1
 
 | 파일 | 내용 |
 |------|------|
-<<<<<<< HEAD
-=======
 | `API.md` | 공개 API 전체 참조 |
->>>>>>> dfec027 (마무리중)
+| `CLI.md` | 명령행 사용법 |
 | `INSTALL.md` | 설치·설정·문제 해결 |
 | `BUGFIXES.md` | 원본 대비 수정한 버그 |
 | `RESTRUCTURE.md` | 계층 구조 재편 검토 |

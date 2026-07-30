@@ -186,8 +186,6 @@ def _log_conversion_result(path: str, result) -> None:
         )
 
 
-<<<<<<< HEAD
-=======
 def _raise_if_model_download_failed(exc: Exception) -> None:
     """모델 내려받기 실패면 원인을 알려주고 다시 던진다.
 
@@ -221,7 +219,6 @@ def _raise_if_model_download_failed(exc: Exception) -> None:
     ) from exc
 
 
->>>>>>> dfec027 (마무리중)
 def _docling_install_hint(executable: str) -> str:
     """docling 을 못 쓸 때의 원인별 안내 문구를 만든다.
 
@@ -304,15 +301,11 @@ class PdfConverter(BaseConverter):
         from docstruct.converters.pdf.docling_backend import get_document_converter
 
         converter = get_document_converter()
-<<<<<<< HEAD
-        result = converter.convert(self.path)
-=======
         try:
             result = converter.convert(self.path)
         except Exception as exc:
             _raise_if_model_download_failed(exc)
             raise
->>>>>>> dfec027 (마무리중)
         _log_conversion_result(self.path, result)
         _log_picture_items(result)
 

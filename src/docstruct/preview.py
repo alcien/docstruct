@@ -212,21 +212,48 @@ def table_detail_html(page: PageContent, table: TableInfo) -> str:
 
 # ── display 진입점 ----------------------------------------------------------
 
-def _display(obj: Any) -> None:
-    from IPython.display import display
+def _notebook_hint() -> None:
+    """IPython 없이 show_* 를 호출했을 때 안내한다.
 
+    입력: 없음
+    출력: 없음 (한 번만 출력)
+    """
+    global _HINTED
+    if _HINTED:
+        return
+    _HINTED = True
+    print(
+        "[docstruct] 노트북 표시 기능에는 IPython 이 필요합니다.\n"
+        "  설치: pip install \"docstruct[notebook]\"\n"
+        "  또는 *_html() 함수로 문자열만 얻어 쓰세요 "
+        "(summary_html, pipeline_html, trace_log_html, layout_html).",
+    )
+
+
+def _display(obj: Any) -> None:
+    try:
+        from IPython.display import display
+    except ImportError:
+        _notebook_hint()
+        return
     display(obj)
 
 
 def _html(markup: str) -> None:
-    from IPython.display import HTML
-
+    try:
+        from IPython.display import HTML
+    except ImportError:
+        _notebook_hint()
+        return
     _display(HTML(markup))
 
 
 def _markdown(text: str) -> None:
-    from IPython.display import Markdown
-
+    try:
+        from IPython.display import Markdown
+    except ImportError:
+        _notebook_hint()
+        return
     _display(Markdown(text))
 
 
@@ -299,6 +326,9 @@ def show_trace(page: PageContent) -> None:
     """
     _html(trace_log_html(page))
 
+
+#: 안내를 한 번만 내보내기 위한 표시
+_HINTED = False
 
 _LABEL_COLOR = {
     "table": "#0891b2",

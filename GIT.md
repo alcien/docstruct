@@ -45,11 +45,7 @@ git push -u origin main --tags
 설치:
 
 ```bash
-<<<<<<< HEAD
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
-=======
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.20"
->>>>>>> dfec027 (마무리중)
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.26"
 ```
 
 ## 이후 갱신
@@ -147,19 +143,13 @@ git push origin --tags
 
 ```bash
 pip install --force-reinstall --no-cache-dir \
-<<<<<<< HEAD
-  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
-=======
-  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.20"
->>>>>>> dfec027 (마무리중)
+  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.26"
 ```
 
 ---
 
 ## 자주 겪는 오류
 
-<<<<<<< HEAD
-=======
 ### `! [rejected] main -> main (fetch first)`
 
 ```
@@ -202,7 +192,6 @@ git push origin main --tags
 > 다음부터는 **GitHub 에서 저장소를 만들 때 아무것도 체크하지 마세요.**
 > 빈 저장소면 이 문제가 없습니다.
 
->>>>>>> dfec027 (마무리중)
 **`error: src refspec main does not match any`**
 
 로컬 브랜치가 `main` 이 아닙니다.

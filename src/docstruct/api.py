@@ -284,7 +284,98 @@ def _applied(env_overrides: dict[str, str]) -> Iterator[None]:
             invalidate_caches()
 
 
-class DocStruct:
+class _SettingsMixin:
+    """설정 관리 공통부.
+
+    역할:
+        DocStruct 와 DocStructBatch 가 똑같이 갖는 설정 관리(set/get/options/
+        reset)를 한 곳에 둔다. 두 클래스는 **결과의 모양이 달라서** 나뉘어
+        있을 뿐, 설정을 다루는 방식은 같다.
+    호출부:
+        DocStruct, DocStructBatch
+    출력:
+        _options 딕셔너리를 갱신·조회
+    """
+
+    _options: dict[str, Any]
+
+    def set(self, key: str | None = None, value: Any = None, **options: Any):
+        """설정값을 지정한다.
+
+        입력: key/value 또는 키워드 인자
+        출력: self (연쇄 호출 가능)
+        예외: 알 수 없는 키면 DocStructError
+        """
+        if key is not None:
+            options = {key: value, **options}
+        for name, val in options.items():
+            if name == "source":
+                self._set_source(val)
+                continue
+            if name not in _ENV_KEYS and name not in _RUN_KEYS:
+                raise DocStructError(
+                    f"알 수 없는 설정 키: {name!r}\n"
+                    f"사용 가능: {', '.join(option_keys())}"
+                )
+            self._options[name] = val
+        return self
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """설정값을 읽는다.
+
+        입력: key — 설정 키, default — 지정하지 않았을 때 값
+        출력: 지정값 → 실행 옵션 기본값 → default 순
+        예외: 알 수 없는 키면 DocStructError
+        """
+        if key == "source":
+            return self._get_source(default)
+        if key not in _ENV_KEYS and key not in _RUN_KEYS:
+            raise DocStructError(
+                f"알 수 없는 설정 키: {key!r}\n사용 가능: {', '.join(option_keys())}"
+            )
+        if key in self._options:
+            return self._options[key]
+        if key in _RUN_KEYS:
+            return _RUN_KEYS[key]
+        return default
+
+    def options(self) -> dict[str, Any]:
+        """지정한 설정 전체.
+
+        입력: 없음
+        출력: {키: 값} — 명시적으로 set 한 것만
+        """
+        return dict(self._options)
+
+    def _env_overrides(self) -> dict[str, str]:
+        """지정한 설정 중 환경변수로 넘길 것.
+
+        입력: 없음
+        출력: {환경변수명: 문자열 값}
+        """
+        return {
+            _ENV_KEYS[name]: _as_env_value(val)
+            for name, val in self._options.items()
+            if name in _ENV_KEYS
+        }
+
+    def _run_kwargs(self) -> dict[str, Any]:
+        """build_document 에 넘길 실행 옵션.
+
+        입력: 없음
+        출력: {옵션명: 값}
+        """
+        return {name: self.get(name) for name in _RUN_KEYS}
+
+    # 아래 둘은 하위 클래스가 구현한다 (source 의 의미가 다르므로).
+    def _set_source(self, value: Any) -> None:
+        raise NotImplementedError
+
+    def _get_source(self, default: Any) -> Any:
+        raise NotImplementedError
+
+
+class DocStruct(_SettingsMixin):
     """문서 구조화 진입점.
 
     입력(생성자):
@@ -303,63 +394,24 @@ class DocStruct:
             self.set(**options)
 
     # ── 설정 -----------------------------------------------------------
-    def set(self, key: str | None = None, value: Any = None, **options: Any) -> "DocStruct":
-        """설정값을 지정한다.
 
-        입력:
-            key, value  키 하나를 지정할 때
-            options     키워드로 여러 개를 지정할 때
-        출력: self (연쇄 호출 가능)
-        예외: 알 수 없는 키면 DocStructError
 
-        예::
 
-            ds.set("device", "cuda")
-            ds.set(device="cuda", llm_concurrency=8)
+    def _set_source(self, value: Any) -> None:
+        """처리 대상을 바꾼다 (set(source=...) 경유).
+
+        입력: value — 문서 경로. None 이면 해제
+        출력: 없음
         """
-        if key is not None:
-            options = {key: value, **options}
+        self._source = Path(value).expanduser() if value else None
 
-        for name, val in options.items():
-            if name == "source":
-                self._source = Path(val).expanduser() if val else None
-                continue
-            if name not in _ENV_KEYS and name not in _RUN_KEYS:
-                raise DocStructError(
-                    f"알 수 없는 설정 키: {name!r}\n"
-                    f"사용 가능: {', '.join(option_keys())}"
-                )
-            self._options[name] = val
-        return self
+    def _get_source(self, default: Any) -> Any:
+        """현재 대상 경로.
 
-    def get(self, key: str, default: Any = None) -> Any:
-        """설정값을 읽는다.
-
-        입력: key — 설정 키, default — 지정하지 않았을 때 돌려줄 값
-        출력:
-            명시적으로 지정한 값이 있으면 그 값,
-            없으면 실행 옵션의 기본값, 그것도 없으면 default
-        예외: 알 수 없는 키면 DocStructError
+        입력: default — 미지정 시 돌려줄 값
+        출력: 경로 문자열 또는 default
         """
-        if key == "source":
-            return str(self._source) if self._source else default
-        if key not in _ENV_KEYS and key not in _RUN_KEYS:
-            raise DocStructError(
-                f"알 수 없는 설정 키: {key!r}\n사용 가능: {', '.join(option_keys())}"
-            )
-        if key in self._options:
-            return self._options[key]
-        if key in _RUN_KEYS:
-            return _RUN_KEYS[key]
-        return default
-
-    def options(self) -> dict[str, Any]:
-        """지정한 설정 전체.
-
-        입력: 없음
-        출력: {키: 값} — 명시적으로 set 한 것만 (기본값은 포함하지 않음)
-        """
-        return dict(self._options)
+        return str(self._source) if self._source else default
 
     def reset(self) -> "DocStruct":
         """설정과 실행 결과를 모두 지운다.
@@ -387,18 +439,28 @@ class DocStruct:
 
         from docstruct.pipeline import build_document
 
-        env = {
-            _ENV_KEYS[name]: _as_env_value(val)
-            for name, val in self._options.items()
-            if name in _ENV_KEYS
-        }
-        run_kwargs = {
-            name: self.get(name) for name in _RUN_KEYS
-        }
-
-        with _applied(env):
-            self._document = build_document(self._source, **run_kwargs)
+        with _applied(self._env_overrides()):
+            self._document = build_document(self._source, **self._run_kwargs())
         return self
+
+    @classmethod
+    def from_document(
+        cls, doc: PageDocument, *, source: str | Path | None = None, **options: Any
+    ) -> "DocStruct":
+        """이미 만들어진 PageDocument 를 감싼다 (실행 없이 결과만 다룰 때).
+
+        입력:
+            doc      구조화 결과
+            source   원본 경로. 생략하면 doc.filename
+            options  설정 (저장 경로 계산 등에만 쓰임)
+        출력: run() 을 마친 것과 같은 상태의 DocStruct
+        비고:
+            배치 결과를 문서별로 저장하거나, 저장해 둔 결과를 다시 다룰 때
+            쓴다. 이 경로가 없으면 호출부가 비공개 필드를 직접 건드리게 된다.
+        """
+        obj = cls(source or doc.filename, **options)
+        obj._document = doc
+        return obj
 
     # ── 결과 -----------------------------------------------------------
     @property
@@ -439,8 +501,6 @@ class DocStruct:
         """
         return self.document.to_dict()
 
-<<<<<<< HEAD
-=======
     def to_json_str(self, *, indent: int = 2) -> str:
         """구조화 결과를 JSON 문자열로 얻는다 (파일 저장 없음).
 
@@ -453,33 +513,21 @@ class DocStruct:
         """
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
 
->>>>>>> dfec027 (마무리중)
     def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> Path:
         """구조화 결과를 JSON 파일로 저장한다.
 
         입력:
             path    저장 경로. 생략하면 원본 파일명 옆에 <문서명>.json
             indent  들여쓰기 칸 수
-<<<<<<< HEAD
-        출력: 저장된 Path
-=======
         출력: 저장된 Path (내용이 아니라 **경로**)
         비고: 내용이 필요하면 to_dict() 또는 to_json_str() 을 쓴다.
->>>>>>> dfec027 (마무리중)
         """
         if path is None:
             base = self._source or Path("document")
             path = base.with_suffix(".json")
         path = Path(path).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
-<<<<<<< HEAD
-        path.write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=indent),
-            encoding="utf-8",
-        )
-=======
         path.write_text(self.to_json_str(indent=indent), encoding="utf-8")
->>>>>>> dfec027 (마무리중)
         _log.info("JSON 저장: %s", path)
         return path
 
@@ -540,7 +588,7 @@ class DocStruct:
         return f"<DocStruct {name} · {state} · 설정 {len(self._options)}개>"
 
 
-class DocStructBatch:
+class DocStructBatch(_SettingsMixin):
     """여러 문서를 한 번에 구조화한다.
 
     입력(생성자):
@@ -578,36 +626,16 @@ class DocStructBatch:
         DocStruct(**self._options)
 
     # ── 설정 -----------------------------------------------------------
-    def set(self, key: str | None = None, value: Any = None, **options: Any) -> "DocStructBatch":
-        """설정값을 지정한다 (모든 문서에 공통 적용).
 
-        입력: key/value 또는 키워드 인자
-        출력: self (연쇄 호출 가능)
-        예외: 알 수 없는 키면 DocStructError
-        """
-        if key is not None:
-            options = {key: value, **options}
-        DocStruct(**options)      # 키 검증
-        self._options.update(options)
-        return self
 
-    def get(self, key: str, default: Any = None) -> Any:
-        """설정값을 읽는다.
 
-        입력: key — 설정 키, default — 없을 때 값
-        출력: 설정값
-        """
-        return DocStruct(**self._options).get(key, default)
+    def _set_source(self, value: Any) -> None:
+        """대상 목록을 바꾼다 (set(source=...) 경유)."""
+        self._paths = _resolve_sources(value, "*")
 
-<<<<<<< HEAD
-=======
-    def options(self) -> dict[str, Any]:
-        """지정한 설정 전체.
-
-        입력: 없음
-        출력: {키: 값} — 명시적으로 set 한 것만
-        """
-        return dict(self._options)
+    def _get_source(self, default: Any) -> Any:
+        """현재 대상 파일 목록."""
+        return [str(p) for p in self._paths] or default
 
     def reset(self) -> "DocStructBatch":
         """설정과 실행 결과를 지운다 (대상 파일 목록은 유지).
@@ -620,7 +648,6 @@ class DocStructBatch:
         self._failures = []
         return self
 
->>>>>>> dfec027 (마무리중)
     # ── 실행 -----------------------------------------------------------
     @property
     def paths(self) -> list[Path]:
@@ -742,8 +769,6 @@ class DocStructBatch:
         _log.info("JSON 저장: %s 아래 %d건", out, len(written))
         return written
 
-<<<<<<< HEAD
-=======
     def to_json_str(self, *, indent: int = 2) -> str:
         """전체 결과를 JSON 문자열로 얻는다 (파일 저장 없음).
 
@@ -773,15 +798,11 @@ class DocStructBatch:
         written: dict[str, list[Path]] = {}
         for doc in self._documents:
             stem = Path(doc.filename).stem
-            holder = DocStruct.__new__(DocStruct)
-            holder._source = Path(doc.filename)
-            holder._options = dict(self._options)
-            holder._document = doc
+            holder = DocStruct.from_document(doc, **self._options)
             written[stem] = list(holder.save(out / stem).values())
         _log.info("산출물 저장: %s 아래 %d건", out, len(written))
         return written
 
->>>>>>> dfec027 (마무리중)
     def summary(self) -> list[str]:
         """배치 처리 요약.
 

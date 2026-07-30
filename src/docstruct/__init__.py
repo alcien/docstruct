@@ -27,6 +27,13 @@
     import docstruct, getpass
     docstruct.set_api_key(getpass.getpass("OpenAI 키: "))
 
+    # 처리 경로 확인
+    doc = ds.document
+    print(doc.pages[0].trace.summary())     # 한 줄 요약
+    print(doc.pages[0].trace.log())         # 순차 실행 로그
+    docstruct.preview.show_pipeline(doc)    # 노트북에서 표로
+    docstruct.preview.show_page(doc.pages[0])
+
     # 여러 문서를 한 번에 (진행 막대 포함)
     from docstruct import DocStructBatch
 
@@ -61,6 +68,10 @@ from docstruct.models import (
 )
 from docstruct.pipeline import SUPPORTED_SUFFIXES, build_document
 
+# 노트북에서 `docstruct.preview.show_page(...)` 처럼 바로 쓸 수 있게
+# 서브모듈을 미리 붙여 둡니다 (import docstruct 만으로 접근 가능).
+from docstruct import preview, report  # noqa: E402,F401
+
 __all__ = [
     # 공개 API
     "DocStruct",
@@ -83,6 +94,9 @@ __all__ = [
     # 하위 수준
     "build_document",
     "SUPPORTED_SUFFIXES",
+    # 서브모듈
+    "preview",
+    "report",
 ]
 
 # SUPPORTED_SUFFIXES 상수와 추출기 레지스트리가 어긋나면 즉시 드러나게 합니다.

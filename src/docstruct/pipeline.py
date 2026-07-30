@@ -17,7 +17,7 @@ import logging
 import time
 from pathlib import Path
 
-from docstruct.core.config import get_settings
+from docstruct.core.config import get_settings, resolve_device
 from docstruct.media.page_render import render_pages_with_tables, safe_file_stem
 from docstruct.models import PageContent, PageDocument
 from docstruct.tables.assess import assess_document
@@ -149,6 +149,19 @@ def build_document(
 
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_file():
+        if resolved.is_dir():
+            # 폴더를 주는 실수가 잦다. 어디로 가야 하는지 알려준다.
+            raise IsADirectoryError(
+                f"폴더가 주어졌습니다: {resolved}\n"
+                "  build_document / DocStruct 는 문서 하나만 처리합니다.\n"
+                "  폴더는 DocStructBatch 를 쓰세요.\n"
+                "\n"
+                "    from docstruct import DocStructBatch\n"
+                f"    DocStructBatch({str(resolved)!r}, pattern='*.pdf').run()\n"
+                "\n"
+                "  CLI 라면 그대로 폴더를 주면 됩니다.\n"
+                f"    docstruct {resolved.name}/ --glob '*.pdf'"
+            )
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {resolved}")
 
     fmt = source_format(resolved)
@@ -314,5 +327,12 @@ def _pipeline_settings(
         fill_all=fill_all,
         llm_model=settings.llm.model if settings.llm else None,
         llm_url=settings.llm.url if settings.llm else None,
+        # 성능 관련 값도 남긴다. 나중에 "왜 느렸나" 를 볼 때 필요하다.
+        llm_concurrency=settings.llm_concurrency,
+        llm_fallback_model=(
+            settings.llm_fallback.model if settings.llm_fallback else None
+        ),
+        device=resolve_device()[0],
+        num_threads=settings.num_threads or None,
     )
     return info
