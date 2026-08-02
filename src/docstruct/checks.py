@@ -65,6 +65,71 @@ def _dist_installed(name: str) -> bool:
         return False
 
 
+def _settings_source_note() -> str:
+    """설정을 어디서 읽었는지 알려준다.
+
+    입력: 없음
+    출력: .env 경로, 또는 내장 기본값 유무를 밝힌 문구
+    비고:
+        `site_defaults.py` 는 .gitignore 대상이라 공개 배포본에는 없다.
+        그 경우 LLM 이 미설정 상태로 시작하므로, "내장 기본값" 이라고만
+        하면 오해를 부른다.
+    """
+    from docstruct.core.config import defaults, loaded_env_path
+
+    path = loaded_env_path()
+    if path:
+        return str(path)
+
+    has_llm = any(k.endswith("_API_URL") for k in defaults())
+    if has_llm:
+        return "내장 기본값 (.env 없음 — 덮으려면 cp .env.example .env)"
+    return (
+        "내장 기본값 없음 — LLM 을 쓰려면 .env 를 두거나 "
+        "--set llm_url=... 로 지정하세요"
+    )
+
+
+def _ocr_ready() -> tuple[bool, str]:
+    """설정된 OCR 엔진을 실제로 쓸 수 있는지 확인한다.
+
+    입력: 없음 (설정의 ocr_backend 사용)
+    출력: (사용 가능 여부, 설명)
+    비고:
+        rapidocr 3.x 는 실행 백엔드(onnxruntime 등)를 **의존성으로 선언하지
+        않는다.** 그래서 `pip install rapidocr` 만 하면 import 는 되지만
+        실제 인식에서 실패하고, docling 이 이를 "RapidOCR is not installed"
+        로 바꿔 보여 준다 — 설치돼 있는데도 없다고 나오는 원인이다.
+    """
+    import sys
+
+    backend = get_settings().ocr_backend
+    if backend in ("auto", "none"):
+        return True, f"{backend} — docling 이 판단"
+
+    if backend == "rapidocr":
+        if not _installed("rapidocr"):
+            return False, f'rapidocr 미설치 — "{sys.executable}" -m pip install rapidocr'
+        runtime = get_settings().rapidocr_runtime
+        pkg = {
+            "onnxruntime": "onnxruntime",
+            "torch": "torch",
+            "openvino": "openvino",
+            "paddle": "paddlepaddle",
+        }.get(runtime, runtime)
+        if not _installed(pkg.replace("-", "_")):
+            return False, (
+                f"rapidocr 는 있으나 실행 백엔드({pkg})가 없음 — "
+                f'"{sys.executable}" -m pip install {pkg}'
+            )
+        return True, f"rapidocr + {pkg}"
+
+    module = {"tesseract": "pytesseract", "easyocr": "easyocr"}.get(backend, backend)
+    if not _installed(module):
+        return False, f'{module} 미설치 — "{sys.executable}" -m pip install {module}'
+    return True, f"{backend} ({module})"
+
+
 def _docling_note(importable: bool, meta: bool, core: bool, executable: str) -> str:
     """PDF 파싱 항목의 설명 문구.
 
@@ -136,11 +201,7 @@ def environment() -> list[dict[str, Any]]:
             # 없다고 경고하지 않고 어느 값을 쓰는지만 알린다.
             "item": "설정 출처",
             "ok": True,
-            "note": (
-                str(loaded_env_path())
-                if loaded_env_path()
-                else "내장 기본값 (.env 없음 — 덮으려면 cp .env.example .env)"
-            ),
+            "note": _settings_source_note(),
         },
         {
             "item": "PDF 파싱",
@@ -160,6 +221,11 @@ def environment() -> list[dict[str, Any]]:
             "item": "HWPX 파싱",
             "ok": hwpx,
             "note": "python-hwpx" if hwpx else "pip install python-hwpx — HWPX 처리 불가",
+        },
+        {
+            "item": "OCR 실행 준비",
+            "ok": _ocr_ready()[0],
+            "note": _ocr_ready()[1],
         },
         {
             "item": "페이지 렌더",

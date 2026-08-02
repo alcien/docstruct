@@ -15,16 +15,22 @@ python tools/verify_package.py .venv/bin/python      # + 실제 import 검증
 ```
 ① 구 경로 import 검사 (converters / core / infrastructure)
    OK — 없음
-② 내부 모듈 실제 import (.venv/bin/python)
+② 캐시 데코레이터 검사
+   OK — 없음
+③ 내부 모듈 실제 import (.venv/bin/python)
    OK — 46개 모듈 모두 정상
 통과
 ```
+
+②는 `X.cache_clear()` 를 부르는데 X 에 `@lru_cache` 가 없는 경우를 찾습니다.
+함수를 삽입하다 **데코레이터와 함수 사이에 끼워 넣으면** 데코레이터가
+엉뚱한 함수에 붙는데, 구문 오류가 나지 않아 실행 시점에야 드러납니다.
 
 ## 빌드
 
 ```bash
 pip install build
-python -m build --wheel        # dist/docstruct-0.1.18-py3-none-any.whl
+python -m build --wheel        # dist/docstruct-0.1.46-py3-none-any.whl
 python -m build                # sdist 도 함께
 ```
 
@@ -32,8 +38,8 @@ python -m build                # sdist 도 함께
 
 | 방법 | 명령 | 적합한 경우 |
 |------|------|-------------|
-| wheel 직접 전달 | `pip install ./docstruct-0.1.18-py3-none-any.whl` | 소수 인원, 폐쇄망 |
-| git 저장소 | `pip install git+ssh://git@183.96.152.133/mjseo/docstruct.git@v0.1.18` | 사내 git 이 있을 때 |
+| wheel 직접 전달 | `pip install ./docstruct-0.1.46-py3-none-any.whl` | 소수 인원, 폐쇄망 |
+| git 저장소 | `pip install git+ssh://git@183.96.152.133/mjseo/docstruct.git@v0.1.46` | 사내 git 이 있을 때 |
 | 사내 PyPI | `pip install --index-url https://pypi.내부/simple docstruct` | 여러 팀 배포 |
 | 공개 PyPI | `twine upload dist/*` | 외부 공개 시 |
 

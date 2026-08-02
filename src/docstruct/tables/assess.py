@@ -30,7 +30,7 @@ from docstruct.models import (
     PageContent,
     TableInfo,
 )
-from docstruct.infrastructure.llm.client import invoke_llm, llm_api_config
+from docstruct.infrastructure.llm.client import invoke_llm, llm_api_config, llm_available
 from docstruct.infrastructure.llm.json_parse import parse_json_list_or_object_map
 
 _log = logging.getLogger(__name__)
@@ -155,8 +155,9 @@ def assess_page_tables(
         return
     if cfg is None:
         cfg = llm_api_config()
-    if cfg is None:
-        _log.debug("LLM API 미설정 — 표 평가 스킵")
+    if cfg is None and not llm_available():
+        # 엔드포인트도 로컬 VLM 도 없으면 판정을 건너뛴다.
+        _log.debug("LLM 미설정 — 표 평가 스킵")
         for table in page.tables:
             _mark_default(table)
         return

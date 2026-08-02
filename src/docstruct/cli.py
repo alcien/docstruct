@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -31,6 +32,23 @@ from docstruct.report import (
 
 _log = logging.getLogger("docstruct")
 
+_EPILOG = """예시:
+  docstruct 보고서.pdf                            out/보고서/ 에 결과
+  docstruct 보고서.pdf -o 결과 --no-llm            LLM 없이 파싱만
+  docstruct 문서모음/ --glob "*.hwp" --progress     일괄 처리
+  docstruct 보고서.pdf --no-fill                  표 판정만 (재추출 안 함)
+  docstruct --check                              환경·LLM 연결 확인
+
+산출물 (out/<문서명>/):
+  document.json  전체 구조     document.md   본문
+  tables.md      표 판정       pipeline.md   처리 경로·소요 시간
+  layout.md      레이아웃 인식 (PDF)
+  pages/         페이지 PNG    images/       추출된 그림
+
+종료 코드: 0 성공 · 1 실패 · 2 인자 오류
+자세한 내용은 CLI.md 를 보세요.
+"""
+
 
 def _build_parser() -> argparse.ArgumentParser:
     """명령행 파서를 만든다.
@@ -42,7 +60,9 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="docstruct",
         description="HWP/HWPX/PDF를 구조화하고 결과를 로컬 파일로 덤프합니다.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        # 모듈 docstring 을 그대로 붙이면 개발자용 설명이 사용자 화면에
+        # 노출된다. 실제로 쓸 만한 예시만 보여준다.
+        epilog=_EPILOG,
     )
     p.add_argument("input", nargs="?", default=None,
                    help="문서 파일 또는 디렉터리 (--check 만 할 때는 생략 가능)")
@@ -89,6 +109,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="진행 막대 표시 (tqdm 미설치 시 로그로 대체)",
     )
     p.add_argument(
+        "--cpu",
+        action="store_true",
+        help="GPU 를 쓰지 않습니다 (CUDA 오류가 날 때). --set device=cpu 와 같되 더 확실합니다",
+    )
+    p.add_argument(
+        "--set",
+        metavar="키=값",
+        action="append",
+        dest="settings",
+        help="설정 지정 (여러 번 사용 가능). 예: --set llm_url=http://호스트:11060/v1",
+    )
+    p.add_argument(
+        "--list-options",
+        action="store_true",
+        help="지정할 수 있는 설정 키를 출력하고 종료",
+    )
+    p.add_argument(
         "--ask-key",
         action="store_true",
         help="OpenAI 키를 입력받습니다 (화면·히스토리에 남지 않음)",
@@ -97,6 +134,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--key-file",
         metavar="경로",
         help="키가 담긴 파일에서 읽습니다 (첫 줄만 사용)",
+    )
+    p.add_argument(
+        "--where",
+        action="store_true",
+        help="설치 위치와 버전만 출력하고 종료 (업그레이드가 반영됐는지 확인용)",
     )
     p.add_argument(
         "--check",
@@ -178,6 +220,100 @@ def _process(src: Path, out_root: Path, args) -> None:
             print(f"    {path}")
 
 
+def _print_where() -> None:
+    """설치 위치·버전을 출력한다.
+
+    입력: 없음
+    출력: 없음 (표준출력)
+    비고:
+        업그레이드했는데 옛 동작이 그대로면 **다른 파이썬에 설치**했거나
+        캐시된 옛 버전이 남은 것이다. 여기서 바로 확인한다.
+    """
+    import sys
+    from pathlib import Path
+
+    import docstruct
+
+    print(f"실행 중인 파이썬 : {sys.executable}")
+    print(f"docstruct 위치   : {Path(docstruct.__file__).resolve().parent}")
+
+    try:
+        from importlib.metadata import version
+
+        print(f"버전             : {version('docstruct')} (pip 설치본)")
+    except Exception:
+        for base in (Path(docstruct.__file__).parent, Path(docstruct.__file__).parent.parent):
+            f = base / "VERSION"
+            if f.is_file():
+                print(f"버전             : {f.read_text(encoding='utf-8').strip()} (압축본)")
+                break
+        else:
+            print("버전             : 알 수 없음")
+
+    print()
+    print("업그레이드가 반영되지 않았다면:")
+    print(f'  "{sys.executable}" -m pip install -U --force-reinstall --no-cache-dir \\')
+    print('    "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.46"')
+
+
+def _print_options() -> None:
+    """지정할 수 있는 설정 키를 출력한다.
+
+    입력: 없음
+    출력: 없음 (표준출력)
+    """
+    from docstruct.api import _ENV_KEYS, _RUN_KEYS, defaults
+
+    known = defaults()
+    print("--set 으로 지정할 수 있는 키\n")
+    for title, keys in (
+        ("설정 (환경변수로 전달)", sorted(_ENV_KEYS)),
+        ("실행 옵션 (전용 플래그가 따로 있음)", sorted(_RUN_KEYS)),
+    ):
+        print(f"  [{title}]")
+        for k in keys:
+            hint = f"  (기본 {known[k]})" if k in known else ""
+            print(f"    {k}{hint}")
+        print()
+    print("예: docstruct 문서.pdf --set llm_url=http://호스트:11060/v1 \\")
+    print("                      --set llm_model=/model/이름 --set llm_concurrency=8")
+
+
+def _apply_settings(pairs: list[str] | None) -> None:
+    """``--set 키=값`` 목록을 적용한다.
+
+    입력: pairs — "키=값" 문자열 목록. None 이면 아무것도 하지 않음
+    출력: 없음
+    예외: 형식이 잘못됐거나 알 수 없는 키면 SystemExit
+
+    비고:
+        파이썬 API 의 configure() 와 같은 키를 쓴다. 값은 문자열로 오지만
+        불리언·숫자는 설정 계층에서 해석하므로 그대로 넘긴다.
+    """
+    if not pairs:
+        return
+
+    from docstruct.api import DocStructError, configure
+
+    options: dict[str, str] = {}
+    for item in pairs:
+        if "=" not in item:
+            raise SystemExit(
+                f"--set 형식이 잘못됐습니다: {item!r}\n"
+                "  키=값 형태로 주세요. 예: --set llm_concurrency=8\n"
+                "  사용 가능한 키는 --list-options 로 확인하세요."
+            )
+        key, value = item.split("=", 1)
+        options[key.strip()] = value.strip()
+
+    try:
+        applied = configure(**options)
+    except DocStructError as exc:
+        raise SystemExit(f"{exc}\n  --list-options 로 키 목록을 확인하세요.") from exc
+
+    _log.info("설정 적용: %s", applied)
+
+
 def _apply_key(args) -> None:
     """명령행 옵션으로 지정한 API 키를 적용한다.
 
@@ -254,7 +390,22 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)-7s %(name)s: %(message)s",
     )
 
+    if args.cpu:
+        # docling 의 import 사슬이 CUDA 를 건드리기 전에 막아야 한다.
+        # 여기가 가장 이른 지점이다 (아직 torch 를 import 하지 않았다).
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ["DOCLING_DEVICE"] = "cpu"
+
+    if args.where:
+        _print_where()
+        return 0
+
+    if args.list_options:
+        _print_options()
+        return 0
+
     try:
+        _apply_settings(args.settings)
         _apply_key(args)
     except (OSError, ValueError) as exc:
         print(f"키 설정 실패: {exc}", file=sys.stderr)

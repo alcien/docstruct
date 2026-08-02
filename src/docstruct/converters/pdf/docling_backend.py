@@ -312,6 +312,36 @@ def _pdf_backend_class(name: str):
     return None
 
 
+def _hide_gpu_if_unusable() -> None:
+    """GPU 를 쓸 수 없으면 이 프로세스에서 감춘다.
+
+    입력: 없음
+    출력: 없음 (CUDA_VISIBLE_DEVICES 설정)
+    비고:
+        `device=cpu` 로 정해졌는데 GPU 가 보이면, docling 의 import 사슬
+        (transformers → torch)이 CUDA 를 초기화하다 실패할 수 있다.
+        (드라이버 불일치, 잘못된 장치 인덱스 등)
+
+        torch 가 아직 import 되지 않았을 때만 효과가 있다. 이미 import
+        됐다면 조용히 넘어간다 — 그 경우는 convert() 단계의 CPU 재시도가 받는다.
+    """
+    import os
+    import sys
+
+    device, _ = resolve_device()
+    if device != "cpu":
+        return
+    if os.environ.get("CUDA_VISIBLE_DEVICES") == "":
+        return
+
+    if "torch" in sys.modules:
+        _log.debug("torch 가 이미 로드되어 CUDA_VISIBLE_DEVICES 를 바꿔도 효과가 없습니다")
+        return
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    _log.info("CPU 로 처리합니다 — 이 프로세스에서 GPU 를 감춥니다 (CUDA 초기화 회피)")
+
+
 @lru_cache(maxsize=1)
 def get_document_converter() -> "DocumentConverter":
     """설정이 반영된 DocumentConverter 를 얻는다.
@@ -325,6 +355,11 @@ def get_document_converter() -> "DocumentConverter":
     from docstruct.core.winfix import apply as _apply_winfix
 
     _apply_winfix(verbose=False)
+
+    # docling 은 import 사슬(transformers → torch)에서 CUDA 를 건드린다.
+    # GPU 를 쓸 수 없는 상태면 그 시점에 터지므로, **import 전에** 판정해
+    # GPU 자체를 감춘다. 이렇게 하면 torch 가 CUDA 를 시도하지 않는다.
+    _hide_gpu_if_unusable()
 
     from docling.datamodel.base_models import InputFormat
     from docling.document_converter import DocumentConverter, PdfFormatOption

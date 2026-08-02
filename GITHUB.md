@@ -9,13 +9,13 @@
 
 ```bash
 # 공개 저장소
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.46"
 
 # 비공개 저장소 (토큰 필요)
-pip install "docstruct @ git+https://<token>@github.com/alcien/docstruct.git@v0.1.18"
+pip install "docstruct @ git+https://<token>@github.com/alcien/docstruct.git@v0.1.46"
 
 # SSH 키가 등록되어 있으면
-pip install "docstruct @ git+ssh://git@github.com/alcien/docstruct.git@v0.1.18"
+pip install "docstruct @ git+ssh://git@github.com/alcien/docstruct.git@v0.1.46"
 ```
 
 `requirements.txt` 에도 같은 문자열을 씁니다.
@@ -140,5 +140,5 @@ jobs:
 설치:
 
 ```bash
-pip install https://github.com/alcien/docstruct/releases/download/v0.1.9/docstruct-0.1.18-py3-none-any.whl
+pip install https://github.com/alcien/docstruct/releases/download/v0.1.9/docstruct-0.1.46-py3-none-any.whl
 ```

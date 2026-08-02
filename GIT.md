@@ -45,7 +45,7 @@ git push -u origin main --tags
 설치:
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.46"
 ```
 
 ## 이후 갱신
@@ -143,12 +143,85 @@ git push origin --tags
 
 ```bash
 pip install --force-reinstall --no-cache-dir \
-  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
+  "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.46"
 ```
 
 ---
 
+## 태그만 push 하면 안 됩니다
+
+```bash
+git push origin v0.1.42        # ✘ 태그만
+```
+
+브랜치가 원격에 없는 상태에서 태그만 밀면 **설치가 실패합니다.**
+
+```
+error: subprocess-exited-with-error
+× git rev-parse HEAD did not run successfully.
+```
+
+pip 은 태그로 checkout 하기 전에 원격의 기본 브랜치(`HEAD`)를 먼저 확인
+하는데, 브랜치가 없으면 여기서 막힙니다. 실제로 재현해 확인했습니다 —
+태그만 push 하면 실패, 브랜치도 함께 push 하면 정상 설치됩니다.
+
+**항상 브랜치와 태그를 함께 미세요.**
+
+```bash
+git push origin main --tags    # ✔ 이렇게
+```
+
+이미 브랜치가 원격에 있는 상태에서 **새 태그만** 추가로 미는 것은
+문제없습니다 (브랜치 자체는 이미 존재하므로).
+
+```bash
+git tag v0.1.43
+git push origin v0.1.43        # ✔ 브랜치가 이미 원격에 있다면 OK
+```
+
 ## 자주 겪는 오류
+
+### `! [rejected] main -> main (fetch first)`
+
+```
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally.
+```
+
+GitHub 에서 저장소를 만들 때 **"Add a README" / LICENSE / .gitignore 를
+체크**하면 원격에 초기 커밋이 하나 생깁니다. 로컬은 `git init` 으로 따로
+시작했으므로 두 이력이 서로 무관해 push 가 거부됩니다.
+
+먼저 원격에 뭐가 있는지 봅니다.
+
+```bash
+git fetch origin
+git log --oneline origin/main
+git ls-tree --name-only origin/main
+```
+
+**초기 커밋 하나뿐이면 강제로 밀면 됩니다.**
+
+```bash
+git push --force origin main --tags
+```
+
+원격 이력을 덮어쓰지만, 어차피 GitHub 이 만든 README 하나뿐이므로
+잃을 것이 없습니다. (이미 협업 중인 저장소라면 쓰지 마세요.)
+
+**LICENSE 등 원격 파일을 살리고 싶다면** 합칩니다.
+
+```bash
+git pull --allow-unrelated-histories --no-rebase origin main
+# README.md 가 충돌하면 내 것을 택한다
+git checkout --ours README.md
+git add README.md
+git commit -m "Merge GitHub 초기 커밋"
+git push origin main --tags
+```
+
+> 다음부터는 **GitHub 에서 저장소를 만들 때 아무것도 체크하지 마세요.**
+> 빈 저장소면 이 문제가 없습니다.
 
 **`error: src refspec main does not match any`**
 

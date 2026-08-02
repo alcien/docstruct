@@ -14,10 +14,11 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
 from pathlib import Path
 
-from docstruct.core.config import get_settings
+from docstruct.core.config import get_settings, resolve_device
 from docstruct.media.page_render import render_pages_with_tables, safe_file_stem
 from docstruct.models import PageContent, PageDocument
 from docstruct.tables.assess import assess_document
@@ -120,6 +121,7 @@ def _render_page_images(
 def build_document(
     path: str | Path,
     *,
+    split_chars: int = 0,
     assess_tables: bool = True,
     fill_tables: bool = True,
     fill_all: bool = False,
@@ -149,13 +151,32 @@ def build_document(
 
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_file():
+        if resolved.is_dir():
+            # 폴더를 주는 실수가 잦다. 어디로 가야 하는지 알려준다.
+            raise IsADirectoryError(
+                f"폴더가 주어졌습니다: {resolved}\n"
+                "  build_document / DocStruct 는 문서 하나만 처리합니다.\n"
+                "  폴더는 DocStructBatch 를 쓰세요.\n"
+                "\n"
+                "    from docstruct import DocStructBatch\n"
+                f"    DocStructBatch({str(resolved)!r}, pattern='*.pdf').run()\n"
+                "\n"
+                "  CLI 라면 그대로 폴더를 주면 됩니다.\n"
+                f"    docstruct {resolved.name}/ --glob '*.pdf'"
+            )
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {resolved}")
 
     fmt = source_format(resolved)
     display_name = (source_filename or resolved.name).strip() or resolved.name
 
     out_path = Path(out_dir).resolve() if out_dir is not None else None
-    image_dir = out_path / "images" if out_path else None
+    # out_dir 을 주지 않아도 그림은 저장한다. 저장하지 않으면 preview.show_images
+    # 와 document.md 가 아무것도 보여주지 못한다 (파일 경로를 참조하므로).
+    # 임시 폴더에 두고 경로를 알려준다 — save()/to_json() 때 함께 옮겨진다.
+    if out_path:
+        image_dir = out_path / "images"
+    else:
+        image_dir = Path(tempfile.mkdtemp(prefix="docstruct-images-"))
 
     timings: dict[str, float] = {}   # 라벨은 STAGE_* 상수를 씁니다
 
@@ -166,6 +187,12 @@ def build_document(
         extraction.pages, extraction.failed_pages, extraction.table_html
     )
     timings[STAGE_EXTRACT] = time.perf_counter() - _t
+
+    # 페이지 경계가 없는 문서(HWP 등)를 구조 경계에서 나눈다.
+    if split_chars > 0 and pages:
+        from docstruct.split import split_document
+
+        pages = split_document(pages, split_chars)
     _log.info("추출 완료: %d페이지, 표 %d개", len(pages), sum(len(p.tables) for p in pages))
 
     doc = PageDocument(
@@ -314,5 +341,12 @@ def _pipeline_settings(
         fill_all=fill_all,
         llm_model=settings.llm.model if settings.llm else None,
         llm_url=settings.llm.url if settings.llm else None,
+        # 성능 관련 값도 남긴다. 나중에 "왜 느렸나" 를 볼 때 필요하다.
+        llm_concurrency=settings.llm_concurrency,
+        llm_fallback_model=(
+            settings.llm_fallback.model if settings.llm_fallback else None
+        ),
+        device=resolve_device()[0],
+        num_threads=settings.num_threads or None,
     )
     return info

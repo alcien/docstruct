@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from docstruct.content import expand_tables_and_images
 from docstruct.models import GPU_ACCELERATED, IMAGE, TABLE, TEXT, PageDocument
 
 
@@ -47,7 +48,13 @@ def write_markdown(doc: PageDocument, path: str | Path) -> Path:
             else "문서 전체"
         )
         parts.append(f"\n---\n\n## {label}\n")
-        parts.append(page.content or "_(내용 없음)_")
+        # placeholder 를 실제 내용으로 펼친다. 이걸 하지 않으면 문서에
+        # `<table 1>` `<image 1>` 같은 표시만 남아 읽을 수 없다.
+        parts.append(
+            expand_tables_and_images(page.content, page.tables, page.images)
+            if (page.content or "").strip()
+            else "_(내용 없음)_"
+        )
     return _write(path, "\n".join(parts) + "\n")
 
 
@@ -288,6 +295,16 @@ def summary_lines(doc: PageDocument) -> list[str]:
         f"표 재추출  : {filled}개",
         f"이미지     : {len(images)}개",
     ]
+
+    # 소요 시간은 로그(INFO)로만 나가면 라이브러리로 쓸 때 안 보인다.
+    # 로깅 설정과 무관하게 요약에서 확인할 수 있게 한다.
+    total = sum(doc.timings.values()) if doc.timings else 0.0
+    if total > 0:
+        top = max(doc.timings.items(), key=lambda kv: kv[1])
+        lines.append(
+            f"소요 시간  : {total:.1f}초  "
+            f"(가장 큰 단계 {top[0]} {top[1]:.1f}초, {top[1] / total * 100:.0f}%)"
+        )
 
     empty = [p.page_no for p in doc.pages if not (p.content or "").strip()]
     if empty:

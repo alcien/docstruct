@@ -219,21 +219,169 @@ def device_available(name: str) -> bool:
         torch 가 없으면 cpu 만 True 다. cuda/mps 는 torch 로 확인하며,
         확인 중 예외가 나면 사용 불가로 본다.
     """
-    if name in ("auto", "cpu"):
+    if name == "cpu":
         return True
+
+    head, _, idx = name.partition(":")
+    index = int(idx) if idx.isdigit() else 0
+
     try:
         import torch
     except ImportError:
-        return False
+        return name == "auto"        # torch 가 없으면 auto 는 CPU 로 간다
+
     try:
-        if name == "cuda":
-            return bool(torch.cuda.is_available())
-        if name == "mps":
+        if head in ("cuda", "auto"):
+            if not torch.cuda.is_available():
+                return name == "auto"     # auto 는 GPU 가 없어도 CPU 로 진행
+            # is_available() 이 True 여도 실제 장치 접근에서 터지는 경우가 있다.
+            # (드라이버·CUDA_VISIBLE_DEVICES 불일치, 컨테이너 GPU 매핑 문제 등)
+            # 여기서 한 번 만져 보고 안 되면 쓸 수 없는 것으로 본다.
+            if index >= torch.cuda.device_count():
+                return False              # 있지도 않은 번호를 지정한 경우
+            torch.cuda.get_device_properties(index)
+            return True
+        if head == "mps":
             backend = getattr(torch.backends, "mps", None)
-            return bool(backend and backend.is_available())
+            if not (backend and backend.is_available()):
+                return False
+            torch.zeros(1, device="mps")
+            return True
     except Exception:   # 드라이버 문제 등으로 확인 자체가 실패할 수 있다
-        return False
+        return name == "auto"
     return False
+
+
+#: 인덱스 없이 쓸 수 있는 장치 이름
+_DEVICE_NAMES = ("auto", "cpu", "cuda", "mps", "xpu")
+
+
+def _cuda_device_count() -> int:
+    """이 프로세스에 보이는 GPU 수.
+
+    입력: 없음
+    출력: 개수. torch 가 없거나 확인 실패면 0
+    """
+    try:
+        import torch
+
+        return torch.cuda.device_count()
+    except Exception:
+        return 0
+
+
+def _get_device() -> str:
+    """연산 장치 설정을 읽는다.
+
+    입력: 없음
+    출력: auto | cpu | cuda | mps | xpu, 또는 `cuda:1` 처럼 인덱스가 붙은 값
+    비고:
+        GPU 가 여러 장이면 어느 것을 쓸지 골라야 한다. Docling 은
+        `cuda:1` 형태를 그대로 받으므로 통과시킨다.
+    """
+    raw = _get("DOCLING_DEVICE", "auto").lower()
+    if raw in _DEVICE_NAMES:
+        return raw
+
+    head, _, idx = raw.partition(":")
+    if head in ("cuda", "xpu") and idx.isdigit():
+        return raw
+
+    _log.warning(
+        "DOCLING_DEVICE=%r 는 알 수 없는 값 — 'auto' 사용 "
+        "(가능: %s, 또는 cuda:0 처럼 인덱스 지정)",
+        raw, ", ".join(_DEVICE_NAMES),
+    )
+    return "auto"
+
+
+def cuda_visibility_conflict() -> str | None:
+    """CUDA_VISIBLE_DEVICES 와 torch 가 보는 GPU 수가 어긋나는지 확인한다.
+
+    입력: 없음
+    출력: 어긋나면 설명 문자열, 정상이면 None
+    비고:
+        `import torch` 뒤에 `os.environ["CUDA_VISIBLE_DEVICES"]` 를 바꾸면
+        torch 가 캐시한 개수와 실제 보이는 개수가 달라진다. 그 상태에서
+        CUDA 를 호출하면 `device=N, num_gpus=M` ASSERT 로 죽는다.
+        환경변수는 **프로세스를 띄우기 전에** 설정해야 한다.
+    """
+    import os
+    import sys
+
+    if "torch" not in sys.modules:
+        return None                      # 아직 초기화 전이면 문제없다
+
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None or raw.strip() == "":
+        return None                      # 제한 없음 — 어긋날 일이 없다
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        seen = torch.cuda.device_count()
+    except Exception:
+        return None
+
+    wanted = len([x for x in raw.split(",") if x.strip() != ""])
+    if seen == wanted:
+        return None
+
+    return (
+        f"CUDA_VISIBLE_DEVICES={raw!r} 는 GPU {wanted}개를 지정하는데 "
+        f"torch 는 {seen}개로 알고 있습니다.\n"
+        "         import torch 뒤에 이 변수를 바꾸면 이렇게 어긋나고, "
+        "CUDA 호출이 실패합니다.\n"
+        "         프로세스를 띄우기 전에 설정하거나(예: "
+        "CUDA_VISIBLE_DEVICES=0 jupyter lab), 커널을 재시작하세요."
+    )
+
+
+def first_usable_cuda() -> int | None:
+    """실제로 쓸 수 있는 첫 GPU 번호를 찾는다.
+
+    입력: 없음
+    출력: 장치 번호. 하나도 못 쓰면 None
+    비고:
+        GPU 가 여러 장 보여도 실제로 할당된 것은 일부일 수 있다
+        (공용 서버에서 1장만 배정받은 경우 등). 0번이 남의 것이면
+        `device="cuda"` 는 실패하므로, 만져지는 첫 번째를 골라 준다.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        for i in range(torch.cuda.device_count()):
+            try:
+                torch.cuda.get_device_properties(i)
+                return i
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def _cuda_usable(index: int = 0) -> bool:
+    """CUDA 장치를 실제로 만질 수 있는지.
+
+    입력: 없음
+    출력: 0번 장치 정보를 읽을 수 있으면 True
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        if index >= torch.cuda.device_count():
+            return False
+        torch.cuda.get_device_properties(index)
+        return True
+    except Exception:
+        return False
 
 
 def resolve_device() -> tuple[str, str | None]:
@@ -247,14 +395,50 @@ def resolve_device() -> tuple[str, str | None]:
         Docling 은 쓸 수 없는 장치를 지정하면 예외를 던지고 변환 전체가
         실패한다. 여기서 미리 걸러 CPU 로 내리고 사유를 남긴다.
     """
+    conflict = cuda_visibility_conflict()
+    if conflict:
+        return "cpu", f"{conflict}\n         — CPU 로 처리합니다"
+
     requested = get_settings().device
+
+    # auto / cuda(번호 없음) 는 쓸 수 있는 장치를 직접 찾아 못 박는다.
+    # 0번이 남의 것이거나 접근할 수 없는 환경에서 실패하지 않도록.
+    if requested in ("auto", "cuda"):
+        usable = first_usable_cuda()
+        if usable is None:
+            return "cpu", None if requested == "auto" else (
+                "CUDA 를 쓸 수 없습니다 (GPU 미탑재이거나 접근 불가) — CPU 로 처리합니다"
+            )
+        return f"cuda:{usable}", None
+
     if device_available(requested):
         return requested, None
 
-    reason = {
-        "cuda": "CUDA 를 쓸 수 없습니다 (GPU 미탑재이거나 CPU 전용 PyTorch)",
-        "mps": "MPS 를 쓸 수 없습니다 (Apple Silicon 아님 또는 미지원 PyTorch)",
-    }.get(requested, f"{requested} 를 쓸 수 없습니다")
+    head, _, idx = requested.partition(":")
+    if idx.isdigit():
+        count = _cuda_device_count()
+        usable = first_usable_cuda()
+        if not count:
+            reason = f"{requested} 를 쓸 수 없습니다 — 보이는 GPU 가 없습니다"
+        elif int(idx) >= count:
+            reason = (
+                f"{requested} 를 쓸 수 없습니다 — 보이는 GPU 는 {count}개"
+                f"(0~{count - 1}번)입니다"
+            )
+        elif usable is not None:
+            # 번호는 있는데 그 장치에 접근할 수 없는 경우
+            # (공용 서버에서 다른 사람에게 할당된 GPU 등)
+            reason = (
+                f"{requested} 에 접근할 수 없습니다 — "
+                f"쓸 수 있는 것은 cuda:{usable} 입니다"
+            )
+        else:
+            reason = f"{requested} 에 접근할 수 없습니다 — 쓸 수 있는 GPU 가 없습니다"
+    else:
+        reason = {
+            "cuda": "CUDA 를 쓸 수 없습니다 (GPU 미탑재이거나 CPU 전용 PyTorch)",
+            "mps": "MPS 를 쓸 수 없습니다 (Apple Silicon 아님 또는 미지원 PyTorch)",
+        }.get(head, f"{requested} 를 쓸 수 없습니다")
     return "cpu", f"{reason} — CPU 로 처리합니다"
 
 
@@ -439,7 +623,7 @@ class LLMEndpoint:
     """OpenAI 호환 ``/v1/chat/completions`` 서버 하나."""
 
     url: str          # 항상 /v1/chat/completions 로 끝남
-    server_url: str    # 접두사만 (llm_request 어댑터용)
+    server_url: str    # 접두사만 (외부 어댑터용)
     model: str
     timeout: float
     prompt: str | None = None
@@ -469,6 +653,7 @@ class LLMEndpoint:
 class Settings:
     llm: LLMEndpoint | None              # 표 평가·재추출·목차 추출용 (TABLE, 없으면 PICTURE 필드별 fallback)
     llm_fallback: LLMEndpoint | None     # 위 엔드포인트에 연결이 안 될 때 쓸 대비책
+    local_vlm: "LocalVLM | None"         # 이 장비에서 직접 돌릴 VLM (지정 시 HTTP 대신 사용)
     docling_picture: LLMEndpoint | None  # Docling 그림 설명 전용 (fallback 없음)
     ocr_backend: str
     ocr_lang: str                        # 쉼표 구분. 비우면 백엔드별 기본값
@@ -499,6 +684,14 @@ class Settings:
         else:
             rows.append(("LLM (표 평가/재추출/목차)", "미설정 — 해당 단계 자동 생략", True))
 
+        if self.local_vlm:
+            v = self.local_vlm
+            rows.append((
+                "로컬 VLM",
+                f"{v.model_id} · {v.device} · {v.dtype} — HTTP 대신 이 모델을 씁니다",
+                True,
+            ))
+
         if self.llm_fallback:
             rows.append((
                 "LLM 대비책",
@@ -528,6 +721,8 @@ class Settings:
             True,
         ))
         effective, note = resolve_device()
+        if note:
+            note = note.replace("\n", " ").replace("         ", " ")
         rows.append((
             "연산 장치",
             effective
@@ -627,6 +822,56 @@ def _same_host(a: str, b: str) -> bool:
     return bool(a) and bool(b) and urlparse(a).hostname == urlparse(b).hostname
 
 
+@dataclass(frozen=True)
+class LocalVLM:
+    """이 장비에서 직접 돌릴 VLM 설정.
+
+    입력(필드):
+        model_id        HuggingFace 이름 또는 로컬 경로
+        device          auto | cpu | cuda | cuda:0 …
+        dtype           auto | float16 | bfloat16 | float32
+        max_new_tokens  생성 상한
+    출력:
+        as_dict()  local_vlm.invoke() 에 넘길 인자
+    """
+
+    model_id: str
+    device: str = "auto"
+    dtype: str = "auto"
+    max_new_tokens: int = 2048
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "device": self.device,
+            "dtype": self.dtype,
+            "max_new_tokens": self.max_new_tokens,
+        }
+
+
+def _build_local_vlm() -> "LocalVLM | None":
+    """로컬 VLM 설정을 만든다.
+
+    입력: 없음
+    출력: LocalVLM. 모델이 지정되지 않았으면 None
+    비고:
+        지정되면 표 판정·재추출이 HTTP 대신 이 모델을 쓴다.
+        장치는 따로 주지 않으면 전역 device 설정을 따른다.
+    """
+    model_id = _get("DOCSTRUCT_VLM_MODEL")
+    if not model_id:
+        return None
+    return LocalVLM(
+        model_id=model_id,
+        device=_get("DOCSTRUCT_VLM_DEVICE") or _get_device(),
+        dtype=_get_choice(
+            "DOCSTRUCT_VLM_DTYPE", "auto",
+            ("auto", "float16", "bfloat16", "float32"),
+        ),
+        max_new_tokens=_get_int("DOCSTRUCT_VLM_MAX_TOKENS", 2048),
+    )
+
+
 def _build_fallback() -> "LLMEndpoint | None":
     """연결 실패 시 쓸 대비 엔드포인트를 만든다.
 
@@ -711,12 +956,11 @@ def _build_settings() -> Settings:
         generate_parsed_pages=_get_bool("DOCLING_GENERATE_PARSED_PAGES", False),
         llm=llm,
         llm_fallback=_build_fallback(),
+        local_vlm=_build_local_vlm(),
         docling_picture=picture,
         ocr_backend=_get("DOCLING_OCR_BACKEND", "rapidocr").lower(),
         ocr_lang=_get("DOCLING_OCR_LANG"),
-        device=_get_choice(
-            "DOCLING_DEVICE", "auto", ("auto", "cpu", "cuda", "mps")
-        ),
+        device=_get_device(),
         num_threads=_get_int("DOCLING_NUM_THREADS", 0),
         rapidocr_runtime=_get_choice(
             "DOCLING_RAPIDOCR_RUNTIME", "onnxruntime",

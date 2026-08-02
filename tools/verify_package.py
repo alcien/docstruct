@@ -50,6 +50,51 @@ def check_moved_imports() -> list[str]:
     return problems
 
 
+def check_cache_decorators() -> list[str]:
+    """`X.cache_clear()` 를 부르는데 X 에 캐시 데코레이터가 없는 경우를 찾는다.
+
+    입력: 없음
+    출력: 문제 설명 목록 (없으면 빈 목록)
+    비고:
+        함수 정의를 삽입하다 데코레이터와 함수 사이에 끼워 넣으면
+        데코레이터가 엉뚱한 함수에 붙는다. 구문 오류가 나지 않아
+        실행 시점에야 AttributeError 로 드러난다.
+    """
+    import re
+
+    CACHED = {"lru_cache", "cache", "cached_property"}
+    decorated: set[str] = set()
+    for f in SRC.rglob("*.py"):
+        if "__pycache__" in str(f):
+            continue
+        for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for d in n.decorator_list:
+                    name = (
+                        d.func.id
+                        if isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+                        else d.id if isinstance(d, ast.Name)
+                        else getattr(d, "attr", None)
+                    )
+                    if name in CACHED:
+                        decorated.add(n.name)
+
+    problems = []
+    for f in sorted(SRC.rglob("*.py")):
+        if "__pycache__" in str(f):
+            continue
+        text = f.read_text(encoding="utf-8")
+        for m in re.finditer(r"(\w+)\.cache_clear\(\)", text):
+            target = m.group(1)
+            if target not in decorated:
+                line = text[: m.start()].count("\n") + 1
+                problems.append(
+                    f"{f.relative_to(ROOT)}:{line} {target}.cache_clear() — "
+                    f"{target} 에 캐시 데코레이터가 없습니다"
+                )
+    return problems
+
+
 def collect_imports() -> set[str]:
     """패키지 안에서 쓰는 docstruct 내부 모듈 경로를 모은다.
 
@@ -119,11 +164,20 @@ def main() -> int:
     else:
         print("   OK — 없음")
 
-    print(f"\n② 내부 모듈 실제 import ({python})")
+    print("\n② 캐시 데코레이터 검사")
+    cache_problems = check_cache_decorators()
+    if cache_problems:
+        failed = True
+        for c in cache_problems:
+            print(f"   ✘ {c}")
+    else:
+        print("   OK — 없음")
+
+    print(f"\n③ 내부 모듈 실제 import ({python})")
     if not installed:
         print("   건너뜀 — 이 인터프리터에 docstruct 가 설치되어 있지 않습니다.")
         print("   사용법: python tools/verify_package.py <설치된-venv>/bin/python")
-        print("\n실패" if failed else "\n① 통과 (② 미수행)")
+        print("\n실패" if failed else "\n①② 통과 (③ 미수행)")
         return 1 if failed else 0
 
     bad = check_importable(python)

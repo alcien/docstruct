@@ -26,7 +26,12 @@ from docstruct.converters.hwp.hwpml import to_markdown as hwpml_to_markdown
 from docstruct.converters.hwp.hwpml import to_text as hwpml_to_text
 from docstruct.converters.hwp.hwpml import to_xml as hwpml_to_xml
 from docstruct.converters.hwp.olefile import clean_text, extract_raw_text, text_to_html, text_to_markdown, text_to_xml
-from docstruct.converters.hwp.pyhwp import assess_pyhwp_html, hwp_to_html_str
+import logging
+
+from docstruct.converters.hwp.pyhwp import HwpTimeout, assess_pyhwp_html, hwp_to_html_str
+
+
+_log = logging.getLogger(__name__)
 
 
 class HwpConverter(BaseConverter):
@@ -80,7 +85,13 @@ class HwpConverter(BaseConverter):
         if not PYHWP_AVAILABLE:
             self._ole_fallback = True
             return True
-        html, stderr = hwp_to_html_str(self.path)
+        try:
+            html, stderr = hwp_to_html_str(self.path)
+        except HwpTimeout as exc:
+            # 시간 안에 못 끝내면 표 구조를 포기하고 텍스트만이라도 뽑는다.
+            _log.warning("%s", exc)
+            self._ole_fallback = True
+            return True
         self._html_cache = html
         self._html_stderr = stderr
         file_size = os.path.getsize(self.path)

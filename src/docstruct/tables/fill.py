@@ -33,7 +33,7 @@ from docstruct.tables.tags import (
     replace_block_with_markdown,
     sync_table_block,
 )
-from docstruct.infrastructure.llm.client import invoke_llm, llm_api_config
+from docstruct.infrastructure.llm.client import invoke_llm, llm_api_config, llm_available
 
 _log = logging.getLogger(__name__)
 
@@ -322,7 +322,9 @@ def process_tables(
     동작: 분류·수집 → LLM 요청 병렬 실행 → 결과 반영 순으로 처리한다.
           요청과 반영을 분리해 같은 페이지의 표가 서로의 결과를 덮어쓰지 않게 한다.
     """
-    cfg = llm_api_config() if fill_tables else None
+    # 엔드포인트가 없어도 로컬 VLM 이 있으면 재추출할 수 있다.
+    can_call = fill_tables and llm_available()
+    cfg = llm_api_config() if can_call else None
 
     # ── 1단계: text/image 분류 처리 + 재추출 대상 수집 (순차, LLM 없음) ──
     jobs: list[FillJob] = []
@@ -375,8 +377,8 @@ def process_tables(
         # 중간 수정 상태를 보지 않게 하기 위함입니다.
         snapshot = page.content
         for table in pending:
-            if cfg is None:
-                _log.debug("LLM API 미설정 — 재추출 스킵: id=%s", table.id)
+            if not can_call:
+                _log.debug("LLM 미설정 — 재추출 스킵: id=%s", table.id)
                 continue
             if has_image:
                 jobs.append(FillJob(page, table, "image", snapshot))   # 우선순위 ①: PDF
@@ -392,7 +394,7 @@ def process_tables(
                         table.id,
                     )
 
-    if not jobs or cfg is None:
+    if not jobs or not can_call:
         return
 
     # ── 2단계: LLM 요청만 병렬 실행 (부수효과 없음) ──────────────────

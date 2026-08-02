@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.46"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,7 +29,7 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.18"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.46"
 ```
 
 노트북 UI(파일 선택 위젯)가 필요하면 `[notebook]` 을 붙이세요.
@@ -60,6 +60,13 @@ docstruct.configure(
 ```python
 docstruct.configure(openai_key="sk-proj-...")
 # → {'openai_key': 'sk-pro…abcd'}
+```
+
+로컬에 내려받은 VLM 으로 갈아끼울 수도 있습니다 (HTTP 를 쓰지 않습니다).
+
+```python
+docstruct.set_model("Qwen/Qwen3-VL-4B-Instruct", dtype="bfloat16")
+docstruct.set_model(None)      # 해제
 ```
 
 API 키만 넣을 때는 전용 함수가 더 간결합니다.
@@ -120,16 +127,24 @@ ds = DocStruct("보고서.pdf")
 ds.set(assess_tables=True, fill_tables=True)
 ds.run()
 
-ds.to_json("결과.json")          # JSON 하나
+ds.to_dict()                     # dict  — 파이썬 자료구조
+ds.to_json_str()                 # str   — JSON 문자열 (파일 저장 없음)
+ds.to_json("결과.json")           # Path  — 파일 저장 (반환은 경로)
 ds.save("out/")                  # json + md 4종
 ds.save("out/", unique=True)     # 여러 사람이 같은 경로를 쓸 때
 
 len(ds.tables)                   # 표 개수
 ds.pages[0].trace.summary()      # 이 페이지가 거친 처리 경로
-print("\n".join(ds.summary()))   # 콘솔 요약
+print("\n".join(ds.summary()))   # 콘솔 요약 (소요 시간 포함)
+
+docstruct.enable_logging()       # 진행 상황을 보고 싶으면
 ```
 
 ### 여러 문서
+
+`DocStruct` 는 문서 하나를 깊게, `DocStructBatch` 는 여럿을 넓게 다룹니다.
+**처리 경로 추적은 양쪽 모두에 있습니다** — 자세한 구분은 `API.md` 의
+"어느 것을 쓰나" 를 보세요.
 
 ```python
 from docstruct import DocStructBatch
@@ -208,7 +223,7 @@ echo "OPENAI_API_KEY=sk-..." > .env
 | `--scale N` | 페이지 렌더 배율 (기본 2.0) |
 | `-q` / `-v` | 요약만 / DEBUG 로그 |
 
-종료 코드: 0 성공, 1 실패, 2 인자 오류
+종료 코드: 0 성공, 1 실패, 2 인자 오류. 자세한 내용은 `CLI.md` 를 보세요.
 
 ---
 
@@ -308,8 +323,9 @@ for page in ds.pages:
 ## 노트북
 
 ```
-notebooks/preview.ipynb         로컬
-notebooks/preview_colab.ipynb   Google Colab
+notebooks/preview.ipynb         문서 하나 확인 (로컬)
+notebooks/preview_colab.ipynb   문서 하나 확인 (Google Colab)
+notebooks/batch_review.ipynb    폴더 일괄 처리 → 개별 분석
 ```
 
 파일을 고르고 실행하면 요약 · 처리 경로 · 표 판정 전후 비교 · 본문 · 이미지를
@@ -402,6 +418,8 @@ setx PYTHONUTF8 1
 
 | 파일 | 내용 |
 |------|------|
+| `API.md` | 공개 API 전체 참조 |
+| `CLI.md` | 명령행 사용법 |
 | `INSTALL.md` | 설치·설정·문제 해결 |
 | `BUGFIXES.md` | 원본 대비 수정한 버그 |
 | `RESTRUCTURE.md` | 계층 구조 재편 검토 |

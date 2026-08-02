@@ -186,6 +186,62 @@ def _log_conversion_result(path: str, result) -> None:
         )
 
 
+_CUDA_MARKERS = (
+    "DeferredCudaCallError",
+    "CUDA call failed lazily",
+    "CUDA error",
+    "num_gpus",
+    "CUDA out of memory",
+    "no kernel image is available",
+    "CUDA driver version",
+    "CUDAContext.cpp",
+    "torch.cuda",
+)
+
+
+def _is_cuda_failure(exc: Exception) -> bool:
+    """GPU 때문에 실패한 것인지 판별한다.
+
+    입력: exc — convert() 에서 나온 예외
+    출력: CUDA 관련이면 True
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    return any(m.lower() in text.lower() for m in _CUDA_MARKERS)
+
+
+def _raise_if_model_download_failed(exc: Exception) -> None:
+    """모델 내려받기 실패면 원인을 알려주고 다시 던진다.
+
+    입력: exc — convert() 에서 나온 예외
+    출력: 없음. 해당하면 RuntimeError, 아니면 그대로 반환
+    비고:
+        Docling 은 레이아웃 모델과 TableFormer 를 처음 쓸 때 HuggingFace 에서
+        내려받는다. 폐쇄망이나 프록시 환경에서 여기서 막히는데, 원래 예외
+        (LocalEntryNotFoundError 등)만 봐서는 원인을 알기 어렵다.
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    markers = (
+        "LocalEntryNotFound", "HfHubHTTPError", "huggingface",
+        "snapshot_download", "OfflineMode", "GatedRepo",
+    )
+    if not any(m.lower() in text.lower() for m in markers):
+        return
+
+    raise RuntimeError(
+        "Docling 모델을 내려받지 못했습니다.\n"
+        "  Docling 은 레이아웃 모델과 TableFormer 를 처음 쓸 때\n"
+        "  HuggingFace 에서 가져옵니다. 폐쇄망이면 미리 받아 두세요.\n"
+        "\n"
+        "  인터넷이 되는 곳에서:\n"
+        "    python -c \"from docling.utils.model_downloader import download_models;"
+        " download_models()\"\n"
+        "  그다음 ~/.cache/docling 폴더를 이 장비로 복사하세요.\n"
+        "\n"
+        "  HWP·HWPX 만 다룬다면 이 단계가 필요 없습니다.\n"
+        f"  원래 오류: {text[:200]}"
+    ) from exc
+
+
 def _docling_install_hint(executable: str) -> str:
     """docling 을 못 쓸 때의 원인별 안내 문구를 만든다.
 
@@ -260,6 +316,55 @@ class PdfConverter(BaseConverter):
             f"{hint}"
         )
 
+    def _retry_on_cpu_if_cuda_failed(self, exc: Exception):
+        """GPU 문제로 실패했으면 CPU 로 한 번 더 시도한다.
+
+        입력: exc — 최초 실패의 예외
+        출력: 변환 결과. CUDA 문제가 아니면 원래 예외를 그대로 올린다
+        비고:
+            `is_available()` 이 True 인데도 실제 장치 접근에서 터지는 경우가
+            있다 (드라이버 불일치, 컨테이너 GPU 매핑, 잘못된 장치 인덱스 등).
+            문서 처리를 통째로 실패시키는 대신 CPU 로 내려서 진행한다.
+        """
+        import os
+
+        if not _is_cuda_failure(exc):
+            raise exc
+
+        from docstruct.converters.pdf.docling_backend import (
+            get_document_converter,
+            reset_document_converter,
+        )
+
+        _log.warning(
+            "GPU 로 처리하지 못해 CPU 로 다시 시도합니다 — %s: %s",
+            type(exc).__name__, str(exc).splitlines()[0][:140],
+        )
+        saved = os.environ.get("DOCLING_DEVICE")
+        saved_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        try:
+            os.environ["DOCLING_DEVICE"] = "cpu"
+            # torch 가 이미 로드됐다면 효과가 없지만, 아직이면 이걸로 막힌다.
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            from docstruct.core.config import rebuild_settings
+
+            rebuild_settings()
+            reset_document_converter()
+            return get_document_converter().convert(self.path)
+        finally:
+            if saved is None:
+                os.environ.pop("DOCLING_DEVICE", None)
+            else:
+                os.environ["DOCLING_DEVICE"] = saved
+            if saved_visible is None:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            else:
+                os.environ["CUDA_VISIBLE_DEVICES"] = saved_visible
+            from docstruct.core.config import rebuild_settings as _rb
+
+            _rb()
+            reset_document_converter()
+
     def _get_document(self):
         if self._document is not None:
             return self._document
@@ -267,8 +372,14 @@ class PdfConverter(BaseConverter):
         self._ensure_docling()
         from docstruct.converters.pdf.docling_backend import get_document_converter
 
-        converter = get_document_converter()
-        result = converter.convert(self.path)
+        # 컨버터 생성 자체가 GPU 때문에 실패할 수 있다.
+        # (docling 의 import 사슬이 CUDA 를 초기화하다 터지는 경우)
+        try:
+            converter = get_document_converter()
+            result = converter.convert(self.path)
+        except Exception as exc:
+            _raise_if_model_download_failed(exc)
+            result = self._retry_on_cpu_if_cuda_failed(exc)
         _log_conversion_result(self.path, result)
         _log_picture_items(result)
 

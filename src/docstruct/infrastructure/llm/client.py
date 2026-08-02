@@ -2,8 +2,9 @@
 
 역할:
     설정된 엔드포인트로 프롬프트(및 이미지)를 보내고 응답 텍스트를 받는다.
-    llm_request 어댑터가 설치되어 있으면 그것을 쓰고, 없으면 requests 로
-    직접 호출한다. 어느 경로든 목적지와 페이로드 형식은 동일하다.
+    기본은 requests 로 직접 호출한다. `DOCSTRUCT_LLM_ADAPTER` 로 외부
+    어댑터 모듈을 지정하면 그것을 쓴다. 어느 경로든 목적지와 페이로드
+    형식은 동일하다.
     일시적 오류(429·5xx)는 재시도하고, 오류 본문은 그대로 드러낸다.
 호출부:
     docstruct.tables.assess / docstruct.tables.fill
@@ -30,6 +31,9 @@ _UNREACHABLE_LOCK = threading.Lock()
 
 #: 대비 엔드포인트 전환을 알렸는지 (한 번만 로그)
 _FALLBACK_ANNOUNCED = False
+
+#: 로컬 VLM 사용을 알렸는지 (한 번만 로그)
+_LOCAL_ANNOUNCED = False
 
 #: 연결 대기 상한(초). 응답 대기(cfg["timeout"])와 별개다.
 #: 서버가 죽어 있을 때 첫 실패까지의 시간을 결정한다.
@@ -74,16 +78,33 @@ def reset_unreachable() -> None:
     입력: 없음
     출력: 없음
     """
-    global _FALLBACK_ANNOUNCED
+    global _FALLBACK_ANNOUNCED, _LOCAL_ANNOUNCED
     with _UNREACHABLE_LOCK:
         _UNREACHABLE.clear()
         _FALLBACK_ANNOUNCED = False
+        _LOCAL_ANNOUNCED = False
+
+#: 로컬 VLM 사용을 알렸는지 (한 번만 로그)
+_LOCAL_ANNOUNCED = False
 
 #: 연결 대기 상한(초). 응답 대기(cfg["timeout"])와 별개다.
 #: 서버가 죽어 있을 때 첫 실패까지의 시간을 결정한다.
 CONNECT_TIMEOUT = 5.0
 
 _adapter_cache: dict[tuple[str, str], Any] = {}
+
+
+def llm_available() -> bool:
+    """표 판정·재추출을 수행할 수단이 있는지.
+
+    입력: 없음
+    출력: HTTP 엔드포인트나 로컬 VLM 중 하나라도 있으면 True
+    비고:
+        호출부는 이 함수로 판단해야 한다. llm_api_config() 만 보면
+        로컬 VLM 만 설정한 경우를 "미설정" 으로 오인한다.
+    """
+    settings = get_settings()
+    return settings.llm is not None or settings.local_vlm is not None
 
 
 def llm_api_config() -> dict[str, Any] | None:
@@ -106,20 +127,50 @@ def clear_adapter_cache() -> None:
     _adapter_cache.clear()
 
 
+def adapter_module_name() -> str:
+    """HTTP 호출에 쓸 외부 어댑터 모듈 이름.
+
+    입력: 없음
+    출력: 모듈 이름. 빈 문자열이면 어댑터를 쓰지 않는다
+    비고:
+        기본값은 없다. `DOCSTRUCT_LLM_ADAPTER` 를 지정했을 때만 그 모듈을
+        찾는다. 이름이 다른 사내 라이브러리를 쓰거나, 같은 이름의 외부
+        패키지와 충돌할 때 여기서 바꾼다.
+
+        지정하지 않으면 requests 로 직접 호출한다 — 기능 차이는 없다.
+    """
+    import os
+
+    return os.environ.get("DOCSTRUCT_LLM_ADAPTER", "").strip()
+
+
 def _get_adapter(server_url: str, model: str) -> Any | None:
-    """llm_request 어댑터를 얻는다.
+    """외부 HTTP 어댑터를 얻는다 (설정된 경우).
 
     입력: server_url, model
-    출력: 어댑터 객체. llm_request 미설치면 None (호출부가 폴백으로 전환)
+    출력:
+        어댑터 객체. 미설정이거나 불러올 수 없으면 None
+        (호출부가 requests 직접 호출로 넘어간다)
     """
     key = (server_url, model)
     if key in _adapter_cache:
         return _adapter_cache[key]
 
+    name = adapter_module_name()
+    if not name:
+        _adapter_cache[key] = None      # 기본 경로 — requests 로 직접 호출
+        return None
+
     try:
-        from llm_request import create_llm_adapter
-    except ImportError:
-        _log.warning("llm_request 미설치 — requests fallback 사용")
+        import importlib
+
+        create_llm_adapter = importlib.import_module(name).create_llm_adapter
+    except (ImportError, AttributeError) as exc:
+        _log.warning(
+            "어댑터 %r 를 쓸 수 없어 requests 로 직접 호출합니다 (%s). "
+            "DOCSTRUCT_LLM_ADAPTER 로 다른 모듈을 지정할 수 있습니다.",
+            name, type(exc).__name__,
+        )
         _adapter_cache[key] = None
         return None
 
@@ -128,6 +179,7 @@ def _get_adapter(server_url: str, model: str) -> Any | None:
         model_name=model or "default",
         server_url=server_url,
     )
+    _log.info("외부 어댑터 사용: %s", name)
     _adapter_cache[key] = adapter
     return adapter
 
@@ -302,7 +354,20 @@ def invoke_llm(
         잘못된 응답은 전환 대상이 아니다 — 그건 설정 문제이지 가용성
         문제가 아니기 때문이다.
     """
-    primary = get_settings().llm
+    settings = get_settings()
+    primary = settings.llm
+
+    # 로컬 VLM 이 지정돼 있으면 HTTP 대신 그것을 쓴다.
+    # 호출부(assess/fill)가 성능상 cfg 를 미리 얻어 넘기는 경우도 포함해야
+    # 하므로, cfg 를 줬는지가 아니라 **기본 엔드포인트를 향한 요청인지**로
+    # 판단한다 (대비책 전환과 같은 기준).
+    if settings.local_vlm is not None:
+        to_primary = cfg is None or (
+            primary is not None and cfg.get("url") == primary.url
+        )
+        if to_primary:
+            return _invoke_local(prompt, settings.local_vlm, image_urls=image_urls)
+
     if cfg is None:
         if primary is None:
             raise RuntimeError(
@@ -328,6 +393,36 @@ def invoke_llm(
         return _invoke_one(
             prompt, backup, span_name=span_name, image_urls=image_urls
         )
+
+
+def _invoke_local(prompt: str, vlm: Any, *, image_urls: list[str] | None) -> str:
+    """로컬 VLM 으로 호출한다.
+
+    입력: prompt, vlm — LocalVLM 설정, image_urls — data URI 목록
+    출력: 응답 본문 문자열
+    예외: transformers 미설치·모델 로드 실패 시 RuntimeError
+    """
+    from docstruct.infrastructure.llm import local_vlm
+
+    _announce_local(vlm)
+    return local_vlm.invoke(prompt, image_urls=image_urls, **vlm.as_dict())
+
+
+def _announce_local(vlm: Any) -> None:
+    """로컬 VLM 사용을 한 번만 알린다.
+
+    입력: vlm — LocalVLM 설정
+    출력: 없음
+    """
+    global _LOCAL_ANNOUNCED
+    with _UNREACHABLE_LOCK:
+        if _LOCAL_ANNOUNCED:
+            return
+        _LOCAL_ANNOUNCED = True
+    _log.info(
+        "로컬 VLM 사용: %s (device=%s, dtype=%s) — HTTP 엔드포인트를 쓰지 않습니다",
+        vlm.model_id, vlm.device, vlm.dtype,
+    )
 
 
 def _fallback_cfg() -> dict[str, Any] | None:
