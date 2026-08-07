@@ -1812,3 +1812,147 @@ def test_llm_failure_marks_tables_unassessed():
         assess_mod.invoke_llm = original
 
     assert page.tables[0].reason == UNASSESSED_REASON
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.69 — hwp5html 실패가 문서 전체를 죽이던 문제
+#
+# 배경: `_uses_ole_fallback()` 은 olefile 로 내려갈지 판정하는 함수인데,
+#       그 판정을 위해 hwp5html 을 실행한다. HwpTimeout 만 잡고 RuntimeError
+#       (종료코드 ≠ 0) 는 안 잡아서 예외가 그대로 위로 튀어 문서가 실패했다.
+#       hwp5html 실패는 olefile 로 내려갈 가장 강한 근거인데 그러지 못했다.
+# ────────────────────────────────────────────────────────────────────
+
+_PYHWP_NOISE = """WARNING  undefined PatternTypeEnum value: 6
+WARNING  defined name/values: {'NONE': 0, 'GRID': 5}
+WARNING  undefined UnderlineStyle value: 15
+WARNING  defined name/values: {'SOLID': 0}"""
+
+
+def _bare_converter(path: str = "/tmp/fake.hwp"):
+    """__init__(파일 존재 검사)을 우회한 HwpConverter."""
+    from docstruct.converters.hwp.converter import HwpConverter
+
+    c = HwpConverter.__new__(HwpConverter)
+    c.path = path
+    c._html_cache = None
+    c._html_stderr = ""
+    c._ole_fallback = None
+    c._ole_text_cache = None
+    c._tree_cache = None
+    c._tree_tried = False
+    return c
+
+
+def test_hwp5html_failure_falls_back_to_olefile():
+    """hwp5html 이 실패하면 예외를 내지 않고 olefile 폴백으로 내려간다."""
+    from docstruct.converters.hwp import converter as conv
+
+    c = _bare_converter()
+    orig_html, orig_ishwpml = conv.hwp_to_html_str, conv.is_hwpml
+
+    def _boom(_path):
+        raise RuntimeError(f"hwp5html 실패 (종료코드 1):\n{_PYHWP_NOISE}")
+
+    conv.hwp_to_html_str = _boom
+    conv.is_hwpml = lambda _p: False
+    try:
+        assert c._uses_ole_fallback() is True
+        assert "hwp5html" in (c.fallback_reason or "")
+    finally:
+        conv.hwp_to_html_str, conv.is_hwpml = orig_html, orig_ishwpml
+
+
+def test_error_message_filters_pyhwp_noise():
+    """오류 메시지에 pyhwp 상시 경고가 실패 사유로 실리지 않는다."""
+    from docstruct.converters.hwp.pyhwp import real_error_lines
+
+    assert real_error_lines(_PYHWP_NOISE) == []
+
+    mixed = _PYHWP_NOISE + "\nKeyError: 42"
+    assert real_error_lines(mixed) == ["KeyError: 42"]
+
+
+def test_error_message_says_so_when_only_noise():
+    """경고밖에 없으면 원인을 모른다는 사실을 밝힌다.
+
+    경고를 원인인 양 보여주면 `undefined UnderlineStyle value: 15` 를
+    실패 사유로 읽게 된다 — 실제로 그렇게 읽혔다.
+    """
+    from docstruct.converters.hwp.pyhwp import _describe_failure
+
+    message = _describe_failure(_PYHWP_NOISE)
+    assert "특정하지 못했습니다" in message
+    assert "실패 사유가 아닙니다" in message
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.70 — 첫 실패(hwp5-tree)가 INFO 로 묻혀 두 번째 실패만 보이던 문제
+#
+# 배경: 폴백 경로(hwp5html)까지 내려갔다는 것은 기본 경로(hwp5-tree)가
+#       **이미 실패했다**는 뜻이다. 그런데 그 실패가 INFO 라 기본 로깅
+#       (WARNING)에서 보이지 않았고, 사람은 두 번째 실패만 보고 그것을
+#       원인으로 오해했다. 두 경로는 같은 pyhwp 파서를 공유하므로 대개
+#       원인이 같다 — 먼저 죽은 쪽이 진짜 원인에 가깝다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_tree_failure_is_recorded(caplog):
+    """기본 경로 실패가 WARNING 으로 남고 사유가 보존된다."""
+    import logging
+
+    from docstruct.converters.hwp import converter as conv
+    from docstruct.converters.hwp import hwp5tree
+
+    c = _bare_converter()
+    c._tree_failure = None
+    original = hwp5tree.to_markdown
+
+    def _boom(_path):
+        raise KeyError("HWPTAG_LIST_HEADER: 알 수 없는 레코드")
+
+    hwp5tree.to_markdown = _boom
+    try:
+        with caplog.at_level(logging.WARNING, logger=conv.__name__):
+            assert c._get_tree_markdown() is None
+        assert "HWPTAG_LIST_HEADER" in (c.tree_failure or "")
+        assert any("hwp5-tree" in r.message for r in caplog.records)
+    finally:
+        hwp5tree.to_markdown = original
+
+
+def test_short_tree_result_records_reason():
+    """파싱은 됐으나 내용이 없는 경우도 사유가 남는다."""
+    from docstruct.converters.hwp import hwp5tree
+
+    c = _bare_converter()
+    c._tree_failure = None
+    original = hwp5tree.to_markdown
+    hwp5tree.to_markdown = lambda _p: "짧음"
+    try:
+        assert c._get_tree_markdown() is None
+        assert "자뿐" in (c.tree_failure or "")
+    finally:
+        hwp5tree.to_markdown = original
+
+
+def test_fallback_reason_includes_first_failure():
+    """폴백 사유에 먼저 죽은 기본 경로의 사유가 함께 실린다."""
+    from docstruct.converters.hwp import converter as conv
+    from docstruct.converters.hwp import hwp5tree
+
+    c = _bare_converter()
+    c._tree_failure = None
+    o1, o2, o3 = hwp5tree.to_markdown, conv.hwp_to_html_str, conv.is_hwpml
+
+    hwp5tree.to_markdown = lambda _p: (_ for _ in ()).throw(
+        KeyError("HWPTAG_LIST_HEADER"))
+    conv.hwp_to_html_str = lambda _p: (_ for _ in ()).throw(
+        RuntimeError(f"hwp5html 실패:\n{_PYHWP_NOISE}"))
+    conv.is_hwpml = lambda _p: False
+    try:
+        c._get_tree_markdown()
+        assert c._uses_ole_fallback() is True
+        reason = c.fallback_reason or ""
+        assert "HWPTAG_LIST_HEADER" in reason, "첫 실패가 최종 사유에 없습니다"
+    finally:
+        hwp5tree.to_markdown, conv.hwp_to_html_str, conv.is_hwpml = o1, o2, o3

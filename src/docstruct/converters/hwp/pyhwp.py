@@ -104,11 +104,60 @@ def hwp_to_html_str(hwp_path: str) -> tuple[str, str]:
             "  확인: python -c \"import shutil; print(shutil.which(\'hwp5html\'))\""
         ) from exc
     if result.returncode != 0:
-        raise RuntimeError(f"hwp5html 실패:\n{result.stderr.strip()}")
+        raise RuntimeError(
+            f"hwp5html 실패 (종료코드 {result.returncode}):\n"
+            f"{_describe_failure(result.stderr)}"
+        )
     return result.stdout, result.stderr or ""
+
+#: hwp5html stderr 를 가득 채우는 pyhwp 상시 경고. 실패 원인이 아니다.
+#: 이걸 그대로 오류 메시지에 붙이면 진짜 원인이 수십 줄 아래로 밀려
+#: 사람이 `undefined UnderlineStyle value: 15` 를 실패 사유로 읽게 된다.
+_STDERR_NOISE = (
+    "undefined ",
+    "defined name/values",
+    "unmatched field end",
+)
+
 
 #: 본문이 이보다 적으면 추출이 실패한 것으로 본다 (파일이 클 때만 적용).
 MIN_BODY_CHARS = 500
+
+
+def real_error_lines(stderr: str, *, limit: int = 12) -> list[str]:
+    """stderr 에서 상시 경고를 걷어내고 실제 오류 줄만 남긴다.
+
+    입력: stderr — hwp5html 의 표준 오류, limit — 남길 최대 줄 수 (뒤에서부터)
+    출력: 오류로 보이는 줄 목록. 모두 경고였다면 빈 목록
+    비고:
+        걸러낸 뒤 아무것도 남지 않는 경우가 실제로 있다 — 그때는 호출부가
+        "경고 외 메시지 없음" 이라고 밝혀, 원인을 아직 모른다는 사실 자체를
+        드러내야 한다. 경고를 원인인 양 보여주는 것보다 낫다.
+    """
+    kept = [
+        line for line in (stderr or "").splitlines()
+        if line.strip() and not any(n in line.lower() for n in _STDERR_NOISE)
+    ]
+    return kept[-limit:]
+
+
+def _describe_failure(stderr: str) -> str:
+    """실패 사유를 사람이 읽을 수 있게 만든다.
+
+    입력: stderr — hwp5html 의 표준 오류
+    출력: 실제 오류 줄들, 또는 경고뿐이었다는 안내
+    """
+    lines = real_error_lines(stderr)
+    if lines:
+        return "\n".join(lines)
+    return (
+        "표준 오류에 pyhwp 상시 경고만 있어 원인을 특정하지 못했습니다.\n"
+        "  (undefined … value / unmatched field end 는 실패 사유가 아닙니다)\n"
+        "  원문을 보려면 DOCSTRUCT_PYHWP_VERBOSE=true 로 다시 실행하세요."
+    )
+
+
+
 
 #: 이 크기 이하의 파일은 원래 내용이 적을 수 있어 본문 길이로 판정하지 않는다.
 MIN_FILE_SIZE = 10_000
