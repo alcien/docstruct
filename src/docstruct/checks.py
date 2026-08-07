@@ -75,7 +75,7 @@ def _settings_source_note() -> str:
         그 경우 LLM 이 미설정 상태로 시작하므로, "내장 기본값" 이라고만
         하면 오해를 부른다.
     """
-    from docstruct.core.config import defaults, loaded_env_path
+    from docstruct.core.config import defaults
 
     path = loaded_env_path()
     if path:
@@ -110,6 +110,10 @@ def _ocr_ready() -> tuple[bool, str]:
     if backend == "rapidocr":
         if not _installed("rapidocr"):
             return False, f'rapidocr 미설치 — "{sys.executable}" -m pip install rapidocr'
+        # 설치돼 있어도 import 가 깨질 수 있다 (컨테이너의 libGL.so.1 등).
+        problem = _import_problem("rapidocr")
+        if problem:
+            return False, problem
         runtime = get_settings().rapidocr_runtime
         pkg = {
             "onnxruntime": "onnxruntime",
@@ -117,16 +121,23 @@ def _ocr_ready() -> tuple[bool, str]:
             "openvino": "openvino",
             "paddle": "paddlepaddle",
         }.get(runtime, runtime)
-        if not _installed(pkg.replace("-", "_")):
+        module = pkg.replace("-", "_")
+        if not _installed(module):
             return False, (
                 f"rapidocr 는 있으나 실행 백엔드({pkg})가 없음 — "
                 f'"{sys.executable}" -m pip install {pkg}'
             )
+        problem = _import_problem(module)
+        if problem:
+            return False, problem
         return True, f"rapidocr + {pkg}"
 
     module = {"tesseract": "pytesseract", "easyocr": "easyocr"}.get(backend, backend)
     if not _installed(module):
         return False, f'{module} 미설치 — "{sys.executable}" -m pip install {module}'
+    problem = _import_problem(module)
+    if problem:
+        return False, problem
     return True, f"{backend} ({module})"
 
 
@@ -164,6 +175,46 @@ def _installed(module: str) -> bool:
         return importlib.util.find_spec(module) is not None
     except (ImportError, ValueError, AttributeError):
         return False
+
+
+#: 임포트 실패 메시지에 자주 나오는 공유 라이브러리 → 설치할 시스템 패키지.
+#: 컨테이너(python:*-slim) 에서 특히 자주 만난다.
+_SYSTEM_LIBS = {
+    "libGL.so.1": "libgl1",
+    "libgthread-2.0.so.0": "libglib2.0-0",
+    "libglib-2.0.so.0": "libglib2.0-0",
+    "libSM.so.6": "libsm6",
+    "libXext.so.6": "libxext6",
+    "libgomp.so.1": "libgomp1",
+}
+
+
+def _import_problem(module: str) -> str | None:
+    """모듈을 실제로 import 해 보고 문제가 있으면 설명을 돌려준다.
+
+    입력: module — 모듈명
+    출력: 문제 설명. 정상이면 None
+    비고:
+        find_spec 은 **파일이 있는지만** 본다. 설치는 됐는데 공유 라이브러리가
+        없어서 import 가 깨지는 경우(컨테이너의 libGL.so.1 등)를 잡지 못한다.
+        그 상태에서 docling 은 "pip install rapidocr onnxruntime" 이라고
+        안내하는데, 설치는 이미 되어 있으므로 그 말을 따라도 해결되지 않는다.
+        여기서 진짜 원인을 짚어 준다.
+    """
+    try:
+        importlib.import_module(module)
+        return None
+    except ImportError as exc:
+        text = str(exc)
+        for lib, pkg in _SYSTEM_LIBS.items():
+            if lib in text:
+                return (
+                    f"{module} 은 설치돼 있으나 시스템 라이브러리 {lib} 가 없음 — "
+                    f"apt-get install -y {pkg}"
+                )
+        return f"{module} import 실패 — {type(exc).__name__}: {text}"
+    except Exception as exc:                     # noqa: BLE001 - 원인을 그대로 전달
+        return f"{module} import 실패 — {type(exc).__name__}: {exc}"
 
 
 def environment() -> list[dict[str, Any]]:
@@ -305,7 +356,7 @@ def _in_container() -> bool:
     입력: 없음
     출력: Docker/Podman 등 컨테이너로 보이면 True
     """
-    import os
+    import os  # noqa: F401
     from pathlib import Path
 
     if Path("/.dockerenv").exists():

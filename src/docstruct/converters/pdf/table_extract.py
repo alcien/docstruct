@@ -85,20 +85,38 @@ _SPLIT_JSON_PROMPT = """\
 # ---------------------------------------------------------------------------
 
 def table_llm_enabled() -> bool:
+    """/convert 경로의 표 LLM 스위치.
+
+    입력: 없음
+    출력: DOCLING_TABLE_LLM 설정값 (bool)
+    """
     return get_settings().table_llm_enabled
 
 
 def _table_llm_mode() -> str:
-    """selective(기본): 다중헤더·분할 표만 LLM. always: 모든 표."""
+    """표 LLM 적용 범위.
+
+    입력: 없음
+    출력: 'selective'(기본 — 다중헤더·분할 표만) | 'always'(모든 표)
+    """
     return get_settings().table_llm_mode
 
 
 def _table_format() -> str:
-    """html(기본) 또는 json."""
+    """LLM 에 넘길 표 직렬화 형식.
+
+    입력: 없음
+    출력: 'html'(기본) | 'json'
+    """
     return get_settings().table_format
 
 
 def _table_api_config() -> dict[str, Any] | None:
+    """표 LLM 엔드포인트 설정.
+
+    입력: 없음
+    출력: 설정 dict. 미설정이면 None
+    """
     endpoint = get_settings().llm
     return endpoint.as_dict() if endpoint else None
 
@@ -108,14 +126,23 @@ def _table_api_config() -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 def _table_to_llm_input(item, doc, fmt: str) -> str:
-    """표를 LLM 입력 문자열로 직렬화합니다. fmt='html'|'json'."""
+    """표를 LLM 입력 문자열로 직렬화한다.
+
+    입력: item — TableItem, doc — DoclingDocument, fmt — 'html'|'json'
+    출력: 직렬화된 문자열
+    """
     if fmt == "json":
         return _table_to_slim_json(item)
     return item.export_to_html(doc)
 
 
 def _table_to_slim_json(item) -> str:
-    """table_cells만 추린 slim JSON (bbox/grid 제외)."""
+    """table_cells 만 추린 slim JSON 을 만든다.
+
+    입력: item — TableItem
+    출력: {num_rows, num_cols, cells:[{r,c,text,rs?,cs?,header?}], page?} JSON 문자열
+    비고: bbox·grid 를 빼 토큰을 아낀다. 병합·헤더 플래그는 값이 있을 때만 넣는다.
+    """
     page = None
     prov = getattr(item, "prov", None) or []
     if prov:
@@ -150,7 +177,11 @@ def _table_to_slim_json(item) -> str:
 
 
 def _extract_source_texts(source_input: str, fmt: str) -> set[str]:
-    """LLM 입력에서 셀 텍스트 집합 추출 (검증용)."""
+    """LLM 입력에서 셀 텍스트 집합을 뽑는다 (출력 검증용).
+
+    입력: source_input — 직렬화된 표, fmt — 'html'|'json'
+    출력: 셀 텍스트 집합. 해석 실패 시 빈 집합 (검증을 통과시킨다)
+    """
     if fmt == "json":
         try:
             data = json.loads(source_input)
@@ -171,11 +202,21 @@ def _extract_source_texts(source_input: str, fmt: str) -> set[str]:
 # ---------------------------------------------------------------------------
 
 def page_no(item) -> int | None:
+    """item 이 속한 페이지 번호.
+
+    입력: item — docling item
+    출력: 페이지 번호. prov 가 없으면 None
+    """
     prov = getattr(item, "prov", None) or []
     return prov[0].page_no if prov else None
 
 
 def _first_row_has_header(item) -> bool:
+    """표 첫 행에 헤더 셀이 있는지.
+
+    입력: item — TableItem
+    출력: 첫 행에 column_header=True 셀이 있으면 True
+    """
     data = getattr(item, "data", None)
     if not data or not data.table_cells:
         return False
@@ -187,7 +228,11 @@ def _first_row_has_header(item) -> bool:
 
 
 def _header_row_count(item) -> int:
-    """column_header=True 행이 몇 개인지 반환."""
+    """column_header=True 인 행 수.
+
+    입력: item — TableItem
+    출력: 헤더 행 수 (셀이 없으면 0)
+    """
     data = getattr(item, "data", None)
     if not data or not data.table_cells:
         return 0
@@ -198,7 +243,12 @@ def _header_row_count(item) -> int:
 
 
 def _last_row_bbox_bottom(item) -> float | None:
-    """마지막 데이터 행의 bbox bottom (페이지 하단 근접 여부 판단용)."""
+    """마지막 데이터 행의 bbox bottom 좌표.
+
+    입력: item — TableItem
+    출력: 좌표값. 셀·bbox 가 없으면 None
+    비고: 표가 페이지 하단에 붙어 있는지(분할 후보) 판단에 쓴다.
+    """
     data = getattr(item, "data", None)
     if not data or not data.table_cells:
         return None
@@ -212,6 +262,11 @@ def _last_row_bbox_bottom(item) -> float | None:
 
 
 def _page_height(item, doc) -> float | None:
+    """item 이 속한 페이지의 높이.
+
+    입력: item — docling item, doc — DoclingDocument
+    출력: 높이(points). 알 수 없으면 None
+    """
     prov = getattr(item, "prov", None) or []
     if not prov:
         return None
@@ -220,15 +275,14 @@ def _page_height(item, doc) -> float | None:
 
 
 def _is_continuation(item_a, item_b, doc=None) -> bool:
-    """페이지 분할 표 조각인지 판별합니다.
+    """두 표가 페이지 분할로 갈라진 한 표인지 판별한다.
 
-    조건:
-    1. 인접 페이지 (b = a + 1)
-    2. item_b 열 수 < item_a 열 수
-    3. item_b 첫 행에 헤더 셀 없음
-    4. (강화) item_b 첫 행에 비어 있지 않은 셀이 1~2개 이하 (왼쪽 패딩 패턴)
-       또는 item_b 행 수가 item_a 행 수보다 매우 작음
-    5. (선택) item_a 마지막 행이 페이지 하단 80% 이상 위치
+    입력: item_a, item_b — 문서 순서상 이웃한 TableItem, doc — 페이지 정보용
+    출력: 분할 조각이면 True
+    동작: ① 인접 페이지 ② b 열 수 ≤ a 열 수 ③ b 첫 행에 헤더 없음
+          ④ b 첫 행이 왼쪽 패딩 패턴이거나 행 수가 크게 작음
+          ⑤ (페이지 정보가 있으면) a 마지막 행이 페이지 하단 70% 아래
+          를 모두 만족해야 한다.
     """
     p1, p2 = page_no(item_a), page_no(item_b)
     if p1 is None or p2 is None or p2 != p1 + 1:
@@ -265,7 +319,11 @@ def _is_continuation(item_a, item_b, doc=None) -> bool:
 
 
 def _build_split_map(tables: list, doc=None) -> tuple[dict[str, Any], set[str]]:
-    """첫 번째 표 self_ref → 두 번째 표 item, 스킵할 self_ref 집합."""
+    """분할 표 쌍을 사전 구성한다.
+
+    입력: tables — 문서 순서의 TableItem 목록, doc — 페이지 정보용
+    출력: (첫 표 self_ref → 둘째 표 item, 건너뛸 둘째 표 self_ref 집합)
+    """
     partners: dict[str, Any] = {}
     skip_seconds: set[str] = set()
 
@@ -291,6 +349,11 @@ def _build_split_map(tables: list, doc=None) -> tuple[dict[str, Any], set[str]]:
 # ---------------------------------------------------------------------------
 
 def _normalize_table_markdown(text: str) -> str:
+    """LLM 응답에서 코드펜스를 벗긴다.
+
+    입력: text — 응답 원문
+    출력: ```markdown 펜스가 제거된 문자열
+    """
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:markdown|md)?\s*", "", text)
@@ -299,6 +362,11 @@ def _normalize_table_markdown(text: str) -> str:
 
 
 def _call_llm(prompt: str, cfg: dict[str, Any]) -> str | None:
+    """표 프롬프트를 LLM 에 보낸다.
+
+    입력: prompt — 프롬프트, cfg — 엔드포인트 설정
+    출력: 정리된 응답. 실패·빈 응답이면 None (호출부가 fallback)
+    """
     try:
         content = invoke_llm(prompt, span_name="table_extract", cfg=cfg)
         return _normalize_table_markdown(content) if content else None
@@ -312,7 +380,13 @@ def _call_llm(prompt: str, cfg: dict[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _validate_cell_texts(source_input: str, output_md: str, fmt: str) -> bool:
-    """LLM 출력에 원본 셀 텍스트가 포함되어 있는지 확인합니다."""
+    """LLM 출력에 원본 셀 텍스트가 보존됐는지 확인한다.
+
+    입력: source_input — 직렬화 원본, output_md — LLM 출력, fmt — 형식
+    출력: 통과하면 True
+    동작: 한글 2자 이상 셀만 검증 대상으로 삼아, 원본에 있던 텍스트가
+          출력 표 셀에서 사라졌으면 실패로 본다 (환각·누락 차단).
+    """
     source_texts = _extract_source_texts(source_input, fmt)
     if not source_texts:
         return True
@@ -356,7 +430,13 @@ def _validate_cell_texts(source_input: str, output_md: str, fmt: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _needs_llm_table(item, split_partners: dict) -> bool:
-    """이 표에 LLM이 필요한지 결정합니다."""
+    """이 표에 LLM 이 필요한지 결정한다.
+
+    입력: item — TableItem, split_partners — 분할 쌍 맵
+    출력: 필요하면 True
+    동작: always 모드면 무조건. selective(기본)면 분할 쌍의 첫 표거나
+          헤더 행이 2줄 이상일 때만 LLM 을 부른다.
+    """
     mode = _table_llm_mode()
     if mode == "always":
         return True
@@ -378,7 +458,13 @@ def _table_to_md_via_llm(
     doc, item, cfg: dict[str, Any], fmt: str,
     split_partners: dict, skip_seconds: set,
 ) -> str | None:
-    """LLM으로 표 markdown 생성. 실패 시 None 반환."""
+    """표 하나를 LLM 으로 markdown 화한다.
+
+    입력: doc, item, cfg, fmt, split_partners, skip_seconds
+    출력: 검증을 통과한 markdown. 실패 시 None (호출부가 Docling fallback)
+    동작: 분할 쌍이면 두 조각을 한 프롬프트에 넣어 병합을 요청한다.
+          응답은 _validate_cell_texts 로 원본 셀 보존 여부를 검증한다.
+    """
     ref = getattr(item, "self_ref", None)
 
     if ref and ref in split_partners:
@@ -416,10 +502,12 @@ def _table_to_md_via_llm(
 # ---------------------------------------------------------------------------
 
 def non_table_item_to_markdown(item, doc) -> str:
-    """TableItem 이외의 doc item을 markdown 문자열로 변환합니다.
+    """TableItem 이외의 doc item 을 markdown 으로 변환한다.
 
-    Docling 개별 item에는 export_to_markdown이 없는 타입이 있으므로
-    (TextItem, SectionHeaderItem, ListItem 등) 타입별로 직접 처리합니다.
+    입력: item — docling item, doc — DoclingDocument
+    출력: markdown 조각. 컨테이너(GroupItem)는 빈 문자열
+    비고: 개별 item 에는 export_to_markdown 이 없는 타입이 있어
+          (TextItem·SectionHeaderItem·ListItem 등) 타입별로 직접 처리한다.
     """
     from docling_core.types.doc import (
         GroupItem,
@@ -463,13 +551,14 @@ def non_table_item_to_markdown(item, doc) -> str:
 # ---------------------------------------------------------------------------
 
 def export_markdown(doc) -> str:
-    """PDF DoclingDocument → markdown.
+    """DoclingDocument 전체를 markdown 으로 조립한다.
 
-    iterate_items() 단일 패스로 조립:
-    - TableItem: selective LLM (조건 해당) 또는 Docling fallback
-    - 비표 item: 타입별 직접 변환 (non_table_item_to_markdown)
-
-    _postprocess_markdown / regex 교체 방식 사용 안 함 → 표 swap 구조적 차단.
+    입력: doc — DoclingDocument
+    출력: markdown 문자열
+    동작: iterate_items() 단일 패스로 조립한다. 표는 조건에 맞으면
+          LLM(_table_to_md_via_llm), 아니면 Docling export 를 쓴다.
+          분할 쌍의 둘째 표는 첫째와 함께 처리되므로 건너뛴다.
+          regex 후처리 교체를 쓰지 않아 표가 뒤바뀔 여지를 구조적으로 막는다.
     """
     from docling_core.types.doc.labels import DocItemLabel
 

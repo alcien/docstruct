@@ -22,7 +22,11 @@ RE_BLANK = re.compile(r"\s+")
 
 
 def is_hwpml(hwp_path: str) -> bool:
-    """파일 앞부분을 읽어 HWPML XML 형식인지 판별합니다."""
+    """파일 앞부분을 읽어 HWPML XML 형식인지 판별한다.
+
+    입력: hwp_path — 파일 경로
+    출력: `.hwp` 확장자지만 내용이 HWPML XML 이면 True. 읽기 실패 시 False
+    """
     try:
         with open(hwp_path, "rb") as f:
             head = f.read(512)
@@ -80,11 +84,21 @@ HWPML_SKIP = {"HEADER","FOOTER","SECDEF","FOOTNOTE","ENDNOTE",
 
 
 def hwpml_walk_body(root):
-    """BODY 아래 <P>/<TABLE> 요소를 ('p'|'table', elem) 형태로 yield."""
+    """BODY 아래 `<P>/<TABLE>` 요소를 문서 순서대로 낸다.
+
+    입력: root — HWPML 루트 Element
+    출력: ('p'|'table', Element) 튜플 제너레이터
+    비고: HWPML_SKIP 태그(머리말 등)는 서브트리째 건너뛴다.
+    """
     body = root.find(".//BODY")
     if body is None:
         return
     def walk(elem):
+        """요소 하나를 재귀 순회하며 P/TABLE 을 낸다.
+
+        입력: elem — Element
+        출력: ('p'|'table', Element) 제너레이터
+        """
         tag = elem.tag
         if tag in HWPML_SKIP:
             return
@@ -102,10 +116,13 @@ def hwpml_walk_body(root):
 
 
 def hwpml_p_text(p_elem) -> str:
-    """<P>의 본문 텍스트. 표 내부 TEXT는 제외합니다.
+    """`<P>` 의 본문 텍스트를 추출한다 (표 내부 TEXT 제외).
 
-    `.//TEXT`는 CELL 안쪽 TEXT까지 전부 찾아오므로, 표 셀 텍스트가 본문
-    단락으로 한 번 더 복제됩니다. TABLE 서브트리에 속한 노드를 미리 걸러냅니다.
+    입력: p_elem — `<P>` Element
+    출력: 정규화된 텍스트 (그림은 [그림] 표식)
+    동작: `.//TEXT` 는 CELL 안쪽까지 전부 찾아 표 셀 텍스트가 본문으로
+          한 번 더 복제된다. TABLE 서브트리 소속 노드를 id 집합으로 미리
+          걸러낸다.
     """
     inside_table = {
         id(node)
@@ -126,6 +143,11 @@ def hwpml_p_text(p_elem) -> str:
 
 
 def hwpml_table_to_md(tbl) -> str:
+    """`<TABLE>` 을 GFM 표로 만든다.
+
+    입력: tbl — `<TABLE>` Element
+    출력: markdown 표 문자열
+    """
     rows = []
     for row in tbl.findall(".//ROW"):
         cells = [hwpml_cell_text(c) for c in row.findall("CELL")]
@@ -135,6 +157,12 @@ def hwpml_table_to_md(tbl) -> str:
 
 
 def to_markdown(hwp_path: str) -> str:
+    """HWPML 파일을 markdown 으로 변환한다.
+
+    입력: hwp_path — HWPML 파일 경로
+    출력: markdown 문자열 (제N장/제N조는 제목으로 승격)
+    비고: `<P>` 안에 든 표는 id 로 중복을 걸러 한 번만 낸다.
+    """
     root = ET.parse(hwp_path).getroot()
     parts = []
     seen = set()
@@ -173,6 +201,11 @@ def to_markdown(hwp_path: str) -> str:
 
 
 def to_text(hwp_path: str) -> str:
+    """HWPML 파일에서 순수 텍스트를 추출한다.
+
+    입력: hwp_path — HWPML 파일 경로
+    출력: 텍스트 (표는 행마다 탭 구분)
+    """
     root = ET.parse(hwp_path).getroot()
     lines = []
     seen = set()
@@ -197,6 +230,11 @@ def to_text(hwp_path: str) -> str:
 
 
 def to_xml(hwp_path: str) -> str:
+    """HWPML 을 간결한 구조화 XML 로 재구성한다.
+
+    입력: hwp_path — HWPML 파일 경로
+    출력: `<document>` 루트 XML (heading/paragraph/table)
+    """
     root_src = ET.parse(hwp_path).getroot()
     doc = ET.Element("document")
     seen = set()
@@ -234,6 +272,11 @@ def to_xml(hwp_path: str) -> str:
 
 
 def to_html(hwp_path: str) -> str:
+    """HWPML 을 단순 HTML 로 변환한다.
+
+    입력: hwp_path — HWPML 파일 경로
+    출력: HTML 문자열 (표는 border=1 테이블)
+    """
     root_src = ET.parse(hwp_path).getroot()
     parts = ['<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>']
     seen = set()

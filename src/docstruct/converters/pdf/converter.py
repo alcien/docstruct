@@ -279,6 +279,11 @@ class PdfConverter(BaseConverter):
 
     @property
     def source_format(self) -> str:
+        """소스 포맷 식별자.
+
+        입력: 없음
+        출력: 'pdf'
+        """
         return "pdf"
 
     def _ensure_docling(self) -> None:
@@ -366,6 +371,14 @@ class PdfConverter(BaseConverter):
             reset_document_converter()
 
     def _get_document(self):
+        """docling 으로 PDF 를 변환한다 (한 번만 변환하고 캐시).
+
+        입력: 없음
+        출력: DoclingDocument
+        동작: 컨버터 생성·변환이 CUDA 문제로 실패하면 CPU 로 한 번 재시도한다.
+              페이지 단위 실패는 예외가 아니라 결과에서 조용히 빠지므로,
+              failed_pages 에 번호를 보관해 호출자가 알 수 있게 한다.
+        """
         if self._document is not None:
             return self._document
 
@@ -405,15 +418,35 @@ class PdfConverter(BaseConverter):
         return self._document
 
     def to_html(self) -> str:
+        """HTML 로 변환한다.
+
+        입력: 없음
+        출력: HTML 문자열 (docling export)
+        """
         return self._get_document().export_to_html()
 
     def to_text(self) -> str:
+        """평문으로 변환한다.
+
+        입력: 없음
+        출력: 텍스트 문자열 (docling export)
+        """
         return self._get_document().export_to_text()
 
     def to_markdown(self) -> str:
+        """markdown 으로 변환한다.
+
+        입력: 없음
+        출력: markdown 문자열 (표는 selective LLM 경로 — export_markdown)
+        """
         from docstruct.converters.pdf.table_extract import export_markdown
 
         return export_markdown(self._get_document())
 
     def to_xml(self) -> str:
+        """XML 트리로 변환한다.
+
+        입력: 없음
+        출력: docling 의 element tree export 결과
+        """
         return self._get_document().export_to_element_tree()

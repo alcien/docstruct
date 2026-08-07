@@ -32,6 +32,7 @@ from docstruct.models import (
 )
 from docstruct.infrastructure.llm.client import invoke_llm, llm_api_config, llm_available
 from docstruct.infrastructure.llm.json_parse import parse_json_list_or_object_map
+from docstruct.tables.tags import make_table_block, make_table_id, open_tag
 
 _log = logging.getLogger(__name__)
 
@@ -65,6 +66,27 @@ _ASSESS_PROMPT = """\
   {{"id": "table_4", "content_type": "image", "title": "...", "group_image_ids": ["table_4", "table_5"], "reason": "..."}},
   {{"id": "table_7", "content_type": "text", "reason": "표 구조가 아닌 단락 텍스트"}}
 ]
+"""
+
+#: 그림으로 잘못 분류된 표를 되찾는 부분. 후보가 있을 때만 프롬프트에 붙인다.
+#:
+#: 레이아웃 모델이 표를 그림으로 잡으면 TableFormer 가 돌지 않아 내용이
+#: 통째로 사라진다. 페이지 이미지는 이미 함께 보내고 있으므로, 같은 호출에서
+#: 판정만 더 받으면 추가 비용이 없다.
+_PROMOTE_SECTION = """\
+
+## 그림으로 잘못 분류된 표 찾기
+
+아래 그림들은 영역 안에 글자가 많아 표일 가능성이 있습니다. 페이지 이미지를 보고 **실제로 표(또는 표 형태의 비교/대조 박스)인 것만** 골라 위 JSON 배열에 함께 넣으세요.
+
+{candidates}
+
+- "id"           : 위 목록의 image ID 를 그대로
+- "content_type" : "table" (표가 맞을 때만. 사진·도형·수식이면 목록에서 빼세요)
+- "title"        : 표 제목
+- "reason"       : 판단 이유
+
+예: {{"id": "image_3", "content_type": "table", "title": "종전·개정안 대비표", "reason": "2열 대비표"}}
 """
 
 _VALID_CONTENT_TYPES = frozenset({TABLE, TEXT, IMAGE})
@@ -138,6 +160,78 @@ def _apply_assessment(
             _log.debug("LLM이 문서에 없는 table_id 반환: %s", tid)
 
 
+def promote_images_to_tables(
+    page: PageContent,
+    assessment: list[dict[str, Any]],
+) -> None:
+    """표로 판정된 그림을 TableInfo 로 승격한다.
+
+    입력:
+        page        페이지 (tables, images, content 를 제자리에서 갱신)
+        assessment  LLM 판정 목록
+    출력: 없음
+    비고:
+        **그림은 지우지 않는다.** 표 텍스트는 검색용, 원본 그림은 출처 확인용
+        으로 둘 다 쓸모가 있다. 같은 영역이 tables 와 images 양쪽에 남으므로
+        TableInfo.source_image_id 와 ImageInfo.promoted_table_id 로 짝을 건다.
+
+        승격된 표는 markdown 이 비어 있다. quality=insufficient 로 표시해
+        기존 재추출(fill) 경로가 페이지 이미지를 근거로 내용을 채우게 한다.
+    """
+    by_id = {img.id: img for img in (page.images or [])}
+    next_num = max((t.table_num for t in page.tables), default=0)
+
+    for item in assessment:
+        image_id = str(item.get("id") or "")
+        info = by_id.get(image_id)
+        if info is None or info.promoted_table_id:
+            continue                     # 표 판정이거나 이미 승격됨
+        if (item.get("content_type") or "").strip().lower() != TABLE:
+            continue
+        if not info.table_candidate:
+            # 후보로 올리지 않은 그림을 LLM 이 임의로 지목한 경우는 무시한다.
+            _log.debug("후보가 아닌 그림을 표로 지목 — 무시: %s", image_id)
+            continue
+
+        next_num += 1
+        table = TableInfo(
+            id=make_table_id(next_num),
+            table_num=next_num,
+            placeholder=open_tag(next_num),
+            markdown="",                 # fill 이 채운다
+            bbox=info.bbox,
+            llm_title=(item.get("title") or "").strip() or None,
+            content_type=TABLE,
+            quality=INSUFFICIENT,
+            reason=(item.get("reason") or "").strip() or None,
+            source_image_id=info.id,
+        )
+        page.tables.append(table)
+        info.promoted_table_id = table.id
+        page.content = _insert_table_block(
+            page.content or "", info.placeholder, next_num
+        )
+        _log.info(
+            "%s → %s 로 승격했습니다 (그림도 그대로 남깁니다)", info.id, table.id
+        )
+
+
+def _insert_table_block(content: str, placeholder: str, table_num: int) -> str:
+    """그림 placeholder 바로 뒤에 빈 표 블록을 끼워 넣는다.
+
+    입력:
+        content      페이지 본문
+        placeholder  `<!-- image N -->` 문자열
+        table_num    새 표 번호
+    출력: 표 블록이 삽입된 본문 (placeholder 를 못 찾으면 끝에 덧붙임)
+    비고: 읽기 순서를 지키려고 그림 자리 바로 뒤에 넣는다.
+    """
+    block = make_table_block(table_num, "")
+    if placeholder and placeholder in content:
+        return content.replace(placeholder, f"{placeholder}\n\n{block}", 1)
+    return f"{content}\n\n{block}" if content else block
+
+
 def assess_page_tables(
     page: PageContent,
     *,
@@ -179,9 +273,19 @@ def assess_page_tables(
             mime, b64 = encoded
             image_urls = [f"data:{mime};base64,{b64}"]
 
+    prompt = _ASSESS_PROMPT.format(content=content)
+    candidates = [img for img in (page.images or []) if img.table_candidate]
+    if candidates and image_urls:
+        # 페이지 이미지를 못 보내면 그림을 볼 수 없으므로 판정도 무의미하다.
+        listing = "\n".join(
+            f"- {img.id} (글자 {img.text_chars}자, {img.text_lines}줄)"
+            for img in candidates
+        )
+        prompt += _PROMOTE_SECTION.format(candidates=listing)
+
     try:
         raw = invoke_llm(
-            _ASSESS_PROMPT.format(content=content),
+            prompt,
             span_name="table_assess",
             image_urls=image_urls,
             cfg=cfg,
@@ -192,6 +296,8 @@ def assess_page_tables(
         assessment = []
 
     _apply_assessment(page.tables, assessment)
+    if candidates:
+        promote_images_to_tables(page, assessment)
 
 
 def _log_page_failure(page_no: object, exc: Exception) -> None:

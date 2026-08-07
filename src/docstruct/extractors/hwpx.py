@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from docstruct.converters.hwpx.converter import rich_markdown as _rich_markdown
+from docstruct.converters.korean_text import normalize_korean_text
 from docstruct.models import PageContent, PageTrace
 from docstruct.tables.markdown import inject_table_placeholders
 
@@ -34,12 +36,14 @@ def extract_hwpx_pages(hwpx_path: str) -> list[PageContent]:
             f'  설치            : "{sys.executable}" -m pip install python-hwpx'
         ) from exc
 
-    md = HwpxDocument.open(hwpx_path).export_rich_markdown()
+    doc = HwpxDocument.open(hwpx_path)
+    md = _rich_markdown(doc)
+    md = normalize_korean_text(md)
     content, tables, _ = inject_table_placeholders(md)
 
     trace = PageTrace(extractor="python-hwpx", text_source="n/a", table_count=len(tables))
     trace.add("converters.deps.hwpx", "HWPX(OOXML) 파싱",
-              "zip + XML — export_rich_markdown()")
+              "zip + XML — rich markdown 내보내기")
     trace.add("docstruct.tables.markdown", "표 블록 placeholder 삽입",
               f"<table N> {len(tables)}개" if tables else "표 없음")
 

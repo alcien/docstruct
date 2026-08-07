@@ -27,11 +27,13 @@ __all__ = [
 
 
 def expand_table_grid(table: "Tag") -> list[list[str]]:
-    """
-    rowspan/colspan을 반영해 표를 직사각형 그리드로 확장합니다.
+    """rowspan/colspan 을 반영해 표를 직사각형 격자로 확장한다.
 
-    HTML 표는 병합 셀 아래 행에 <td>가 생략되므로, 행마다 열 수가
-    달라질 수 있습니다. 브라우저 렌더링과 동일하게 빈 칸을 채웁니다.
+    입력: table — `<table>` Tag
+    출력: list[list[str]] — 모든 행의 열 수가 같은 격자
+    동작: HTML 표는 병합 셀 아래 행에 `<td>` 가 생략되어 행마다 열 수가
+          다르다. 브라우저 렌더링과 같은 규칙으로 빈 칸을 채워 복원한다.
+          병합 값은 왼쪽 위 칸에만 두고 나머지는 빈 문자열로 둔다.
     """
     trs = [
         tr for tr in table.find_all("tr")
@@ -88,11 +90,13 @@ def table_rows(table: "Tag") -> list[list[str]]:
 
 
 def looks_like_subheader_row(prev_row: list[str], row: list[str]) -> bool:
-    """
-    이전 행의 rowspan/colspan 헤더 아래 오는 보조 헤더 행인지 판별합니다.
+    """이전 행의 병합 헤더 아래 오는 보조 헤더 행인지 판별한다.
 
-    월 번호(6~12) 같은 짧은 보조 헤더는 포함하고,
-    ○ 불릿이 있는 본문 데이터 행은 제외합니다.
+    입력: prev_row — 직전 행, row — 판별할 행 (둘 다 셀 문자열 목록)
+    출력: 보조 헤더로 보이면 True
+    동작: 월 번호처럼 짧은 셀이 다수(60% 이상)이고 이전 행 헤더 아래가
+          비어 있으면 보조 헤더로 본다. ○·◦ 불릿이나 긴 셀(20자 초과)이
+          있으면 본문 데이터 행으로 간주해 제외한다.
     """
     if not any(c.strip() for c in row):
         return False
@@ -121,7 +125,11 @@ def looks_like_subheader_row(prev_row: list[str], row: list[str]) -> bool:
 
 
 def count_header_rows(rows: list[list[str]], max_header: int = 3) -> int:
-    """GFM용 단일 헤더로 병합할 행 수를 반환합니다."""
+    """GFM 단일 헤더로 병합할 행 수를 센다.
+
+    입력: rows — 격자, max_header — 병합 상한 (기본 3)
+    출력: 1 이상의 헤더 행 수
+    """
     n = 1
     while n < len(rows) and n < max_header:
         if looks_like_subheader_row(rows[n - 1], rows[n]):

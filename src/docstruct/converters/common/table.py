@@ -49,6 +49,11 @@ def render_md_table(rows: list[list[str]]) -> str:
         return s + " " * (w - display_width(s))
 
     def row_str(cells: list[str]) -> str:
+        """셀 목록 하나를 GFM 표의 한 행 문자열로 만든다.
+
+        입력: cells — 폭이 정규화된 셀 문자열 목록
+        출력: `| a | b |` 형태 문자열 (열 폭에 맞춰 패딩)
+        """
         return "| " + " | ".join(pad(cells[j], col_w[j]) for j in range(n_cols)) + " |"
 
     sep = "|-" + "-|-".join("-" * w for w in col_w) + "-|"

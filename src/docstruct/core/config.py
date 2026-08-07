@@ -18,6 +18,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -39,6 +40,13 @@ def _default_env_path() -> Path:
         return Path(explicit).expanduser()
 
     def _search(start: Path) -> Path | None:
+        """start 부터 부모로 올라가며 .env 를 찾는다.
+
+        입력: start — 탐색 시작 폴더
+        출력: 찾은 .env 경로. 없으면 None
+        비고: .git 이나 pyproject.toml 을 만나면 프로젝트 경계로 보고 멈춘다
+              — 경계를 넘으면 남의 .env 를 읽을 수 있다.
+        """
         for folder in (start, *start.parents):
             candidate = folder / ".env"
             if candidate.is_file():
@@ -75,6 +83,7 @@ _CHAT_SUFFIX = "/v1/chat/completions"
 _BUILTIN_DEFAULTS: dict[str, str] = {
     "DOCLING_TABLE_API_TIMEOUT": "120",
     "DOCLING_PICTURE_API_PROMPT": "Describe this image concisely and accurately in Korean.",
+    "DOCSTRUCT_PICTURE_MODE": "read",
     "DOCLING_PICTURE_API_TIMEOUT": "120",
     "DOCLING_PICTURE_AREA_THRESHOLD": "0.01",
     "DOCLING_TABLE_LLM": "on",
@@ -486,6 +495,11 @@ def loaded_env_path() -> Path | None:
 
 
 def _truncate(value: str, limit: int = 60) -> str:
+    """긴 값을 표시용으로 자른다.
+
+    입력: value — 문자열, limit — 최대 길이 (기본 60)
+    출력: limit 이하면 원문, 넘으면 말줄임표를 붙인 앞부분
+    """
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
@@ -573,17 +587,22 @@ def _get_bool(key: str, default: bool) -> bool:
 
 
 def _looks_like_url(value: str) -> bool:
+    """http(s) URL 형태인지 확인한다.
+
+    입력: value — 문자열
+    출력: http:// 또는 https:// 로 시작하면 True
+    """
     return value.startswith("http://") or value.startswith("https://")
 
 
 def _looks_truncated_path(url: str) -> bool:
-    """URL이 ``/v1/chat/completions`` 경로 중간에서 끊긴 것처럼 보이는지.
+    """URL 이 `/v1/chat/completions` 경로 중간에서 끊겼는지 확인한다.
 
-    ``http://`` 로는 정상 시작해서 :func:`_looks_like_url` 를 통과하더라도,
-    줄바꿈 등으로 뒷부분이 잘려 ``.../v1/chat`` 까지만 남는 경우가 있습니다
-    (``_warn_wrapped_lines`` 가 항상 잡아주는 건 아닙니다 — 잘린 줄이 아예
-    저장 과정에서 사라진 경우는 고아 키도 안 남습니다). 이 함수는 그 흔적을
-    경로 문자열만 보고 판단합니다.
+    입력: url — 검사할 주소
+    출력: `/v1/chat` 까지만 있고 완전한 접미로 끝나지 않으면 True
+    비고: .env 의 긴 URL 이 줄바꿈으로 잘리면 `http://` 로는 정상 시작해
+          _looks_like_url 을 통과한다. 잘린 줄이 저장 과정에서 아예
+          사라지면 고아 키도 안 남아, 경로 문자열만 보고 흔적을 잡는다.
     """
     stripped = url.rstrip("/")
     return "/v1/chat" in stripped and not stripped.endswith(_CHAT_SUFFIX)
@@ -630,16 +649,31 @@ class LLMEndpoint:
     api_key: str = ""   # OpenAI 등 인증이 필요한 엔드포인트용
 
     def headers(self) -> dict[str, str]:
+        """인증 헤더를 만든다.
+
+        입력: 없음 (api_key 필드 사용)
+        출력: {"Authorization": "Bearer …"} 또는 빈 dict
+        """
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     def masked_key(self) -> str:
-        """로그·화면 표시용. 절대 원문을 노출하지 않습니다."""
+        """로그·화면 표시용으로 키를 가린다.
+
+        입력: 없음 (api_key 필드 사용)
+        출력: 앞 7자·뒤 4자만 남긴 문자열. 짧으면 "(설정됨)", 없으면 "(없음)"
+        비고: 절대 원문을 노출하지 않는다.
+        """
         if not self.api_key:
             return "(없음)"
         return f"{self.api_key[:7]}…{self.api_key[-4:]}" if len(self.api_key) > 14 else "(설정됨)"
 
     def as_dict(self) -> dict[str, object]:
-        """기존 ``llm_api_config()`` 반환 형식과 호환되는 dict."""
+        """클라이언트가 쓰는 설정 dict 로 바꾼다.
+
+        입력: 없음
+        출력: {url, server_url, model, timeout, headers}
+        비고: 기존 llm_api_config() 반환 형식과 호환된다.
+        """
         return {
             "url": self.url,
             "server_url": self.server_url,
@@ -668,11 +702,23 @@ class Settings:
     table_format: str                    # html | json
     pdf_backend: str                     # auto | pypdfium2 | dlparse (v4/v2 는 별칭)
     force_full_page_ocr: bool            # 텍스트 레이어를 무시하고 전면 OCR
+    #: 그림 처리 방식 — read | describe | both | off
+    #:
+    #:   read     (기본) 그림 **내용**을 VLM 으로 옮긴다. docstruct 클라이언트가
+    #:            호출하므로 재시도·대비 엔드포인트·도달 불가 표시가 걸린다
+    #:   describe docling 내장 그림 설명(한 문장 캡션)만 쓴다
+    #:   both     둘 다 — 같은 그림에 두 번 호출된다. 비용이 두 배다
+    #:   off      그림에 LLM 을 쓰지 않는다
+    picture_mode: str
     code_formula_enrichment: bool        # 수식·코드 VLM (무거움, 표 추출엔 불필요)
     generate_parsed_pages: bool          # 페이지 셀 보관 (OCR/텍스트레이어 측정용, 메모리↑)
 
     def describe(self) -> list[tuple[str, str, bool]]:
-        """[(항목, 값, ok)] — 사람이 읽는 요약."""
+        """사람이 읽는 설정 요약을 만든다.
+
+        입력: 없음 (자기 필드 사용)
+        출력: [(항목, 값, ok)] 목록 — checks.show_config 가 표로 그린다
+        """
         rows: list[tuple[str, str, bool]] = []
         if self.llm:
             rows.append((
@@ -751,10 +797,44 @@ class Settings:
         return rows
 
 
+#: 그림 처리 방식으로 인정하는 값.
+_PICTURE_MODES = ("read", "describe", "both", "off")
+
+
+def _picture_mode() -> str:
+    """그림 처리 방식.
+
+    입력: 없음 (DOCSTRUCT_PICTURE_MODE)
+    출력: read | describe | both | off
+    비고:
+        기본은 read — 캡션이 아니라 **내용**을 옮긴다. 검색·인용이 목적이라
+        "조직도를 나타낸 그림입니다" 같은 캡션은 쓸모가 적다.
+
+        describe(docling 내장)를 쓰면 docling 이 직접 HTTP 를 호출해서
+        우리 재시도·폴백 로직을 타지 않는다. 서버가 느리면 그림 하나에
+        수 분씩 멈춘다.
+    """
+    raw = _get("DOCSTRUCT_PICTURE_MODE", "read").strip().lower()
+    if raw in _PICTURE_MODES:
+        return raw
+    _log.warning(
+        "DOCSTRUCT_PICTURE_MODE=%r 는 알 수 없는 값 — 'read' 를 씁니다 (%s)",
+        raw, " | ".join(_PICTURE_MODES),
+    )
+    return "read"
+
+
 def _make_endpoint(
     url: str, model: str, timeout: float, prompt: str | None, *, label: str,
     api_key: str = "",
 ) -> LLMEndpoint | None:
+    """LLMEndpoint 를 만든다 (검증 포함).
+
+    입력: url, model, timeout, prompt, label — 경고 표시용 이름, api_key
+    출력: LLMEndpoint. url 이 비어 있으면 None
+    동작: http(s) 로 시작하지 않거나 경로가 잘린 흔적이 보이면 경고를
+          남긴다 (.env 줄바꿈 사고를 조기에 드러내기 위함).
+    """
     if not url:
         return None
     if not _looks_like_url(url):
@@ -841,6 +921,11 @@ class LocalVLM:
     max_new_tokens: int = 2048
 
     def as_dict(self) -> dict[str, Any]:
+        """local_vlm.invoke 에 넘길 kwargs dict.
+
+        입력: 없음
+        출력: {model_id, device, dtype, max_new_tokens}
+        """
         return {
             "model_id": self.model_id,
             "device": self.device,
@@ -903,6 +988,14 @@ def _build_fallback() -> "LLMEndpoint | None":
 
 
 def _build_settings() -> Settings:
+    """환경변수 전체를 읽어 Settings 를 조립한다.
+
+    입력: 없음 (os.environ · 내장 기본값)
+    출력: Settings (frozen dataclass)
+    동작: LLM(표)·대비책·그림 설명·로컬 VLM 엔드포인트를 각각 구성한다.
+          OPENAI_API_KEY 는 OpenAI 주소일 때만 붙인다 — 사내 엔드포인트로
+          남의 키를 보내지 않기 위함이다.
+    """
     picture_url = _get("DOCLING_PICTURE_API_URL")
     picture_model = _get("DOCLING_PICTURE_API_MODEL")
     picture_timeout = _get_float("DOCLING_PICTURE_API_TIMEOUT", 120.0)
@@ -949,6 +1042,7 @@ def _build_settings() -> Settings:
     return Settings(
         pdf_backend=pdf_backend,
         force_full_page_ocr=_get_bool("DOCLING_FORCE_FULL_PAGE_OCR", False),
+        picture_mode=_picture_mode(),
         # 기본 꺼짐. 표·본문 추출에는 쓰이지 않으면서 모델을 추가로 받는다.
         code_formula_enrichment=_get_bool("DOCLING_CODE_FORMULA_ENRICHMENT", False),
         # 켜면 페이지별 text_layer/OCR 판별이 가능해집니다. 끄면 파싱은

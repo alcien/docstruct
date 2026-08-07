@@ -93,6 +93,11 @@ def _patch_inductor_load_template() -> bool:
     from pathlib import Path
 
     def load_template(name: str, template_dir) -> str:  # type: ignore[no-untyped-def]
+        """torch inductor 의 템플릿 로더를 경로 결합 방식으로 대체한다.
+
+        입력: name — 템플릿 이름, template_dir — 템플릿 폴더
+        출력: 템플릿 파일 내용 문자열
+        """
         return Path(template_dir, f"{name}.py.jinja").read_text(encoding="utf-8")
 
     load_template._docstruct_patched = True  # type: ignore[attr-defined]

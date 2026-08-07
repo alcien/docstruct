@@ -53,6 +53,11 @@ def register_extractor(*suffixes: str) -> Callable[[Extractor], Extractor]:
     """
 
     def deco(fn: Extractor) -> Extractor:
+        """함수를 레지스트리에 넣고 그대로 돌려준다.
+
+        입력: fn — 추출기 함수
+        출력: fn (변형 없음)
+        """
         for suffix in suffixes:
             _REGISTRY[suffix.lower()] = fn
         return fn
@@ -103,6 +108,7 @@ def _extract_pdf(path: Path, *, image_dir: Path | None) -> ExtractionResult:
             doc,
             image_dir=image_dir,
             page_stats=getattr(converter, "page_stats", None),
+            source_path=path,
         ),
         failed_pages=list(getattr(converter, "failed_pages", []) or []),
     )
@@ -112,12 +118,12 @@ def _extract_pdf(path: Path, *, image_dir: Path | None) -> ExtractionResult:
 def _extract_hwp(path: Path, *, image_dir: Path | None) -> ExtractionResult:
     """HWP 를 추출한다 (HWPML XML / pyhwp HTML / olefile 텍스트 중 자동 선택).
 
-    입력: path(HWP 경로), image_dir(사용하지 않음)
+    입력: path(HWP 경로), image_dir(미리보기 이미지를 저장할 위치)
     출력: ExtractionResult — pages, table_html
     """
     from docstruct.extractors.hwp import extract_hwp_pages
 
-    pages, table_html = extract_hwp_pages(str(path))
+    pages, table_html = extract_hwp_pages(str(path), image_dir=image_dir)
     return ExtractionResult(pages=pages, table_html=table_html)
 
 

@@ -14,7 +14,11 @@ from typing import Any
 
 
 def picture_area_fraction(item, doc) -> float | None:
-    """PictureItem bbox가 페이지에서 차지하는 면적 비율."""
+    """PictureItem bbox 가 페이지에서 차지하는 면적 비율.
+
+    입력: item — PictureItem, doc — DoclingDocument
+    출력: 0~1 비율. prov·페이지 정보가 없으면 None
+    """
     prov_list = getattr(item, "prov", None) or []
     if not prov_list:
         return None
@@ -29,7 +33,13 @@ def picture_area_fraction(item, doc) -> float | None:
 
 
 def get_picture_description_text(item) -> str:
-    """meta.description 또는 legacy annotation에서 LLM 설명 텍스트 추출."""
+    """그림의 LLM 설명 텍스트를 찾는다.
+
+    입력: item — PictureItem
+    출력: 설명 문자열. 없으면 빈 문자열
+    동작: 신형 meta.description → meta.classification → legacy annotations
+          순으로 찾는다. 분류만 있으면 "(classification only: …)" 로 표시한다.
+    """
     meta = getattr(item, "meta", None)
     if meta is not None:
         desc = getattr(meta, "description", None)
@@ -52,7 +62,12 @@ def get_picture_description_text(item) -> str:
 
 
 def collect_picture_reports(doc, *, area_threshold: float = 0.05) -> list[dict[str, Any]]:
-    """문서 내 PictureItem 진단 정보 목록."""
+    """문서 내 모든 PictureItem 의 진단 정보를 모은다.
+
+    입력: doc — DoclingDocument, area_threshold — 면적 임계값 (기본 0.05)
+    출력: [{ref, page, area_fraction, skipped_by_area, description,
+           has_llm_description}] 목록
+    """
     from docling_core.types.doc.labels import DocItemLabel
 
     reports: list[dict[str, Any]] = []
@@ -86,7 +101,14 @@ def print_picture_reports(
     markdown: str = "",
     placeholder: str = "<!-- image -->",
 ) -> None:
-    """PictureItem 진단 결과를 stdout에 출력."""
+    """PictureItem 진단 결과를 stdout 에 출력한다.
+
+    입력:
+        reports      collect_picture_reports 결과
+        markdown     함께 세어볼 markdown (placeholder 개수 비교용)
+        placeholder  그림 자리 표식 문자열
+    출력: 없음 (stdout)
+    """
     ph_count = markdown.count(placeholder) if markdown else 0
     if markdown:
         print(f"  markdown '{placeholder}' 개수: {ph_count}")

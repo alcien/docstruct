@@ -103,6 +103,8 @@ _RUN_KEYS: dict[str, Any] = {
     "assess_tables": True,
     "fill_tables": True,
     "fill_all": False,
+    # 텍스트 레이어가 없는 그림을 VLM 으로 읽을지 (캡처 이미지 표·조직도)
+    "read_pictures": True,
     "render_pages": True,
     "render_scale": 2.0,
     # 0 이면 나누지 않는다. 페이지 경계가 없는 문서를 조각낼 때 쓴다.
@@ -166,10 +168,46 @@ def set_api_key(key: str, *, target: str = "fallback") -> None:
     _log.info("%s 키 설정됨 — %s", target, mask(key))
 
 
-def _collect_images(doc: Any, target: Path) -> None:
+def _is_under(path: Path, root: Path) -> bool:
+    """path 가 root 아래에 있는지.
+
+    입력: path, root
+    출력: bool (판정할 수 없으면 False)
+    """
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _rescue_scratch(doc: Any, out: Path) -> None:
+    """임시 작업 폴더의 그림·페이지 PNG 를 out 옆으로 건져낸다.
+
+    입력: doc — PageDocument, out — 기준 폴더 (보통 JSON 파일이 놓일 곳)
+    출력: 없음
+    비고:
+        out_dir 없이 run() 하면 이미지가 임시 폴더에 남고 그 폴더는 문서가
+        회수될 때 지워진다. JSON 만 저장하면 그 안의 경로가 나중에 끊기므로,
+        저장 시점에 옆으로 복사하고 경로를 갱신한다. out_dir 을 준 실행에는
+        scratch_dir 이 없어 아무 일도 하지 않는다.
+    """
+    scratch = getattr(doc, "scratch_dir", None)
+    if not scratch:
+        return
+    root = Path(scratch)
+    _collect_images(doc, out / "images", only_from=root)
+    _collect_page_images(doc, out / "pages", only_from=root)
+
+
+def _collect_images(doc: Any, target: Path, *, only_from: Path | None = None) -> None:
     """흩어진 그림 파일을 산출물 폴더로 모은다.
 
-    입력: doc — PageDocument, target — 옮길 위치 (out/images)
+    입력:
+        doc        PageDocument
+        target     옮길 위치 (out/images)
+        only_from  주어지면 이 폴더 안에 있는 파일만 옮긴다.
+                   임시 작업 폴더의 파일만 건져낼 때 쓴다
     출력: 없음 (ImageInfo.image_path 를 새 위치로 갱신)
     비고:
         out_dir 없이 run() 하면 그림이 임시 폴더에 저장된다. 그대로 두면
@@ -188,6 +226,8 @@ def _collect_images(doc: Any, target: Path) -> None:
         src = Path(info.image_path)
         if not src.is_file():
             continue
+        if only_from is not None and not _is_under(src, only_from):
+            continue
         try:
             src.relative_to(target)
             continue                      # 이미 제자리
@@ -201,6 +241,47 @@ def _collect_images(doc: Any, target: Path) -> None:
         moved += 1
     if moved:
         _log.info("그림 %d개를 %s 로 옮겼습니다", moved, target)
+
+
+def _collect_page_images(doc: Any, target: Path, *, only_from: Path | None = None) -> None:
+    """렌더된 페이지 PNG 를 산출물 폴더로 모은다.
+
+    입력:
+        doc        PageDocument
+        target     옮길 위치 (out/pages)
+        only_from  주어지면 이 폴더 안에 있는 파일만 옮긴다
+    출력: 없음 (PageContent.page_image_path 를 새 위치로 갱신)
+    비고:
+        out_dir 없이 run() 하면 페이지 PNG 가 임시 폴더에 남고, 그 폴더는
+        문서가 회수될 때 지워진다. save() 로 남기려면 여기서 복사해야
+        document.json 의 경로가 나중에도 살아 있다.
+    """
+    import shutil
+
+    target = target.expanduser()
+    moved = 0
+    for page in doc.pages:
+        src_path = getattr(page, "page_image_path", None)
+        if not src_path:
+            continue
+        src = Path(src_path)
+        if not src.is_file():
+            continue
+        if only_from is not None and not _is_under(src, only_from):
+            continue
+        try:
+            src.relative_to(target)
+            continue                      # 이미 제자리
+        except ValueError:
+            pass
+        target.mkdir(parents=True, exist_ok=True)
+        dst = target / src.name
+        if src.resolve() != dst.resolve():
+            shutil.copy2(src, dst)
+        page.page_image_path = str(dst)
+        moved += 1
+    if moved:
+        _log.info("페이지 PNG %d개를 %s 로 옮겼습니다", moved, target)
 
 
 def enable_logging(level: str | int = "INFO", *, fmt: str | None = None) -> None:
@@ -526,9 +607,20 @@ class _SettingsMixin:
 
     # 아래 둘은 하위 클래스가 구현한다 (source 의 의미가 다르므로).
     def _set_source(self, value: Any) -> None:
+        """source 를 하위 클래스 방식으로 저장한다.
+
+        입력: value — 파일 경로(DocStruct) 또는 경로 목록·패턴(DocStructBatch)
+        출력: 없음
+        비고: 단일/배치가 source 의 의미를 달리 해석하므로 여기서는 구현하지 않는다.
+        """
         raise NotImplementedError
 
     def _get_source(self, default: Any) -> Any:
+        """현재 source 를 하위 클래스 방식으로 읽는다.
+
+        입력: default — 미설정 시 돌려줄 값
+        출력: 저장된 source 또는 default
+        """
         raise NotImplementedError
 
 
@@ -684,6 +776,8 @@ class DocStruct(_SettingsMixin):
             path = base.with_suffix(".json")
         path = Path(path).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # 임시 폴더에 있는 이미지를 JSON 옆으로 건져낸 뒤 경로를 쓴다.
+        _rescue_scratch(self.document, path.parent)
         path.write_text(self.to_json_str(indent=indent), encoding="utf-8")
         _log.info("JSON 저장: %s", path)
         return path
@@ -722,6 +816,7 @@ class DocStruct(_SettingsMixin):
             out.mkdir(parents=True, exist_ok=True)
         doc = self.document
         _collect_images(doc, out / "images")
+        _collect_page_images(doc, out / "pages")
         return {
             "document": write_json(doc, out / "document.json"),
             "markdown": write_markdown(doc, out / "document.md"),
@@ -788,11 +883,19 @@ class DocStructBatch(_SettingsMixin):
 
 
     def _set_source(self, value: Any) -> None:
-        """대상 목록을 바꾼다 (set(source=...) 경유)."""
+        """대상 목록을 바꾼다 (set(source=...) 경유).
+
+        입력: value — 경로·글롭 패턴·폴더, 또는 그 목록
+        출력: 없음 (self._paths 갱신)
+        """
         self._paths = _resolve_sources(value, "*")
 
     def _get_source(self, default: Any) -> Any:
-        """현재 대상 파일 목록."""
+        """현재 대상 파일 목록.
+
+        입력: default — 목록이 비어 있을 때 돌려줄 값
+        출력: 경로 문자열 목록 또는 default
+        """
         return [str(p) for p in self._paths] or default
 
     def reset(self) -> "DocStructBatch":
@@ -914,6 +1017,8 @@ class DocStructBatch(_SettingsMixin):
 
         if combined:
             out.parent.mkdir(parents=True, exist_ok=True)
+            for doc in self._documents:
+                _rescue_scratch(doc, out.parent)
             out.write_text(
                 json.dumps(self.to_dict(), ensure_ascii=False, indent=indent),
                 encoding="utf-8",
@@ -925,6 +1030,7 @@ class DocStructBatch(_SettingsMixin):
         written: list[Path] = []
         for doc in self._documents:
             path = out / f"{Path(doc.filename).stem}.json"
+            _rescue_scratch(doc, out)
             path.write_text(
                 json.dumps(doc.to_dict(), ensure_ascii=False, indent=indent),
                 encoding="utf-8",

@@ -35,6 +35,11 @@ _QUALITY_COLOR = {
 
 
 def _badge(text: str, color: str) -> str:
+    """상태 배지 HTML 조각.
+
+    입력: text — 표시 문구, color — 배경색
+    출력: `<span>` HTML 문자열
+    """
     return (
         f'<span style="background:{color};color:#fff;border-radius:4px;'
         f'padding:1px 7px;font-size:11px;font-weight:600;">{html.escape(text)}</span>'
@@ -42,6 +47,11 @@ def _badge(text: str, color: str) -> str:
 
 
 def _pre(text: str, *, bg: str = "#f8fafc") -> str:
+    """본문을 `<pre>` 로 감싼 HTML 조각.
+
+    입력: text — 내용, bg — 배경색
+    출력: 이스케이프된 `<pre>` HTML (비어 있으면 "(비어 있음)")
+    """
     return (
         f'<pre style="background:{bg};border:1px solid #e2e8f0;border-radius:6px;'
         f'padding:10px;font-size:12px;line-height:1.45;overflow-x:auto;'
@@ -65,6 +75,11 @@ def content_for_markdown(page: PageContent) -> str:
     titles = {t.table_num: (t.llm_title or "") for t in page.tables}
 
     def _table_repl(m: re.Match[str]) -> str:
+        """`<table N>` 블록을 라벨 달린 표로 바꾼다.
+
+        입력: m — TABLE_BLOCK_RE 매치
+        출력: `**▦ table N — 제목**` 헤더가 붙은 markdown 조각
+        """
         num = int(m.group(1))
         inner = m.group(2).strip()
         title = titles.get(num, "")
@@ -76,6 +91,11 @@ def content_for_markdown(page: PageContent) -> str:
     descriptions = {i.placeholder: i for i in page.images}
 
     def _img_repl(m: re.Match[str]) -> str:
+        """그림 placeholder 를 라벨로 바꾼다.
+
+        입력: m — placeholder 매치
+        출력: `**🖼 id** — 설명` 형태 문자열
+        """
         info = descriptions.get(m.group(0))
         if info is None:
             return f"**🖼 {m.group(1)}**"
@@ -138,6 +158,11 @@ def summary_html(doc: PageDocument) -> str:
 # ── 표 리포트 ---------------------------------------------------------------
 
 def table_overview_html(doc: PageDocument) -> str:
+    """문서의 표 판정 결과를 한 표로 그린다.
+
+    입력: doc — PageDocument
+    출력: HTML 문자열 (표가 없으면 안내 문구)
+    """
     rows = doc.all_tables()
     if not rows:
         return '<p style="color:#64748b;">표가 없습니다.</p>'
@@ -182,7 +207,11 @@ def table_overview_html(doc: PageDocument) -> str:
 
 
 def table_detail_html(page: PageContent, table: TableInfo) -> str:
-    """표 하나의 재추출 전/후 비교."""
+    """표 하나의 재추출 전/후를 나란히 그린다.
+
+    입력: page — 소속 페이지, table — TableInfo
+    출력: HTML 문자열 (판단 근거·원본·재추출본 대조)
+    """
     header = (
         f'<div style="margin-top:14px;font-weight:600;font-size:13px;">'
         f"<code>{table.id}</code> · 페이지 {page.page_no}"
@@ -231,6 +260,11 @@ def _notebook_hint() -> None:
 
 
 def _display(obj: Any) -> None:
+    """IPython display 로 객체를 출력한다.
+
+    입력: obj — 표시할 객체
+    출력: 없음 (IPython 미설치면 안내만)
+    """
     try:
         from IPython.display import display
     except ImportError:
@@ -240,6 +274,11 @@ def _display(obj: Any) -> None:
 
 
 def _html(markup: str) -> None:
+    """HTML 문자열을 노트북에 그린다.
+
+    입력: markup — HTML 문자열
+    출력: 없음
+    """
     try:
         from IPython.display import HTML
     except ImportError:
@@ -249,6 +288,11 @@ def _html(markup: str) -> None:
 
 
 def _markdown(text: str) -> None:
+    """markdown 문자열을 노트북에 그린다.
+
+    입력: text — markdown 문자열
+    출력: 없음
+    """
     try:
         from IPython.display import Markdown
     except ImportError:
@@ -479,6 +523,12 @@ def show_page(
 
 
 def show_pages(doc: PageDocument, *, limit: int | None = None, **kwargs) -> None:
+    """여러 페이지를 이어서 표시한다.
+
+    입력: doc — PageDocument, limit — 앞에서 몇 페이지만 (None=전부),
+          kwargs — show_page 로 전달
+    출력: 없음
+    """
     for page in doc.pages[:limit]:
         show_page(page, **kwargs)
 

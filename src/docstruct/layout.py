@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field  # noqa: F401
 from typing import Any
 
 #: DocLayNet 라벨 → 한국어 표기
@@ -72,6 +72,11 @@ class LayoutItem:
     ref: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON 직렬화용 dict.
+
+        입력: 없음
+        출력: 모든 필드를 담은 dict
+        """
         return asdict(self)
 
     @property

@@ -27,14 +27,21 @@ _CONVERTERS: dict[str, type[BaseConverter]] = {
 
 
 def supported_extensions() -> list[str]:
+    """지원 확장자 목록.
+
+    입력: 없음
+    출력: 정렬된 확장자 목록 ('.hwp' 등)
+    """
     return sorted(_CONVERTERS.keys())
 
 
 def get_converter(path: str | Path) -> BaseConverter:
-    """
-    파일 확장자에 맞는 변환기 인스턴스를 반환합니다.
+    """파일 확장자에 맞는 변환기 인스턴스를 만든다.
 
-    HWPML 형식(.hwp 확장자지만 XML 내용)도 HwpConverter가 처리합니다.
+    입력: path — 파일 경로
+    출력: BaseConverter 구현 인스턴스
+    예외: 미지원 확장자면 ValueError (지원 목록 포함)
+    비고: HWPML(확장자는 .hwp 지만 내용은 XML)도 HwpConverter 가 처리한다.
     """
     resolved = Path(path).resolve()
     ext = resolved.suffix.lower()

@@ -71,6 +71,11 @@ def normalize_table_blocks(content: str) -> str:
     """
 
     def _repl(match: re.Match[str]) -> str:
+        """표 블록 하나를 표준 간격으로 다시 만든다.
+
+        입력: match — TABLE_BLOCK_RE 매치
+        출력: make_table_block 으로 재구성한 블록 문자열
+        """
         num = int(match.group(1))
         inner = match.group(2).strip()
         return make_table_block(num, inner)

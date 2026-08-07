@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
@@ -59,9 +60,16 @@ def _picture_description_options() -> Any | None:
         그래서 컨버터를 만들기 전에 한 번 확인해, 닿지 않으면
         대비 엔드포인트로 바꾸거나 그림 설명을 끈다.
     """
+    settings = get_settings()
+    if settings.picture_mode not in ("describe", "both"):
+        # 기본(read)에서는 media.vlm_read 가 그림을 맡는다. 여기서 함께 켜면
+        # 같은 그림에 두 번 호출되고, docling 내부 호출은 우리 재시도·폴백을
+        # 타지 않는다. docling import 보다 앞에 둬야 미설치 환경에서도 돈다.
+        _log.debug("그림 설명 생략 — picture_mode=%s", settings.picture_mode)
+        return None
+
     from docling.datamodel.pipeline_options import PictureDescriptionApiOptions
 
-    settings = get_settings()
     endpoint = settings.docling_picture
     if endpoint is None:
         return None
@@ -109,6 +117,31 @@ def _ocr_langs(default: list[str]) -> list[str]:
     return langs or default
 
 
+def _warn_if_ocr_unusable(backend: str) -> None:
+    """OCR 엔진을 실제로 못 쓰는 상태면 진짜 원인을 미리 알린다.
+
+    입력: backend — 설정된 OCR 엔진 이름
+    출력: 없음 (경고 로그만)
+    비고:
+        docling 은 rapidocr import 가 **어떤 이유로 실패하든** 
+        "pip install rapidocr onnxruntime" 이라고 안내한다. 컨테이너에서
+        흔한 실제 원인은 libGL.so.1 부재라, 그 안내를 따라도 해결되지 않고
+        시간만 쓴다. 변환이 시작되기 전에 진짜 이유를 남겨 둔다.
+    """
+    if backend in ("auto", "none"):
+        return
+    try:
+        from docstruct.checks import _ocr_ready
+    except ImportError:
+        return
+    try:
+        ready, note = _ocr_ready()
+    except Exception:                            # noqa: BLE001 - 진단이 변환을 막으면 안 된다
+        return
+    if not ready:
+        _log.warning("OCR 사용 불가: %s", note)
+
+
 def _ocr_options() -> Any:
     """OCR 엔진 옵션을 만든다.
 
@@ -123,6 +156,7 @@ def _ocr_options() -> Any:
     )
 
     backend = get_settings().ocr_backend
+    _warn_if_ocr_unusable(backend)
 
     if backend == "rapidocr":
         # 한국어 포함 동아시아 문자에서 Tesseract보다 정확도 높음.
@@ -342,12 +376,27 @@ def _hide_gpu_if_unusable() -> None:
     _log.info("CPU 로 처리합니다 — 이 프로세스에서 GPU 를 감춥니다 (CUDA 초기화 회피)")
 
 
-@lru_cache(maxsize=1)
+#: 컨버터 생성 직렬화용. lru_cache 는 조회만 원자적이고 **생성은 아니므로**,
+#: 서버에서 첫 요청 두 개가 겹치면 Docling 모델이 두 번 로드된다(수 GB).
+_CONVERTER_LOCK = threading.Lock()
+
+
 def get_document_converter() -> "DocumentConverter":
-    """설정이 반영된 DocumentConverter 를 얻는다.
+    """설정이 반영된 DocumentConverter 를 얻는다 (캐시·스레드 안전).
 
     입력: 없음 (core.config 의 설정을 읽음)
     출력: DocumentConverter (캐시됨)
+    """
+    with _CONVERTER_LOCK:
+        return _build_document_converter()
+
+
+@lru_cache(maxsize=1)
+def _build_document_converter() -> "DocumentConverter":
+    """DocumentConverter 를 실제로 만든다 (락 안에서만 호출).
+
+    입력: 없음
+    출력: DocumentConverter
     """
     # Windows 비 UTF-8 로케일에서 Docling 이 모델을 로드하며 torch.compile 을
     # 호출하는데, 그 경로가 cp949 로 UTF-8 템플릿을 읽다 죽습니다.
@@ -403,4 +452,5 @@ def reset_document_converter() -> None:
     출력: 없음
     비고: 설정 변경 후 새 값을 반영하려면 호출한다
     """
-    get_document_converter.cache_clear()
+    with _CONVERTER_LOCK:
+        _build_document_converter.cache_clear()

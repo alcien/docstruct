@@ -21,6 +21,7 @@ from docstruct.converters.pdf.table_extract import (
 )
 from docstruct.layout import LayoutItem, item_bbox, label_name, preview_text
 from docstruct.media.picture import picture_to_block
+from docstruct.converters.korean_text import normalize_korean_text
 from docstruct.models import ImageInfo, PageContent, PageTrace, TableInfo
 from docstruct.tables.docling import docling_table_to_markdown
 from docstruct.tables.tags import make_table_block, make_table_id, open_tag
@@ -29,7 +30,11 @@ _log = logging.getLogger(__name__)
 
 
 def _table_bbox_top_left(item, doc) -> dict[str, float] | None:
-    """Docling TableItem prov.bbox → TOPLEFT 페이지 좌표(points)."""
+    """TableItem prov.bbox 를 TOPLEFT 페이지 좌표로 바꾼다.
+
+    입력: item — TableItem, doc — DoclingDocument
+    출력: {l, t, r, b} (points). 정보가 없으면 None
+    """
     prov_list = getattr(item, "prov", None) or []
     if not prov_list:
         return None
@@ -44,7 +49,12 @@ def _table_bbox_top_left(item, doc) -> dict[str, float] | None:
 
 
 def _table_markdown(doc, item) -> str:
-    """TableItem → 병합셀 grid GFM markdown (실패 시 docling export)."""
+    """TableItem 을 병합셀이 반영된 GFM markdown 으로 만든다.
+
+    입력: doc — DoclingDocument, item — TableItem
+    출력: markdown 표. 자체 렌더 실패 시 docling export 로 폴백, 그마저
+          실패하면 빈 문자열
+    """
     md = docling_table_to_markdown(item)
     if md:
         return md
@@ -61,13 +71,16 @@ def extract_pdf_pages(
     *,
     image_dir: str | Path | None = None,
     page_stats: dict[int, dict] | None = None,
+    source_path: str | Path | None = None,
 ) -> list[PageContent]:
     """DoclingDocument 를 페이지 단위로 구조화한다.
 
     입력:
-        doc         DoclingDocument
-        image_dir   그림 저장 위치. None 이면 저장하지 않음
-        page_stats  페이지별 텍스트 출처 통계 (converters.pdf.converter 제공)
+        doc          DoclingDocument
+        image_dir    그림 저장 위치. None 이면 저장하지 않음
+        page_stats   페이지별 텍스트 출처 통계 (converters.pdf.converter 제공)
+        source_path  원본 PDF 경로. 주면 그림 영역의 텍스트 밀도를 재어
+                     표 오분류 후보를 표시한다 (LLM 호출 없음)
     출력:
         list[PageContent] — 페이지 번호 오름차순
     부수효과:
@@ -121,6 +134,7 @@ def extract_pdf_pages(
                 image_id=f"image_{image_counter}",
                 image_dir=image_dir,
             )
+            info.bbox = record.bbox
             # 설명이 없어도 이미지 메타는 남긴다 (본문 placeholder 와 짝을 맞추기 위함).
             page_parts[page].append(block)
             page_images[page].append(info)
@@ -132,7 +146,7 @@ def extract_pdf_pages(
         else:
             chunk = non_table_item_to_markdown(item, doc)
             if chunk and chunk.strip():
-                page_parts[page].append(chunk.strip())
+                page_parts[page].append(normalize_korean_text(chunk.strip()))
                 record.outcome = "text"
                 record.text = preview_text(chunk)
                 record.char_count = len(chunk.strip())
@@ -140,6 +154,10 @@ def extract_pdf_pages(
                 record.outcome = "dropped"
 
         page_layout[page].append(record)
+
+    if source_path is not None:
+        _mark_table_candidates(source_path, page_images)
+        _inject_region_text(page_parts, page_images)
 
     from docstruct.core.config import get_settings
 
@@ -257,3 +275,95 @@ def extract_pdf_pages(
             )
         )
     return pages
+
+
+def _inject_region_text(
+    page_parts: dict[int, list[str]],
+    page_images: dict[int, list[ImageInfo]],
+) -> None:
+    """도표로 판정된 그림의 텍스트를 본문에 넣는다.
+
+    입력:
+        page_parts   페이지별 본문 조각 (제자리 갱신)
+        page_images  페이지별 그림 메타
+    출력: 없음
+    비고:
+        조직도·흐름도는 글자가 많지만 격자가 아니다. 표로 만들면 의미가
+        망가지고, 그림으로 두면 글자가 통째로 사라진다. 그림 placeholder
+        바로 뒤에 원문을 넣어 **둘 다** 남긴다.
+
+        예) 성과목표관리 추진체계 조직도 — 533자가 그림 안에 갇혀 있었다.
+    """
+    for page_no, images in page_images.items():
+        parts = page_parts.get(page_no)
+        if not parts:
+            continue
+        for info in images:
+            if info.region_kind != "text" or not info.region_text:
+                continue
+            text = normalize_korean_text(info.region_text.strip())
+            if not text:
+                continue
+            placeholder = info.placeholder
+            for index, chunk in enumerate(parts):
+                if placeholder and placeholder in chunk:
+                    parts.insert(index + 1, text)
+                    break
+            else:
+                parts.append(text)
+            _log.info("%s 의 텍스트 %d자를 본문에 넣었습니다", info.id, len(text))
+
+
+def _mark_table_candidates(
+    source_path: str | Path,
+    page_images: dict[int, list[ImageInfo]],
+) -> None:
+    """그림 중 표일 가능성이 있는 것을 표시한다.
+
+    입력:
+        source_path  원본 PDF 경로
+        page_images  페이지 번호 → ImageInfo 목록 (제자리에서 갱신)
+    출력: 없음
+    비고:
+        레이아웃 모델이 표를 PICTURE 로 분류하면 TableFormer 가 돌지 않아
+        내용이 텍스트화되지 않는다. 여기서 후보만 골라 두면 표 평가 LLM 이
+        **이미 나가는 호출에** 얹어 판정할 수 있다 — 호출이 늘지 않는다.
+
+        사진·로고는 영역 안 글자 수가 0 에 가까워 여기서 걸러진다.
+    """
+    from docstruct.converters.pdf.region_kind import RegionKind, classify_region
+    from docstruct.converters.pdf.text_probe import probe_regions
+
+    regions: dict[str, tuple[int, dict[str, float]]] = {}
+    lookup: dict[str, ImageInfo] = {}
+    for page_no, images in page_images.items():
+        for info in images:
+            if info.bbox:
+                regions[info.id] = (page_no, info.bbox)
+                lookup[info.id] = info
+    if not regions:
+        return
+
+    for image_id, density in probe_regions(source_path, regions).items():
+        info = lookup[image_id]
+        info.text_chars = density.chars
+        info.text_lines = density.lines
+        # 표 후보가 아니어도 판정은 돌린다. 도표는 표 문턱(80자·3줄)에
+        # 못 미쳐도 본문으로 뽑을 값어치가 있다.
+        info.region_text = density.text
+        page_no, bbox = regions[image_id]
+        verdict = classify_region(
+            source_path, page_no, bbox, char_count=density.chars
+        )
+        info.region_kind = verdict.kind.value
+        info.region_kind_reason = verdict.reason
+
+        if verdict.kind is RegionKind.TABLE:
+            info.table_candidate = True
+            _log.info("%s 는 표로 보입니다 (%s) — 평가 대상에 올립니다",
+                      image_id, verdict.reason)
+        elif verdict.kind is RegionKind.TEXT:
+            _log.info("%s 는 도표·텍스트로 보입니다 (%s) — 본문으로 뽑습니다",
+                      image_id, verdict.reason)
+        else:
+            _log.debug("%s 는 그림으로 둡니다 (%s)", image_id, verdict.reason)

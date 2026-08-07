@@ -58,8 +58,16 @@ class TableInfo:
     original_markdown: str | None = None      # fill 이전 원본 (비교용)
     group_image_ids: list[str] | None = None
     reason: str | None = None
+    #: 그림에서 승격된 표라면 원본 ImageInfo.id. 그림도 함께 남기므로
+    #: 같은 영역이 tables 와 images 양쪽에 등록된다 — 이 값으로 짝을 찾는다.
+    source_image_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON 직렬화용 dict.
+
+        입력: 없음
+        출력: 모든 필드를 담은 dict
+        """
         return asdict(self)
 
     @property
@@ -83,13 +91,48 @@ class TableInfo:
 
 @dataclass
 class ImageInfo:
+    """그림 하나의 저장 결과와 표 승격 판정 상태.
+
+    입력(필드):
+        id, placeholder   식별자와 본문 내 `<!-- image N -->` 태그
+        description       VLM 그림 설명 (없으면 None)
+        image_path        저장된 파일 경로
+        bbox              PDF 페이지 좌표(TOPLEFT, points)
+        text_chars/lines  영역 안 텍스트 밀도 (표 후보 선별용)
+        region_text       영역 안 PDF 텍스트 원문 (재추출 근거)
+        table_candidate   표일 가능성이 있어 LLM 판정에 올릴지
+        promoted_table_id 표로 승격됐다면 그 TableInfo.id
+    """
+
     id: str
     placeholder: str
     description: str | None = None
     image_path: str | None = None   # 저장된 이미지 파일 경로
     mime_type: str | None = None
+    bbox: dict[str, float] | None = None      # PDF 페이지 좌표(TOPLEFT, points)
+    text_chars: int | None = None
+    text_lines: int | None = None
+    #: 영역 안의 PDF 텍스트 레이어 원문. 표로 승격되면 재추출 근거로 쓴다.
+    #: 이미지로는 ➊➋➌·가운뎃점 같은 글자를 잘못 읽기 쉬운데, 원문이 있으면
+    #: 글자는 여기서 가져오고 구조만 이미지로 판단하면 된다.
+    region_text: str | None = None
+    table_candidate: bool = False
+    #: 좌표 기반 판정 결과 — "table" | "text" | "image".
+    #: text 는 조직도·흐름도처럼 글자는 많지만 격자가 아닌 것으로,
+    #: 표로 만들면 의미가 망가지므로 본문 텍스트로 뽑는다.
+    region_kind: str | None = None
+    region_kind_reason: str | None = None
+    #: VLM 이 그림에서 읽어낸 내용 (캡처 이미지 표·도표 복원).
+    #: description 은 한 문장 캡션이고, 이것은 내용 자체다.
+    vlm_markdown: str | None = None
+    promoted_table_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON 직렬화용 dict.
+
+        입력: 없음
+        출력: 모든 필드를 담은 dict
+        """
         return asdict(self)
 
 
@@ -124,12 +167,28 @@ def source_label(source: str, ratio: float | None = None) -> str:
 
 #: 단계 라벨. ``GPU_ACCELERATED`` 에 속한 단계만 GPU 로 빨라집니다.
 #: (부분 문자열 매칭은 "재추출"이 "추출"에 걸리므로 쓰지 않습니다.)
+#:
+#: 추출 단계는 형식마다 하는 일이 달라 라벨이 갈립니다. HWP/HWPX 에는
+#: TableFormer 도 OCR 도 없으므로 PDF 라벨을 그대로 쓰면 리포트가 거짓말을
+#: 합니다. stage_extract() 로 형식에 맞는 라벨을 얻습니다.
 STAGE_EXTRACT = "추출 (백엔드+레이아웃+TableFormer+OCR)"
+STAGE_EXTRACT_MARKUP = "추출 (HWP 파싱)"
 STAGE_RENDER = "페이지 렌더 (pypdfium2)"
-STAGE_ASSESS = "표 평가 LLM (원격)"
-STAGE_FILL = "표 재추출 LLM (원격)"
+STAGE_ASSESS = "표 평가 LLM"
+STAGE_FILL = "표 재추출 LLM"
+STAGE_PICTURE_READ = "그림 내용 읽기 VLM"
 
+#: GPU 로 빨라지는 단계. 추출은 PDF 경로(Docling)만 해당합니다.
 GPU_ACCELERATED = frozenset({STAGE_EXTRACT})
+
+
+def stage_extract(source_format: str) -> str:
+    """형식에 맞는 추출 단계 라벨.
+
+    입력: source_format — 'pdf' | 'hwp' | 'hwpx'
+    출력: 단계 라벨 문자열
+    """
+    return STAGE_EXTRACT if source_format == "pdf" else STAGE_EXTRACT_MARKUP
 
 
 @dataclass
@@ -153,6 +212,11 @@ class TraceStep:
     duration_ms: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON 직렬화용 dict.
+
+        입력: 없음
+        출력: 모든 필드를 담은 dict
+        """
         return asdict(self)
 
     def line(self, index: int) -> str:
@@ -259,6 +323,11 @@ class PageTrace:
         return "\n".join(step.line(i) for i, step in enumerate(self.steps, 1))
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON 직렬화용 dict.
+
+        입력: 없음
+        출력: 모든 필드(steps 포함)를 담은 dict
+        """
         return asdict(self)
 
     def summary(self) -> str:
@@ -310,6 +379,12 @@ class PageContent:
     layout: list[Any] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON 직렬화용 dict.
+
+        입력: 없음
+        출력: 페이지 필드 + tables/images/trace/layout 을 각자의 to_dict 로
+              푼 dict
+        """
         return {
             "page_no": self.page_no,
             "page_no_kind": self.page_no_kind,
@@ -357,6 +432,11 @@ class PageDocument:
         return len(self.pages)
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON 직렬화용 dict (document.json 의 최상위 구조).
+
+        입력: 없음
+        출력: 문서 메타 + page_count + pages 목록을 담은 dict
+        """
         return {
             "filename": self.filename,
             "source_format": self.source_format,
@@ -370,10 +450,25 @@ class PageDocument:
     # -- 집계 헬퍼 (report에서 사용) -------------------------------------
 
     def all_tables(self) -> list[tuple[PageContent, TableInfo]]:
+        """문서의 모든 표를 페이지와 짝지어 낸다.
+
+        입력: 없음
+        출력: [(PageContent, TableInfo)] — 문서 순서
+        """
         return [(p, t) for p in self.pages for t in p.tables]
 
     def all_images(self) -> list[tuple[PageContent, ImageInfo]]:
+        """문서의 모든 그림을 페이지와 짝지어 낸다.
+
+        입력: 없음
+        출력: [(PageContent, ImageInfo)] — 문서 순서
+        """
         return [(p, i) for p in self.pages for i in p.images]
 
     def char_count(self) -> int:
+        """본문 총 글자 수.
+
+        입력: 없음
+        출력: 페이지 content 길이의 합
+        """
         return sum(len(p.content or "") for p in self.pages)

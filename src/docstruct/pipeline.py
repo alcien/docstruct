@@ -32,7 +32,9 @@ SUPPORTED_SUFFIXES = (".hwp", ".hwpx", ".pdf")
 #   docstruct/__init__ 의 자가 검증이 불일치를 잡습니다).
 
 from docstruct.models import (  # noqa: F401  (하위호환 재노출)
-    GPU_ACCELERATED, STAGE_ASSESS, STAGE_EXTRACT, STAGE_FILL, STAGE_RENDER,
+    GPU_ACCELERATED, STAGE_ASSESS, STAGE_EXTRACT, STAGE_EXTRACT_MARKUP,
+    STAGE_PICTURE_READ,
+    STAGE_FILL, STAGE_RENDER, stage_extract,
 )
 
 
@@ -81,8 +83,6 @@ def _render_page_images(
         렌더 결과는 표 평가·재추출의 시각 근거로 쓰인다. pypdfium2 가 없거나
         렌더에 실패하면 경고만 남기고 텍스트 기반으로 진행한다.
     """
-    from docstruct.media.page_render import render_pages_with_tables, safe_file_stem
-
     targets = [p.page_no for p in pages if p.tables and isinstance(p.page_no, int)]
     if not targets:
         return
@@ -125,6 +125,7 @@ def build_document(
     assess_tables: bool = True,
     fill_tables: bool = True,
     fill_all: bool = False,
+    read_pictures: bool = True,
     render_pages: bool = True,
     out_dir: str | Path | None = None,
     render_scale: float = 2.0,
@@ -139,6 +140,8 @@ def build_document(
         assess_tables LLM 표 판정 수행 여부
         fill_tables   판정 결과에 따른 표 재추출 수행 여부
         fill_all      quality 와 무관하게 모든 표 재추출
+        read_pictures 텍스트 레이어가 없는 그림을 VLM 으로 읽을지
+                      (캡처 이미지로 붙인 표·조직도 복원)
         render_pages  페이지 PNG 렌더 여부 (PDF 만 해당)
         render_scale  렌더 배율
         progress      단계별 진행 막대 표시 여부
@@ -170,13 +173,19 @@ def build_document(
     display_name = (source_filename or resolved.name).strip() or resolved.name
 
     out_path = Path(out_dir).resolve() if out_dir is not None else None
-    # out_dir 을 주지 않아도 그림은 저장한다. 저장하지 않으면 preview.show_images
-    # 와 document.md 가 아무것도 보여주지 못한다 (파일 경로를 참조하므로).
+    # out_dir 을 주지 않아도 그림·페이지 PNG 는 저장한다. 저장하지 않으면
+    # preview 와 document.md 가 아무것도 보여주지 못하고(파일 경로를 참조),
+    # 표 재추출은 근거 이미지가 없어 통째로 무력화된다.
     # 임시 폴더에 두고 경로를 알려준다 — save()/to_json() 때 함께 옮겨진다.
+    #
+    # 임시 폴더는 PageDocument 가 사라질 때 같이 지운다 (아래 _bind_scratch).
+    # 프로세스 종료까지 남겨두면 배치 N 건이 N 개의 폴더를 남긴다.
+    scratch: Path | None = None
     if out_path:
         image_dir = out_path / "images"
     else:
-        image_dir = Path(tempfile.mkdtemp(prefix="docstruct-images-"))
+        scratch = Path(tempfile.mkdtemp(prefix="docstruct-"))
+        image_dir = scratch / "images"
 
     timings: dict[str, float] = {}   # 라벨은 STAGE_* 상수를 씁니다
 
@@ -186,7 +195,7 @@ def build_document(
     pages, failed_pages, table_html = (
         extraction.pages, extraction.failed_pages, extraction.table_html
     )
-    timings[STAGE_EXTRACT] = time.perf_counter() - _t
+    timings[stage_extract(fmt)] = time.perf_counter() - _t
 
     # 페이지 경계가 없는 문서(HWP 등)를 구조 경계에서 나눈다.
     if split_chars > 0 and pages:
@@ -194,6 +203,7 @@ def build_document(
 
         pages = split_document(pages, split_chars)
     _log.info("추출 완료: %d페이지, 표 %d개", len(pages), sum(len(p.tables) for p in pages))
+    _warn_if_empty(display_name, pages)
 
     doc = PageDocument(
         filename=display_name,
@@ -202,12 +212,22 @@ def build_document(
         failed_pages=failed_pages,
     )
 
-    if fmt == "pdf" and render_pages and out_path is not None:
+    if fmt == "pdf" and render_pages:
+        # out_dir 이 없으면 임시 작업 폴더에 렌더한다. 여기서 건너뛰면
+        # 재추출이 근거 이미지를 못 찾아 조용히 무력화된다.
+        pages_dir = (out_path / "pages") if out_path else (scratch / "pages")  # type: ignore[operator]
         _t = time.perf_counter()
-        _render_page_images(
-            resolved, pages, out_path / "pages", scale=render_scale
-        )
+        _render_page_images(resolved, pages, pages_dir, scale=render_scale)
         timings[STAGE_RENDER] = time.perf_counter() - _t
+
+    if read_pictures and any(p.images for p in pages):
+        from docstruct.media.vlm_read import read_picture_regions
+
+        t0 = time.perf_counter()
+        count = read_picture_regions(pages, progress=progress)
+        if count:
+            timings[STAGE_PICTURE_READ] = time.perf_counter() - t0
+            _log.info("그림 %d개의 내용을 VLM 으로 읽었습니다", count)
 
     if assess_tables and any(p.tables for p in pages):
         _log.info("표 품질 평가 중...")
@@ -296,7 +316,29 @@ def build_document(
     doc.pipeline = _pipeline_settings(fmt, assess_tables, fill_tables, fill_all)
     doc.timings = {k: round(v, 2) for k, v in timings.items()}
     _log_timings(doc.timings)
+    if scratch is not None:
+        _bind_scratch(doc, scratch)
     return doc
+
+
+def _bind_scratch(doc: PageDocument, scratch: Path) -> None:
+    """임시 작업 폴더를 문서 수명에 묶는다.
+
+    입력: doc — 결과 문서, scratch — 지울 임시 폴더
+    출력: 없음 (문서가 회수될 때 폴더 삭제)
+    비고:
+        out_dir 없이 실행하면 그림·페이지 PNG 가 이 폴더에 남는다. 문서가
+        살아 있는 동안은 preview 와 save() 가 그 경로를 읽으므로 지우면
+        안 되고, 문서가 사라진 뒤에는 아무도 안 쓰므로 남기면 안 된다.
+        weakref.finalize 는 그 두 시점을 정확히 맞춰 준다.
+    """
+    import shutil
+    import weakref
+
+    # 저장 시 "이 폴더 안의 파일만" 이관하도록 위치를 남긴다.
+    # out_dir 을 준 실행에서는 이 속성이 없으므로 이관도 일어나지 않는다.
+    doc.scratch_dir = str(scratch)
+    weakref.finalize(doc, shutil.rmtree, scratch, True)
 
 
 def _log_timings(timings: dict[str, float]) -> None:
@@ -311,6 +353,31 @@ def _log_timings(timings: dict[str, float]) -> None:
     _log.info("── 단계별 소요 시간 (총 %.1f초) ──", total)
     for label, seconds in sorted(timings.items(), key=lambda kv: -kv[1]):
         _log.info("   %-32s %6.1f초  %4.0f%%", label, seconds, seconds / total * 100)
+
+
+#: 본문이 이보다 적으면 추출이 사실상 실패한 것으로 본다.
+_EMPTY_THRESHOLD = 50
+
+
+def _warn_if_empty(name: str, pages: list[PageContent]) -> None:
+    """내용이 사실상 비었으면 눈에 띄게 알린다.
+
+    입력: name — 파일 이름, pages — 추출 결과
+    출력: 없음 (경고 로그)
+    비고:
+        예외가 없으면 배치는 "성공" 으로 셉니다. 그런데 본문이 비어 있으면
+        실패 목록에도 안 뜨고 JSON 만 텅 빈 채로 남습니다. 배포용 문서나
+        파서가 조용히 실패한 경우가 그렇습니다 — 여기서 잡아 둡니다.
+    """
+    chars = sum(len(p.content or "") for p in pages)
+    tables = sum(len(p.tables) for p in pages)
+    if chars >= _EMPTY_THRESHOLD or tables:
+        return
+    _log.warning(
+        "%s: 본문이 %d자뿐입니다 — 추출에 실패했을 수 있습니다. "
+        "배포용(DRM) 문서이거나 파서가 내용을 읽지 못한 경우입니다",
+        name, chars,
+    )
 
 
 def _pipeline_settings(

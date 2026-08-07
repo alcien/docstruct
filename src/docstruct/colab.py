@@ -188,6 +188,7 @@ def configure(
     model: str | None = None,
     timeout: float = 120,
     ocr_backend: str = "rapidocr",
+    force_full_page_ocr: bool = False,
     use_secrets: bool = True,
     picture: bool = True,
     device: str = "auto",
@@ -199,6 +200,9 @@ def configure(
     입력:
         url, model, timeout   엔드포인트 정보
         ocr_backend           OCR 엔진
+        force_full_page_ocr   텍스트 레이어를 무시하고 전면 OCR.
+                              PDF 폰트의 ToUnicode 매핑이 깨져 글자가
+                              엉뚱하게 나올 때 켠다 (느려집니다)
         use_secrets           Colab Secrets 에서 값을 읽을지
         picture               그림 설명 VLM 사용 여부
         device                연산 장치 (auto | cpu | cuda)
@@ -220,6 +224,7 @@ def configure(
 
     os.environ["DOCLING_TABLE_API_TIMEOUT"] = str(timeout)
     os.environ["DOCLING_OCR_BACKEND"] = ocr_backend
+    os.environ["DOCLING_FORCE_FULL_PAGE_OCR"] = "true" if force_full_page_ocr else "false"
     _apply_device(device, ocr_backend)
     _apply_speed(llm_concurrency, threaded_pipeline)
 
@@ -236,7 +241,10 @@ def configure(
         print(f"  model  = {settings.llm.model or '(미지정)'}")
     else:
         print("LLM 미설정 — 표 평가·재추출·목차 없이 파싱만 수행합니다.")
-    print(f"OCR 백엔드: {settings.ocr_backend}")
+    print(
+        f"OCR 백엔드: {settings.ocr_backend}"
+        + (" · 전면 OCR (텍스트 레이어 무시)" if settings.force_full_page_ocr else "")
+    )
     print(f"연산 장치 : {settings.device}")
     print(f"LLM 동시  : {settings.llm_concurrency}개")
 
@@ -263,7 +271,7 @@ def _load_secrets() -> None:
 # check_llm_reachable() 은 docstruct/checks.py 로 옮겼습니다 (로컬 CLI/노트북
 # 에서도 쓰이므로 Colab 전용 모듈에 있을 이유가 없습니다). 기존 코드·노트북과의
 # 호환을 위해 여기서 그대로 재노출합니다.
-from docstruct.checks import check_llm_reachable  # noqa: E402
+from docstruct.checks import check_llm_reachable  # noqa: E402,F401
 
 
 # ── 결과 반출 ---------------------------------------------------------------
@@ -368,7 +376,7 @@ def configure_openai(
     settings = rebuild_settings()
     invalidate_caches()
 
-    print(f"OpenAI 설정 완료")
+    print("OpenAI 설정 완료")
     print(f"  endpoint : {settings.llm.url}")
     print(f"  model    : {settings.llm.model}")
     print(f"  api_key  : {settings.llm.masked_key()}")
@@ -438,7 +446,7 @@ def estimate_cost(doc, *, fill_tables: bool = True, outline: bool = False) -> No
     print(f"  표 재추출  : {fill_calls}회  (페이지 이미지 포함)")
     print(f"  그림 설명  : {pictures}회  (Docling 내부 호출)")
     print(f"  목차 추출  : {outline_calls}회")
-    print(f"  ─────────────────────")
+    print("  ─────────────────────")
     print(f"  합계       : {total}회")
     print()
     print("이미지가 붙는 호출은 텍스트 전용보다 입력 토큰이 훨씬 큽니다.")

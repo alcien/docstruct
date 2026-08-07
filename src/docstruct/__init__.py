@@ -74,6 +74,11 @@ from docstruct.pipeline import SUPPORTED_SUFFIXES, build_document
 # 서브모듈을 미리 붙여 둡니다 (import docstruct 만으로 접근 가능).
 from docstruct import preview, report  # noqa: E402,F401
 
+# winfix 는 core 안에 있지만 `from docstruct import winfix` 로 쓰도록
+# 문서(WINDOWS.md)가 안내해 왔습니다. 여기서 붙여 두면 패키지 배포본과
+# backend 4-패키지 배치 양쪽에서 같은 한 줄이 통합니다.
+from docstruct.core import winfix  # noqa: E402,F401
+
 __all__ = [
     # 공개 API
     "DocStruct",
@@ -101,12 +106,15 @@ __all__ = [
     # 서브모듈
     "preview",
     "report",
+    "winfix",
 ]
 
 # SUPPORTED_SUFFIXES 상수와 추출기 레지스트리가 어긋나면 즉시 드러나게 합니다.
+# assert 는 `python -O` 에서 통째로 사라지므로 쓰지 않습니다.
 from docstruct.extractors.registry import supported_suffixes as _reg_suffixes
 
-assert tuple(sorted(SUPPORTED_SUFFIXES)) == _reg_suffixes(), (
-    "SUPPORTED_SUFFIXES 와 extractors/registry 등록이 불일치합니다: "
-    f"{sorted(SUPPORTED_SUFFIXES)} != {list(_reg_suffixes())}"
-)
+if tuple(sorted(SUPPORTED_SUFFIXES)) != _reg_suffixes():
+    raise RuntimeError(
+        "SUPPORTED_SUFFIXES 와 extractors/registry 등록이 불일치합니다: "
+        f"{sorted(SUPPORTED_SUFFIXES)} != {list(_reg_suffixes())}"
+    )

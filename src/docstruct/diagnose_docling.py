@@ -14,6 +14,11 @@ import sys
 
 
 def _describe(obj, name: str, max_items: int = 3) -> None:
+    """객체의 공개 속성을 재귀적으로 눌러 본다 (진단용).
+
+    입력: obj — 대상, name — 표시 이름, max_items — 목록 전개 상한
+    출력: 없음 (stdout)
+    """
     print(f"\n--- {name}: {type(obj)!r} ---")
     attrs = [a for a in dir(obj) if not a.startswith("_")]
     print(f"공개 속성/메서드 ({len(attrs)}개): {attrs}")
@@ -31,6 +36,12 @@ def _describe(obj, name: str, max_items: int = 3) -> None:
 
 
 def main() -> None:
+    """PDF 하나를 docling 으로 변환해 내부 구조를 덤프한다.
+
+    입력: 없음 (argv: <pdf경로> [페이지번호=1])
+    출력: 없음 (stdout — result/pages/item 구조 요약)
+    비고: docling 버전이 바뀌어 파싱이 이상할 때 구조 차이를 확인하는 도구다.
+    """
     if len(sys.argv) < 2:
         print("사용법: python -m docstruct.diagnose_docling <pdf경로> [페이지번호=1]")
         raise SystemExit(1)
@@ -65,9 +76,14 @@ def main() -> None:
 
     # 문서 자체에서 이 페이지의 텍스트 아이템 개수 (비교용 — 실제 본문은 이 경로로 나옵니다)
     doc = result.document
-    from docling_core.types.doc.labels import DocItemLabel
+    from docling_core.types.doc.labels import DocItemLabel  # noqa: F401
 
     def _page_no_of(item):
+        """item 이 속한 페이지 번호.
+
+        입력: item — docling item
+        출력: 페이지 번호. prov 가 없으면 None
+        """
         prov = getattr(item, "prov", None) or []
         return prov[0].page_no if prov else None
 

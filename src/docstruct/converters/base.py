@@ -57,7 +57,11 @@ class BaseConverter(ABC):
     @property
     @abstractmethod
     def source_format(self) -> str:
-        """소스 포맷 식별자 (예: hwp, pdf)."""
+        """소스 포맷 식별자.
+
+        입력: 없음
+        출력: 'hwp' | 'hwpx' | 'pdf' 등 소문자 문자열
+        """
 
     @abstractmethod
     def to_html(self) -> str:

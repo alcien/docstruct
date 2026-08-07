@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any
 
 from docstruct.core.config import get_settings
@@ -25,9 +26,16 @@ _log = logging.getLogger(__name__)
 
 #: 엔드포인트에 연결 자체가 안 되면 이후 호출을 건너뛴다.
 #: 페이지·표마다 같은 오류를 반복 시도하면 시간만 쓰고 로그만 더럽힌다.
-#: (url, model) 별로 기록하며, clear_adapter_cache() 로 초기화된다.
-_UNREACHABLE: dict[tuple[str, str], str] = {}
+#: (url, model) → (사유, 표시 시각). reset_unreachable() 로 초기화된다.
+_UNREACHABLE: dict[tuple[str, str], tuple[str, float]] = {}
 _UNREACHABLE_LOCK = threading.Lock()
+
+#: 도달 불가 표시의 유효 시간(초). 지나면 표시가 풀리고 다시 시도한다.
+#:
+#: 이 값이 없으면 오래 도는 프로세스(FastAPI 워커)에서 LLM 이 잠깐만
+#: 끊겨도 재기동할 때까지 표 판정·재추출이 통째로 비활성화된다. CLI 는
+#: 실행이 짧아 드러나지 않지만 서버는 며칠씩 산다.
+UNREACHABLE_TTL = 60.0
 
 #: 대비 엔드포인트 전환을 알렸는지 (한 번만 로그)
 _FALLBACK_ANNOUNCED = False
@@ -45,31 +53,47 @@ class LLMUnreachableError(RuntimeError):
 
 
 def mark_unreachable(url: str, model: str, reason: str) -> None:
-    """이 엔드포인트를 이번 실행에서 도달 불가로 표시한다.
+    """이 엔드포인트를 당분간 도달 불가로 표시한다.
 
-    입력: url, model, reason — 최초 실패 사유
+    입력: url, model, reason — 실패 사유
     출력: 없음
+    비고: 표시는 UNREACHABLE_TTL 초 뒤 자동으로 풀린다. 로그는 표시가
+          새로 생길 때만 남기므로 장애가 길어져도 한 번씩만 찍힌다.
     """
+    now = time.monotonic()
     with _UNREACHABLE_LOCK:
-        if (url, model) not in _UNREACHABLE:
-            _UNREACHABLE[(url, model)] = reason
-            has_backup = get_settings().llm_fallback is not None
-            _log.warning(
-                "%s 연결 불가 (%s) — 이후 호출은 %s",
-                url, reason,
-                "대비 엔드포인트로 보냅니다" if has_backup
-                else "건너뜁니다 (대비책 없음 — OPENAI_API_KEY 를 넣으면 전환됩니다)",
-            )
+        prev = _UNREACHABLE.get((url, model))
+        fresh = prev is None or now - prev[1] >= UNREACHABLE_TTL
+        _UNREACHABLE[(url, model)] = (reason, now)
+    if not fresh:
+        return
+    has_backup = get_settings().llm_fallback is not None
+    _log.warning(
+        "%s 연결 불가 (%s) — 앞으로 %.0f초 동안 %s",
+        url, reason, UNREACHABLE_TTL,
+        "대비 엔드포인트로 보냅니다" if has_backup
+        else "건너뜁니다 (대비책 없음 — OPENAI_API_KEY 를 넣으면 전환됩니다)",
+    )
 
 
 def unreachable_reason(url: str, model: str) -> str | None:
-    """도달 불가로 표시됐으면 그 사유를 돌려준다.
+    """도달 불가로 표시돼 있으면 그 사유를 돌려준다.
 
     입력: url, model
-    출력: 사유 문자열, 표시되지 않았으면 None
+    출력: 사유 문자열. 표시가 없거나 TTL 이 지났으면 None
+    비고: TTL 이 지난 표시는 여기서 지워지므로 다음 호출은 실제로 시도된다.
     """
+    now = time.monotonic()
     with _UNREACHABLE_LOCK:
-        return _UNREACHABLE.get((url, model))
+        entry = _UNREACHABLE.get((url, model))
+        if entry is None:
+            return None
+        reason, marked_at = entry
+        if now - marked_at >= UNREACHABLE_TTL:
+            del _UNREACHABLE[(url, model)]
+            _log.info("%s 도달 불가 표시 해제 — 다시 시도합니다", url)
+            return None
+        return reason
 
 
 def reset_unreachable() -> None:
@@ -84,12 +108,6 @@ def reset_unreachable() -> None:
         _FALLBACK_ANNOUNCED = False
         _LOCAL_ANNOUNCED = False
 
-#: 로컬 VLM 사용을 알렸는지 (한 번만 로그)
-_LOCAL_ANNOUNCED = False
-
-#: 연결 대기 상한(초). 응답 대기(cfg["timeout"])와 별개다.
-#: 서버가 죽어 있을 때 첫 실패까지의 시간을 결정한다.
-CONNECT_TIMEOUT = 5.0
 
 _adapter_cache: dict[tuple[str, str], Any] = {}
 
@@ -253,8 +271,6 @@ def _requests_fallback(
     동작: OpenAI 호환 chat completions 형식으로 POST 하고 choices[0].message.content 를 반환.
           429·5xx 는 Retry-After 를 존중해 재시도한다
     """
-    import time
-
     import requests
 
     key_url, key_model = cfg["url"], cfg.get("model") or ""

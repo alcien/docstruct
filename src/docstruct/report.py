@@ -16,7 +16,9 @@ import json
 from pathlib import Path
 
 from docstruct.content import expand_tables_and_images
-from docstruct.models import GPU_ACCELERATED, IMAGE, TABLE, TEXT, PageDocument
+from docstruct.models import (  # noqa: F401 - IMAGE/TABLE/TEXT 는 재노출
+    GPU_ACCELERATED, IMAGE, TABLE, TEXT, PageDocument,
+)
 
 
 def write_json(doc: PageDocument, path: str | Path) -> Path:

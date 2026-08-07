@@ -181,6 +181,24 @@ md("""
 colab.configure(url="http://<host>:<port>/v1/chat/completions",
                 model="/model/<model-id>/", use_secrets=True)
 ```
+
+### 글자가 깨져 나올 때
+
+PDF 폰트의 ToUnicode 매핑이 깨져 있으면 텍스트 레이어에서 엉뚱한 글자가
+나옵니다(`d띠는正음허리古키리릅...`). 이건 OCR 오류가 아니라 **PDF 안에
+그렇게 들어 있는 것**이라, 텍스트 레이어를 무시하고 전면 OCR 해야 합니다.
+
+```python
+colab.configure(..., force_full_page_ocr=True)   # 세션 전체
+```
+
+한 파일만 시험한다면 실행 옵션으로 주는 편이 낫습니다.
+
+```python
+DocStruct("문서.pdf", force_full_page_ocr=True).run()
+```
+
+느려지므로 필요한 문서에만 켜세요.
 """)
 
 # ---------------------------------------------------------------- 5. 연결성
@@ -407,7 +425,7 @@ doc = colab.retry_failed_pages(SRC, OUT_DIR, backend="auto",
 ```python
 import os
 os.environ["DOCLING_FORCE_FULL_PAGE_OCR"] = "true"
-from core.config import rebuild_settings; from docstruct.checks import invalidate_caches
+from docstruct.core.config import rebuild_settings; from docstruct.checks import invalidate_caches
 rebuild_settings(); invalidate_caches()
 ```
 

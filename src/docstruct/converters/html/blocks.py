@@ -12,16 +12,20 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 
-from docstruct.converters.deps import BS4_AVAILABLE, BeautifulSoup, NavigableString, Tag
+from docstruct.converters.deps import (  # noqa: F401 - BS4_AVAILABLE 은 재노출
+    BS4_AVAILABLE, BeautifulSoup, NavigableString, Tag,
+)
 from docstruct.converters.html.tables import prepare_md_table_rows, render_md_table, table_rows
 from docstruct.converters.html.utils import bullet_to_md, cell_text, normalize_line, tag_text
 
 def collect_html_blocks(soup: "BeautifulSoup") -> list[dict]:
-    """
-    hwp5html DOM을 문서 순서대로 블록 단위로 수집합니다.
+    """hwp5html DOM 을 문서 순서대로 블록 단위로 수집한다.
 
-    hwp5html은 표를 <p><span class="TableControl"><table>…</table></span></p>
-    형태로 감싸므로, <p> 내부 표를 순서대로 분리해 수집합니다.
+    입력: soup — BeautifulSoup 문서
+    출력: [{"type": "paragraph"|"heading"|"table"|"list", ...}] 블록 목록
+    동작: hwp5html 은 표를 `<p><span class="TableControl"><table>…` 로
+          감싸므로, `<p>` 내부 표를 순서를 지키며 분리해 수집한다.
+          셀 안에 든 요소는 상위 표가 담당하므로 건너뛴다.
     """
     for tag in soup.find_all(["script", "style"]):
         tag.decompose()
@@ -30,6 +34,11 @@ def collect_html_blocks(soup: "BeautifulSoup") -> list[dict]:
     seen_tables: set[int] = set()
 
     def add_table(tbl: "Tag") -> None:
+        """표 태그를 격자로 펼쳐 블록에 넣는다 (중복 방지).
+
+        입력: tbl — `<table>` Tag
+        출력: 없음 (blocks 에 추가, seen_tables 로 재방문 차단)
+        """
         tid = id(tbl)
         if tid in seen_tables:
             return
@@ -41,12 +50,22 @@ def collect_html_blocks(soup: "BeautifulSoup") -> list[dict]:
             blocks.append({"type": "table", "rows": rows, "caption": caption_text})
 
     def add_paragraph(text: str) -> None:
+        """문단 텍스트를 정리해 블록에 넣는다.
+
+        입력: text — 원본 텍스트
+        출력: 없음 (공백 정리 후 비어 있지 않으면 blocks 에 추가)
+        """
         text = normalize_line(text)
         if text:
             blocks.append({"type": "paragraph", "text": text})
 
     def walk_mixed(node) -> None:
-        """표·텍스트가 섞인 노드의 자식을 문서 순서대로 처리합니다."""
+        """표·텍스트가 섞인 노드의 자식을 문서 순서대로 처리한다.
+
+        입력: node — Tag 또는 NavigableString
+        출력: 없음 (add_table / add_paragraph 로 분배)
+        비고: script·style·head 는 건너뛰고 img 는 [그림] 표식으로 남긴다.
+        """
         if type(node) is NavigableString:
             add_paragraph(str(node))
             return
@@ -132,7 +151,12 @@ def blocks_to_text(blocks: list[dict]) -> str:
 
 
 def md_inline_text(tag: "Tag") -> str:
-    """인라인 요소를 마크다운 텍스트로 변환합니다."""
+    """인라인 요소를 markdown 텍스트로 변환한다.
+
+    입력: tag — 인라인 자식을 가진 Tag
+    출력: **굵게**·*기울임*·개행·그림 표기가 반영된 문자열
+    비고: data URI 그림은 [그림] 으로 줄이고, 외부 src 는 `![alt](src)` 로 남긴다.
+    """
     result = []
     for node in tag.children:
         if isinstance(node, NavigableString):
@@ -158,6 +182,11 @@ def md_inline_text(tag: "Tag") -> str:
 
 
 def md_process_list(tag: "Tag", depth: int = 0, ordered: bool = False) -> list[str]:
+    """`<ul>/<ol>` 을 markdown 목록 줄로 변환한다.
+
+    입력: tag — 목록 Tag, depth — 들여쓰기 수준, ordered — 번호 목록 여부
+    출력: 목록 줄 문자열 목록 (중첩 목록은 재귀로 들여쓴다)
+    """
     lines: list[str] = []
     idx = 1
     for child in tag.children:
@@ -208,7 +237,11 @@ def blocks_to_markdown(blocks: list[dict]) -> str:
     return result.strip()
 
 def blocks_to_xml(blocks: list[dict]) -> str:
-    """블록 목록을 구조화 XML로 렌더링합니다."""
+    """블록 목록을 구조화 XML 로 렌더링한다.
+
+    입력: blocks — collect_html_blocks 결과
+    출력: `<document>` 루트의 XML 문자열 (paragraph/heading/table/list)
+    """
     doc = ET.Element("document")
     for block in blocks:
         kind = block["type"]

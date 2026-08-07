@@ -40,6 +40,11 @@ def inject_table_placeholders(
     counter = start_id
 
     def repl(match: re.Match[str]) -> str:
+        """찾은 GFM 표를 `<table N>` 블록으로 치환한다.
+
+        입력: match — 표 정규식 매치
+        출력: placeholder 블록 문자열 (TableInfo 는 tables 목록에 축적)
+        """
         nonlocal counter
         counter += 1
         table_id = make_table_id(counter)

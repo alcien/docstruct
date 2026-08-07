@@ -85,10 +85,20 @@ class OutlineNode:
 
 
 def _fmt_path(path: list[str]) -> str:
+    """목차 경로를 프롬프트 표기로 만든다.
+
+    입력: path — 상위 제목 목록
+    출력: `A > B > C` 형태 문자열. 비어 있으면 "(없음 — 문서 시작)"
+    """
     return " > ".join(path) if path else "(없음 — 문서 시작)"
 
 
 def _fmt_prev(text: str) -> str:
+    """직전 본문 조각을 프롬프트 표기로 만든다.
+
+    입력: text — 직전 페이지 끝 텍스트
+    출력: 앞 MAX_PREV_CHARS 자. 비어 있으면 "(없음 — 문서 시작)"
+    """
     text = text.strip()
     if not text:
         return "(없음 — 문서 시작)"
@@ -212,7 +222,7 @@ def outline_to_markdown(nodes: list[OutlineNode]) -> str:
     for node in nodes:
         # 이전 경로와 공통 접두사는 다시 출력하지 않습니다.
         common = 0
-        for a, b in zip(prev, node.path):
+        for a, b in zip(prev, node.path, strict=False):
             if a != b:
                 break
             common += 1

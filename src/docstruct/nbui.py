@@ -24,10 +24,12 @@ _COLAB = "colab"
 
 
 def in_colab() -> bool:
-    """Colab 런타임인지 판별합니다.
+    """Colab 런타임인지 판별한다.
 
-    ``importlib.util.find_spec`` 만 쓰면 ``__spec__`` 이 없는 모듈에 대해
-    ``ValueError`` 를 던지므로, 이미 로드된 모듈을 먼저 확인합니다.
+    입력: 없음
+    출력: Colab 이면 True
+    비고: find_spec 만 쓰면 __spec__ 없는 모듈에 ValueError 가 나므로
+          이미 로드된 모듈(sys.modules)을 먼저 본다.
     """
     import importlib.util
     import sys
@@ -41,10 +43,11 @@ def in_colab() -> bool:
 
 
 def _upload_entries(value: Any) -> list[dict[str, Any]]:
-    """FileUpload.value 를 버전 차이 없이 [{name, content}] 로 정규화합니다.
+    """FileUpload.value 를 버전 차이 없이 정규화한다.
 
-    ipywidgets 7 은 ``{filename: {metadata: {...}, content: bytes}}`` (dict),
-    8 은 ``({name: ..., content: memoryview}, ...)`` (tuple) 을 돌려줍니다.
+    입력: value — ipywidgets FileUpload 의 value
+    출력: [{name, content}] 목록
+    비고: ipywidgets 7 은 {filename: {...}} dict, 8 은 tuple 을 돌려준다.
     """
     if not value:
         return []
@@ -114,6 +117,11 @@ class FilePicker:
         )
 
     def _build(self) -> None:
+        """위젯 구성 요소를 만든다.
+
+        입력: 없음
+        출력: 없음 (ipywidgets 미설치면 경로 직접 입력만 남기고 조용히 끝)
+        """
         try:
             import ipywidgets as W
         except ImportError:
@@ -153,6 +161,11 @@ class FilePicker:
         self._update_label()
 
     def _dropdown_options(self) -> list[tuple[str, str | None]]:
+        """samples/ 폴더 스캔 결과로 드롭다운 옵션을 만든다.
+
+        입력: 없음
+        출력: [(표시명, 경로 또는 None)] — 첫 항목은 개수 요약
+        """
         samples = self.scan_samples()
         head = (
             f"— {len(samples)}건 —" if samples else "— samples/ 폴더가 비어 있음 —"
@@ -160,16 +173,31 @@ class FilePicker:
         return [(head, None)] + [(p.name, str(p)) for p in samples]
 
     def _on_refresh(self) -> None:
+        """samples 새로고침 버튼 처리.
+
+        입력: 없음
+        출력: 없음 (드롭다운 옵션·라벨 갱신)
+        """
         self._dropdown.options = self._dropdown_options()
         self._update_label()
 
     def _touch(self, source: str) -> None:
+        """마지막으로 조작한 입력원을 기록한다.
+
+        입력: source — 'upload' | 'sample' | 'manual' | 'colab'
+        출력: 없음 (라벨 갱신)
+        """
         self._last_source = source
         self._update_label()
 
     # ── 상태 표시 ---------------------------------------------------------
 
     def _update_label(self) -> None:
+        """현재 선택 상태를 라벨에 그린다.
+
+        입력: 없음 (self.path 사용)
+        출력: 없음 (HTML 라벨 갱신 — 파일 존재 여부에 따라 색·안내 변경)
+        """
         if self._label is None:
             return
         path = self.path
@@ -192,6 +220,11 @@ class FilePicker:
     # ── 핵심: 호출 시점 해석 ----------------------------------------------
 
     def _manual_path(self) -> Path | None:
+        """직접 입력한 경로.
+
+        입력: 없음
+        출력: 입력값이 있으면 그 Path, 없으면 생성자 fallback 경로 또는 None
+        """
         if self._manual is not None:
             raw = (self._manual.value or "").strip().strip("'\"")
             if raw:
@@ -199,7 +232,12 @@ class FilePicker:
         return self._fallback_path
 
     def _upload_path(self) -> Path | None:
-        """업로드된 내용을 디스크에 쓰고 경로를 반환합니다 (동일 파일은 재사용)."""
+        """업로드된 내용을 디스크에 쓰고 경로를 돌려준다.
+
+        입력: 없음
+        출력: 저장된 파일 Path. 업로드가 없으면 None
+        비고: (이름, 크기) 를 키로 캐시해 같은 파일을 다시 쓰지 않는다.
+        """
         if self._uploader is None:
             return None
         entries = _upload_entries(self._uploader.value)
@@ -220,6 +258,11 @@ class FilePicker:
         return dest
 
     def _colab_path(self) -> Path | None:
+        """Colab files.upload() 로 받은 파일 경로.
+
+        입력: 없음
+        출력: 저장된 파일 Path. 업로드가 없으면 None
+        """
         return self._colab_file if (self._colab_file and self._colab_file.is_file()) else None
 
     def colab_upload(self) -> Path:
@@ -245,6 +288,11 @@ class FilePicker:
         return self.resolve()
 
     def _sample_path(self) -> Path | None:
+        """드롭다운에서 고른 샘플 경로.
+
+        입력: 없음
+        출력: 선택된 Path. 미선택이면 None
+        """
         if self._dropdown is None:
             return None
         value = self._dropdown.value

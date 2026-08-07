@@ -52,6 +52,11 @@ def _module_available(name: str) -> bool:
         return True
 
     def _probe() -> bool:
+        """find_spec 으로 모듈 존재를 확인한다.
+
+        입력: 없음 (둘러싼 name 사용)
+        출력: 찾으면 True. 조회 자체가 실패해도 예외 없이 False
+        """
         try:
             return importlib.util.find_spec(name) is not None
         except (ImportError, ValueError, AttributeError):

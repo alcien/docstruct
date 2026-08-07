@@ -40,15 +40,34 @@ code('''
 import sys, warnings
 from pathlib import Path
 
-# docstruct 패키지가 있는 디렉터리를 sys.path에 올립니다 (노트북 위치와 무관하게 동작).
+# docstruct 를 찾는 순서
+#   1) 설치본 (pip install docstruct / pip install -e .) — 아무것도 안 해도 됩니다
+#   2) 압축본을 풀어 쓰는 경우 — 트리 루트를 sys.path 에 올립니다
+# 배포 형태마다 배치가 달라서(pkg 는 src/docstruct, local·overlay 는 docstruct)
+# 둘 다 봅니다.
 _here = Path.cwd().resolve()
 for _cand in (_here, *_here.parents):
-    if (_cand / "docstruct").is_dir():
+    if (_cand / "docstruct" / "__init__.py").is_file():
         sys.path.insert(0, str(_cand))
-        APP_ROOT = _cand
         break
-else:
-    raise RuntimeError("docstruct 패키지를 찾을 수 없습니다. 노트북을 app/ 아래에서 실행하세요.")
+    if (_cand / "src" / "docstruct" / "__init__.py").is_file():
+        sys.path.insert(0, str(_cand / "src"))
+        break
+
+try:
+    import docstruct as _probe
+except ModuleNotFoundError as _exc:
+    raise RuntimeError(chr(10).join([
+        "docstruct 를 찾을 수 없습니다. 둘 중 하나를 하세요.",
+        "  · 패키지 폴더에서  pip install -e .",
+        "  · 노트북을 트리 루트 아래에서 실행 (docstruct/ 가 보이는 위치)",
+    ])) from _exc
+
+# 입출력 기준 폴더 — notebooks/ 를 품은 폴더를 씁니다.
+APP_ROOT = next(
+    (p for p in (_here, *_here.parents) if (p / "notebooks").is_dir()),
+    _here.parent if _here.name == "notebooks" else _here,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -59,18 +78,27 @@ logging.getLogger("docling").setLevel(logging.WARNING)
 from docstruct import build_document
 from docstruct import preview, report
 from docstruct.checks import show_environment, reload_environment, show_llm_check
-from core import winfix
+from docstruct.core import winfix
 
 # Windows 비 UTF-8 로케일(cp949)에서 PyTorch/Docling 초기화가 죽는 문제를 우회합니다.
 # 해당 환경이 아니면 아무 일도 하지 않습니다.
 winfix.apply()
 
-print(f"APP_ROOT = {APP_ROOT}")
+print(f"docstruct = {getattr(_probe, '__file__', '?')}")
+print(f"APP_ROOT  = {APP_ROOT}")
 
-# 받은 압축본이 최신인지 확인합니다. 오래된 것을 쓰면 이미 고친 오류가
+# 쓰고 있는 것이 최신인지 확인합니다. 오래된 것을 쓰면 이미 고친 오류가
 # 다시 나타납니다 (예: NameError: name '_render_page_images' is not defined).
-_v = APP_ROOT / "VERSION"
-print(f"버전     = {_v.read_text(encoding='utf-8').strip() if _v.is_file() else '(VERSION 파일 없음 — 옛 압축본)'}")
+# 설치본이면 패키지 메타데이터를, 압축본이면 VERSION 파일을 봅니다.
+def _version_text():
+    try:
+        from importlib.metadata import version
+        return version("docstruct")
+    except Exception:
+        _v = APP_ROOT / "VERSION"
+        return _v.read_text(encoding="utf-8").strip() if _v.is_file() else "(확인 불가)"
+
+print(f"버전      = {_version_text()}")
 
 show_environment()
 '''.strip())
@@ -88,6 +116,29 @@ code('''
 # .env 를 방금 고쳤다면 이 셀을 실행하세요 (커널 재시작 불필요).
 from docstruct.checks import reload_environment
 reload_environment()
+''')
+
+# ------------------------------------------------------- 1-b. 소스 편집 시
+md("""
+**docstruct 소스를 직접 고치며 쓰는 경우**(`pip install -e .`)는 아래 셀을 한 번
+실행해 두세요. 이후 `.py` 를 고치면 셀 실행 시점에 자동으로 다시 읽힙니다.
+
+편집 설치는 재설치가 필요 없지만, **커널이 이미 읽어 둔 모듈은 그대로 남습니다.**
+이 셀이 그 부분을 해결합니다.
+""")
+
+code('''
+# 소스를 고치며 쓸 때만 필요합니다. 일반 사용에는 실행하지 않아도 됩니다.
+%load_ext autoreload
+%autoreload 2
+
+# 코드가 바뀌면 설정·어댑터 캐시도 옛것이 남습니다.
+from docstruct.checks import invalidate_caches
+invalidate_caches()
+
+# 주의: converters/pdf/docling_backend.py 를 고치면 Docling 컨버터 캐시가
+# 비워져 다음 PDF 변환 때 모델을 다시 로드합니다(수 GB, 수십 초).
+# 그 파일을 건드리지 않는 한 재로드는 일어나지 않습니다.
 '''.strip())
 
 md("""

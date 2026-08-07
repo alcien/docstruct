@@ -43,12 +43,23 @@ _FILL_PROMPT = """\
 
 [마크다운 파싱]
 {context_markdown}
-
+{region_text}
 규칙:
 - <table {table_num}>에 해당하는 표만 GFM 표로 출력하세요. 같은 페이지의 다른 표는 무시하세요.
 - [중요] 표가 페이지 경계에서 잘려 있으면 해당 방향에 `<-- continue-->` 한 줄을 추가하세요.
 - 병합셀이 있다면 빈칸으로 남겨주세요.
 - 표 외 다른 텍스트 출력 금지.
+"""
+
+#: 그림에서 승격된 표에만 붙는다. PDF 텍스트 레이어의 원문이라 글자가 정확하다.
+#: 다만 좌우 열이 뒤섞여 나오므로 구조는 이미지로 판단해야 한다.
+_REGION_TEXT_BLOCK = """
+[영역 원문 — PDF 텍스트 레이어에서 그대로 추출]
+이 표는 레이아웃 인식에서 그림으로 잘못 분류되어 파싱 결과가 비어 있습니다.
+아래는 해당 영역의 원문입니다. **글자는 이 원문을 그대로 쓰고**(OCR 오독 방지),
+행·열 구조는 첨부 이미지를 보고 판단하세요. 원문은 좌우 열이 뒤섞여 있을 수 있습니다.
+
+{text}
 """
 
 
@@ -185,11 +196,35 @@ def _request_fill_from_html(
     return md
 
 
+def _region_text_block(
+    table: TableInfo,
+    images: list[ImageInfo] | None,
+) -> str:
+    """승격된 표라면 원본 영역의 PDF 원문을 프롬프트 블록으로 만든다.
+
+    입력:
+        table   대상 표 (source_image_id 로 원본 그림을 찾는다)
+        images  같은 페이지의 그림 목록
+    출력: 프롬프트에 끼울 문자열. 해당 없으면 빈 문자열
+    비고:
+        그림에서 승격된 표는 markdown 파싱 결과가 비어 있어 이미지만으로
+        재추출해야 한다. PDF 텍스트 레이어 원문을 함께 주면 글자 오독을
+        막을 수 있다 — 구조는 이미지, 글자는 원문이라는 역할 분담이다.
+    """
+    if not table.source_image_id or not images:
+        return ""
+    for info in images:
+        if info.id == table.source_image_id and info.region_text:
+            return _REGION_TEXT_BLOCK.format(text=info.region_text)
+    return ""
+
+
 def _request_fill_with_image(
     page_content: str,
     table: TableInfo,
     cfg: dict[str, Any],
     page_image_b64: str,
+    images: list[ImageInfo] | None = None,
 ) -> str | None:
     """페이지 이미지를 근거로 표 markdown 을 요청한다.
 
@@ -206,6 +241,7 @@ def _request_fill_with_image(
         table_num=table.table_num,
         title=table.llm_title or "알 수 없음",
         context_markdown=context,
+        region_text=_region_text_block(table, images),
     )
 
     try:
@@ -401,12 +437,21 @@ def process_tables(
     image_cache = _ImageCache()
 
     def _run(job: FillJob) -> tuple[FillJob, str | None]:
+        """재추출 요청 하나를 실행한다 (병렬 워커).
+
+        입력: job — FillJob
+        출력: (job, markdown 또는 None) — 반영은 3단계에서 한꺼번에 한다
+        비고: 부수효과 없이 요청만 수행해, 병렬 실행이 페이지 상태를 서로
+              덮어쓰지 않게 한다.
+        """
         if job.kind == "html":
             return job, _request_fill_from_html(job.table, cfg, job.payload)
         b64 = image_cache.get(job.page.page_image_path or "")
         if b64 is None:
             return job, None
-        return job, _request_fill_with_image(job.payload, job.table, cfg, b64)
+        return job, _request_fill_with_image(
+            job.payload, job.table, cfg, b64, job.page.images
+        )
 
     workers = min(get_settings().llm_concurrency, len(jobs))
     results: list[tuple[FillJob, str | None]] = []
