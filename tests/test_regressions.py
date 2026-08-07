@@ -1627,3 +1627,188 @@ def test_map_pua_leaves_normal_hangul_alone():
     from docstruct.converters.korean_text import map_pua
 
     assert map_pua("숿 중소기업") == "숿 중소기업"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.66 / 0.1.67 — pyhwp 반복 경고 요약
+#
+# 두 종류가 문서마다 수천 줄씩 쏟아진다.
+#   · hwp5.xmlmodel `unmatched field end`  — 필드 짝 안 맞음
+#   · hwp5.dataio   `undefined … value: N` — 비트필드 값이 Enum 표에 없음
+# 둘 다 예외가 아니고 본문 손실도 없다. 그렇다고 통째로 가리면 신호가
+# 사라지므로, 종류별로 세어 문서당 한 줄로 요약한다.
+# ────────────────────────────────────────────────────────────────────
+
+def _noise_logger(name: str):
+    """계수기 시험용 로거."""
+    import logging
+
+    return logging.getLogger(name)
+
+
+def test_repeated_pyhwp_warnings_are_counted_not_printed():
+    """되풀이 경고는 출력되지 않고 종류별로 집계된다."""
+    from docstruct.converters.hwp.hwp5tree import _quiet_warnings
+
+    with _quiet_warnings() as counter:
+        for _ in range(47):
+            _noise_logger("hwp5.xmlmodel").warning("unmatched field end")
+        for _ in range(1168):
+            _noise_logger("hwp5.dataio").warning("undefined UnderlineStyle value: 15")
+        assert counter.total == 47 + 1168
+        summary = counter.summary()
+        assert "47" in summary and "1,168" in summary
+
+
+def test_unknown_warnings_still_pass_through():
+    """모르는 경고까지 삼키면 진짜 문제가 묻힌다 — 반드시 통과해야 한다."""
+    import logging
+
+    from docstruct.converters.hwp.hwp5tree import _NoiseCounter
+
+    counter = _NoiseCounter()
+    record = logging.LogRecord(
+        "hwp5.xmlmodel", logging.WARNING, "", 0,
+        "섹션을 읽지 못했습니다", None, None)
+    assert counter.filter(record) is True
+    assert counter.total == 0
+
+
+def test_enum_dump_line_is_dropped_without_counting():
+    """`defined name/values:` 덤프는 앞 줄에 딸린 것이라 세지 않는다."""
+    import logging
+
+    from docstruct.converters.hwp.hwp5tree import _NoiseCounter
+
+    counter = _NoiseCounter()
+    record = logging.LogRecord(
+        "hwp5.dataio", logging.WARNING, "", 0,
+        "defined name/values: {'SOLID': 0, 'DASHED': 1}", None, None)
+    assert counter.filter(record) is False
+    assert counter.total == 0
+
+
+def test_verbose_env_disables_suppression():
+    """DOCSTRUCT_PYHWP_VERBOSE=true 면 계수기를 달지 않는다."""
+    import logging
+
+    from docstruct.converters.hwp.hwp5tree import _quiet_warnings
+
+    logger = logging.getLogger("hwp5.dataio")
+    before = len(logger.filters)
+    import os
+
+    os.environ["DOCSTRUCT_PYHWP_VERBOSE"] = "true"
+    try:
+        with _quiet_warnings():
+            assert len(logger.filters) == before, "verbose 인데 필터가 붙었습니다"
+    finally:
+        os.environ.pop("DOCSTRUCT_PYHWP_VERBOSE", None)
+
+
+def test_noise_counter_is_removed_after_conversion():
+    """변환이 끝나면 계수기가 두 로거 모두에서 떨어진다 (문서 간 누수 방지)."""
+    import logging
+
+    from docstruct.converters.hwp import hwp5tree
+
+    loggers = [logging.getLogger(n) for n in ("hwp5.xmlmodel", "hwp5.dataio")]
+    before = [len(lg.filters) for lg in loggers]
+
+    # 파일 열기 자체가 실패해도 계수기는 떨어져야 한다.
+    try:
+        hwp5tree.to_markdown("존재하지-않는-파일.hwp")
+    except Exception:
+        pass
+
+    assert [len(lg.filters) for lg in loggers] == before, "계수기가 남았습니다"
+
+
+def test_undefined_enum_does_not_affect_bold_italic():
+    """UnderlineStyle 경고가 나도 bold·italic 은 멀쩡하다.
+
+    CharShape 비트필드에서 underline_style 은 4~7비트(0~15)인데 pyhwp 의
+    표는 0~10 만 정의한다 — 문서가 깨진 게 아니라 pyhwp 표가 비어 있는 것.
+    우리가 읽는 bold(1비트)·italic(0비트)은 별개 비트라 영향이 없다.
+    """
+    pytest.importorskip("hwp5")
+    from hwp5.binmodel.tagid21_char_shape import CharShape
+
+    # italic=1, bold=1, underline_style=15 (정의되지 않은 값)
+    flags = CharShape.Flags((1 << 0) | (1 << 1) | (15 << 4))
+    assert flags.italic == 1
+    assert flags.bold == 1
+    assert int(flags.underline_style) == 15   # 원시 정수 그대로 보존
+
+
+def test_unmatched_field_end_is_not_fatal():
+    """pyhwp 는 짝 없는 필드 종료를 예외 없이 넘긴다 (내용 손실 없음).
+
+    이 경고를 보고 문서가 실패했다고 오해하기 쉬운데, 배치의 failures 에는
+    잡히지 않는다 — 예외가 아니기 때문이다.
+    """
+    pytest.importorskip("hwp5")
+    from hwp5.treeop import ENDEVENT
+    from hwp5.xmlmodel import mfse_field_end
+
+    # 스택이 비어 있으면 unmatched — 경고만 남기고 이벤트를 버린다.
+    assert list(mfse_field_end(ENDEVENT, [], ("dummy", {}))) == []
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.68 — 판정하지 않은 표를 "판정 완료" 로 보고하던 문제
+#
+# 배경: LLM 이 없거나 닿지 않으면 assess 가 모든 표를 table/sufficient 로
+#       기본 표시만 하는데, trace 에는 `[ok] LLM 표 판정` 으로 남았다.
+#       결과 JSON 만 보면 212개 표가 전부 품질 검증을 통과한 것처럼 보인다.
+#       실제로는 LLM 이 한 번도 호출되지 않았다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_unassessed_tables_carry_reason():
+    """LLM 을 못 부른 표에는 그 사실이 reason 에 남는다."""
+    from docstruct.models import TableInfo
+    from docstruct.tables.assess import UNASSESSED_REASON, _mark_default
+
+    table = TableInfo(id="table_1", table_num=1, placeholder="<table 1>", markdown="")
+    _mark_default(table, unassessed=True)
+    assert table.quality == "sufficient"
+    assert table.reason == UNASSESSED_REASON
+
+
+def test_assessed_tables_have_no_unassessed_reason():
+    """정상 판정된 표에는 미판정 표시가 붙지 않는다."""
+    from docstruct.models import TableInfo
+    from docstruct.tables.assess import UNASSESSED_REASON, _mark_default
+
+    table = TableInfo(id="table_1", table_num=1, placeholder="<table 1>", markdown="")
+    _mark_default(table)                         # LLM 이 답했으나 해당 표는 언급 없음
+    assert table.reason != UNASSESSED_REASON
+
+
+def test_llm_failure_marks_tables_unassessed():
+    """LLM 호출이 실패하면 그 페이지 표는 미판정으로 표시된다.
+
+    엔드포인트가 설정돼 있어도 사내망 밖이면 연결이 안 된다. 이때
+    `llm_available()` 은 True 라서, 그것만 보고 판단하면 놓친다.
+    """
+    from docstruct.models import PageContent, TableInfo
+    from docstruct.tables import assess as assess_mod
+    from docstruct.tables.assess import UNASSESSED_REASON
+
+    page = PageContent(
+        page_no=1, page_no_kind="document", content="<table 1>\n\n| a |\n",
+        tables=[TableInfo(id="table_1", table_num=1,
+                          placeholder="<table 1>", markdown="| a |")],
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("연결 불가")
+
+    original = assess_mod.invoke_llm
+    assess_mod.invoke_llm = _boom
+    try:
+        assess_mod.assess_page_tables(page, cfg={"url": "http://x/v1", "model": "m"})
+    finally:
+        assess_mod.invoke_llm = original
+
+    assert page.tables[0].reason == UNASSESSED_REASON

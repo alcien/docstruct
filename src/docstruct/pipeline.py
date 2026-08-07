@@ -230,7 +230,16 @@ def build_document(
             _log.info("그림 %d개의 내용을 VLM 으로 읽었습니다", count)
 
     if assess_tables and any(p.tables for p in pages):
-        _log.info("표 품질 평가 중...")
+        # LLM 이 없으면 assess_document 는 모든 표를 table/sufficient 로
+        # 기본 표시만 하고 끝난다. 그것을 "LLM 판정 완료" 로 기록하면 결과
+        # JSON 이 거짓말을 한다 — 판정한 적 없는 212개 표가 전부 sufficient
+        # 로 남아 사람이 품질을 확인했다고 오해한다. 여기서 미리 갈라 둔다.
+        from docstruct.infrastructure.llm.client import llm_available
+        from docstruct.tables.assess import UNASSESSED_REASON
+
+        llm_on = llm_available()
+        _log.info("표 품질 평가 중..." if llm_on
+                  else "LLM 미설정 — 표 판정을 건너뜁니다 (모두 기본값 처리)")
         t0 = time.perf_counter()
         assess_document(pages, progress=progress)
         timings[STAGE_ASSESS] = time.perf_counter() - t0
@@ -239,6 +248,19 @@ def build_document(
         )
         for page in pages:
             if not page.tables:
+                continue
+            # `llm_available()` 만 보면 부족하다 — 엔드포인트가 설정돼 있어도
+            # 사내망 밖이라 연결이 안 되면 역시 판정이 안 된다. 실제 결과를
+            # 보고 판단한다.
+            unassessed = [t for t in page.tables if t.reason == UNASSESSED_REASON]
+            if unassessed:
+                page.trace.add(
+                    "docstruct.tables.assess", "표 판정 생략",
+                    f"LLM 응답 없음(미설정 또는 연결 불가) — {len(unassessed)}개를 "
+                    "기본값(table/sufficient)으로 표시했을 뿐, 품질을 확인한 것이 "
+                    "아닙니다",
+                    status="skip",
+                )
                 continue
             page.trace.assessed = True
             verdicts = ", ".join(
@@ -292,7 +314,10 @@ def build_document(
             elif fill_tables and page.tables:
                 page.trace.add(
                     "docstruct.tables.fill", "재추출 생략",
-                    "품질 sufficient — LLM 호출 없음", status="skip",
+                    "품질 sufficient — LLM 호출 없음"
+                    if not any(t.reason == UNASSESSED_REASON for t in page.tables)
+                    else "LLM 응답 없음 — 판정 자체를 못 해 재추출 대상이 없음",
+                    status="skip",
                 )
     else:
         if not assess_tables:

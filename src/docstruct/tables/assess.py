@@ -96,28 +96,51 @@ _VALID_QUALITIES = frozenset({WRONG, INSUFFICIENT})
 MAX_ASSESS_CHARS = 20_000
 
 
-def _mark_default(table: TableInfo) -> None:
+#: LLM 없이 기본값으로 표시했을 때 reason 에 남기는 문구.
+#: 결과 JSON 만 보고 "판정을 거쳐 sufficient 가 나왔다" 고 오해하지 않도록,
+#: 판정한 적이 없다는 사실을 데이터에 남긴다.
+UNASSESSED_REASON = "미판정 — LLM 없이 기본값으로 표시 (품질을 확인한 것이 아님)"
+
+
+def _mark_default(table: TableInfo, *, unassessed: bool = False) -> None:
     """문제없는 표로 표시한다.
 
-    입력: table — TableInfo
+    입력:
+        table       TableInfo
+        unassessed  LLM 자체가 없어 판정을 못 한 경우 True
     출력: 없음 (content_type=table, quality=sufficient)
+    비고:
+        `unassessed=True` 면 reason 에 그 사실을 남긴다. 이것이 없으면
+        결과 JSON 에서 "LLM 이 sufficient 로 판정한 표" 와 "판정조차 못 한
+        표" 가 똑같이 보인다 — 212개 표가 전부 sufficient 인데 실은 LLM 이
+        한 번도 호출되지 않은 상황을 구분할 수 없다.
     """
     table.content_type = TABLE
     table.quality = SUFFICIENT
+    if unassessed:
+        table.reason = UNASSESSED_REASON
 
 
 def _apply_assessment(
     tables: list[TableInfo],
     assessment: list[dict[str, Any]],
+    *,
+    unassessed: bool = False,
 ) -> None:
     """LLM 판정 결과를 TableInfo 에 반영한다.
 
     입력:
         tables      페이지의 표 목록
         assessment  LLM 이 반환한 판정 목록 (id, content_type, quality, ...)
+        unassessed  LLM 을 아예 못 불렀으면 True (미설정·연결 불가·응답 실패)
     출력: 없음 (제자리 갱신)
     동작: 판정에 없는 표는 문제없음으로 간주. 알 수 없는 content_type 도 마찬가지.
           content_type 이 table 인데 quality 가 없으면 insufficient 로 둔다.
+    비고:
+        `unassessed` 를 구분하는 이유: LLM 이 "괜찮다" 고 답한 표와, LLM 을
+        부르지도 못해 기본값이 된 표가 결과 JSON 에서 똑같이 보이면 안 된다.
+        사내망 밖에서 돌리면 엔드포인트가 설정돼 있어도 연결이 안 되는데,
+        그때 212개 표가 전부 sufficient 로 남아 검수를 통과한 것처럼 보였다.
     """
     assessment_map: dict[str, dict[str, Any]] = {
         item["id"]: item for item in assessment if item.get("id")
@@ -127,7 +150,7 @@ def _apply_assessment(
     for table in tables:
         info = assessment_map.get(table.id)
         if not info:
-            _mark_default(table)
+            _mark_default(table, unassessed=unassessed)
             continue
 
         content_type = (info.get("content_type") or "").strip().lower()
@@ -253,7 +276,7 @@ def assess_page_tables(
         # 엔드포인트도 로컬 VLM 도 없으면 판정을 건너뛴다.
         _log.debug("LLM 미설정 — 표 평가 스킵")
         for table in page.tables:
-            _mark_default(table)
+            _mark_default(table, unassessed=True)
         return
 
     content = page.content or ""
@@ -291,11 +314,13 @@ def assess_page_tables(
             cfg=cfg,
         )
         assessment = parse_json_list_or_object_map(raw)
+        unassessed = False
     except Exception as exc:
         _log_page_failure(page.page_no, exc)
         assessment = []
+        unassessed = True                # 연결 불가·응답 실패 — 판정한 적 없음
 
-    _apply_assessment(page.tables, assessment)
+    _apply_assessment(page.tables, assessment, unassessed=unassessed)
     if candidates:
         promote_images_to_tables(page, assessment)
 

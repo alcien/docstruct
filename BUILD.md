@@ -1,5 +1,34 @@
 # 배포 방법
 
+## 배포 형태는 셋, 원본은 하나
+
+같은 코드가 세 가지로 나갑니다. 차이는 **임포트 루트와 폴더 배치뿐**입니다.
+
+| 트리 | 임포트 루트 | 배치 | 용도 |
+|------|------------|------|------|
+| `pkg` (여기) | `docstruct.converters` … | `src/docstruct/**` | pip 패키지 |
+| `docstruct-local` | `converters` / `docstruct` | 평면 4-패키지 | 로컬 개발·노트북 |
+| `overlay` | 위와 동일 + `rag` | `app/` 아래 | backend-main 덮어쓰기 |
+
+**손으로 세 벌을 맞추지 마세요.** 수정은 `pkg` 에만 하고 나머지는 생성합니다.
+
+```bash
+python tools/sync_trees.py --out dist/ --extras /경로/overlay/app
+```
+
+`--extras` 는 pkg 에 없는 overlay 전용 폴더(`rag/`,
+`infrastructure/observability/`, `main.py.patched`)를 가져올 위치입니다.
+이 셋은 backend 원본 소유라 pkg 가 관리하지 않습니다.
+
+CI 에서는 드리프트만 검사할 수도 있습니다.
+
+```bash
+python tools/sync_trees.py --check ../docstruct-local ../overlay
+```
+
+`.env.example` 과 문서(`API.md` `BUGFIXES.md` …)도 pkg 것이 배포됩니다.
+예전에 트리마다 따로 관리하다 서로 다른 키가 빠져 있었습니다(BUGFIXES G-8).
+
 ## 빌드 전 검사 (필수)
 
 패키지 구조상 `converters` `core` `infrastructure` 가 `docstruct` 하위로
@@ -23,6 +52,12 @@ python tools/verify_package.py .venv/bin/python      # + 실제 import 검증
 ```
 
 ②는 `X.cache_clear()` 를 부르는데 X 에 `@lru_cache` 가 없는 경우를 찾습니다.
+
+회귀 테스트도 함께 돌리세요.
+
+```bash
+pytest tests/ -q          # 12건, 무거운 의존성 없이 도는 것만
+```
 함수를 삽입하다 **데코레이터와 함수 사이에 끼워 넣으면** 데코레이터가
 엉뚱한 함수에 붙는데, 구문 오류가 나지 않아 실행 시점에야 드러납니다.
 

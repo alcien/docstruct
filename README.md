@@ -422,6 +422,7 @@ setx PYTHONUTF8 1
 | `CLI.md` | 명령행 사용법 |
 | `INSTALL.md` | 설치·설정·문제 해결 |
 | `BUGFIXES.md` | 원본 대비 수정한 버그 |
+| `docs/docstruct_정의서.xlsx` | 형식별 파이프라인·모듈·설정 정의서 |
 | `RESTRUCTURE.md` | 계층 구조 재편 검토 |
 | `GIT.md` | git 명령어 (공개/사내 저장소) |
 | `GITHUB.md` | GitHub 배포 |

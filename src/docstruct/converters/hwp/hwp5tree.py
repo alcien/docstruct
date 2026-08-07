@@ -27,6 +27,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from docstruct.converters.hwp.styling import DocStyles, format_paragraph, read_styles
@@ -124,28 +126,36 @@ def to_markdown(hwp_path: str) -> str:
     from hwp5.treeop import ENDEVENT
     from hwp5.xmlmodel import Hwp5File
 
-    _quiet_pyhwp()
-
-    hwp = Hwp5File(hwp_path)
-    try:
-        styles = read_styles(hwp, ENDEVENT)
-        _log.debug("서식: 스타일 %d개 · 글자모양 %d개",
-                   len(styles.style_names), len(styles.charshapes))
-        parts: list[str] = []
-        nested_no = _Counter()
-        for index in range(_section_count(hwp)):
-            try:
-                section = hwp.bodytext.section(index)
-            except Exception as exc:             # noqa: BLE001 - 섹션 하나가 깨져도 나머지는 살린다
-                _log.warning("%s번 섹션을 읽지 못했습니다: %s", index, exc)
-                continue
-            if parts:
-                parts.append(PAGE_BREAK)         # 구역이 바뀌면 새 쪽으로 본다
-            parts.extend(_read_section(section, ENDEVENT, styles, nested_no))
-    finally:
-        # 열린 핸들을 남기면 Windows 에서 원본 삭제·이동이 막히고,
-        # 오래 사는 서버 프로세스에서는 핸들이 누적된다.
-        _close_quietly(hwp)
+    # 계수기는 파일 열기가 실패해도 반드시 떨어져야 한다. Hwp5File() 자체가
+    # 예외를 던지는 경우(파일 없음·형식 오류)가 흔하므로 그것까지 감싼다.
+    with _quiet_warnings() as counter:
+        hwp = Hwp5File(hwp_path)
+        try:
+            styles = read_styles(hwp, ENDEVENT)
+            _log.debug("서식: 스타일 %d개 · 글자모양 %d개",
+                       len(styles.style_names), len(styles.charshapes))
+            parts: list[str] = []
+            nested_no = _Counter()
+            for index in range(_section_count(hwp)):
+                try:
+                    section = hwp.bodytext.section(index)
+                except Exception as exc:         # noqa: BLE001 - 섹션 하나가 깨져도 나머지는 살린다
+                    _log.warning("%s번 섹션을 읽지 못했습니다: %s", index, exc)
+                    continue
+                if parts:
+                    parts.append(PAGE_BREAK)     # 구역이 바뀌면 새 쪽으로 본다
+                parts.extend(_read_section(section, ENDEVENT, styles, nested_no))
+        finally:
+            # 열린 핸들을 남기면 Windows 에서 원본 삭제·이동이 막히고,
+            # 오래 사는 서버 프로세스에서는 핸들이 누적된다.
+            _close_quietly(hwp)
+        summary = counter.summary()
+        if summary:
+            _log.info(
+                "pyhwp 반복 경고 요약 — %s "
+                "(본문·표에는 영향 없음. 원문을 보려면 %s=true)",
+                summary, _VERBOSE_ENV,
+            )
     # 쪽 표식은 공백 판정에 걸리므로 따로 남긴다.
     kept = [p for p in parts if p == PAGE_BREAK or p.strip()]
     return "\n\n".join(
@@ -170,17 +180,132 @@ def _close_quietly(hwp) -> None:
         _log.debug("Hwp5File 닫기 실패 — 무시합니다", exc_info=True)
 
 
-def _quiet_pyhwp() -> None:
-    """pyhwp 의 INFO 로그를 줄인다.
+#: 문서마다 대량으로 반복되는 pyhwp 경고들. 여기 걸리는 것만 모아서 세고,
+#: 나머지 경고는 **그대로 통과시킨다** — 모르는 경고를 삼키면 진짜 문제가
+#: 조용히 묻힌다.
+#:
+#:   unmatched field end     hwp5.xmlmodel — 필드(누름틀·쪽번호) 짝이 안 맞음.
+#:                           짝 없는 종료 이벤트를 버리고 진행하며 본문 손실은
+#:                           없다 (xmlmodel.mfse_field_end).
+#:   undefined … value       hwp5.dataio  — 비트필드 값이 pyhwp 의 Enum 표에
+#:                           없음. `int.__new__` 로 원시 정수를 그대로 돌려주고
+#:                           예외를 내지 않는다 (dataio.py:319).
+#:
+#: 후자의 대표 사례가 `UnderlineStyle value: 15` 다. CharShape 비트필드에서
+#: underline_style 은 **4~7비트(4비트, 0~15)** 인데 pyhwp 의 표는 0~10 만
+#: 정의한다. 즉 문서가 깨진 게 아니라 **pyhwp 표가 비어 있는 것**이다.
+#: 우리가 읽는 bold(1비트)·italic(0비트)은 별개 비트라 영향을 받지 않는다.
+_NOISY_PATTERNS = ("unmatched field end", "undefined ", "defined name/values")
+
+#: 계수기를 붙일 로거들.
+_NOISY_LOGGERS = ("hwp5.xmlmodel", "hwp5.dataio")
+
+#: 원문 경고를 그대로 보고 싶을 때 켠다 (`DOCSTRUCT_PYHWP_VERBOSE=true`).
+#: pyhwp 가 특정 문서에서 무엇을 못 읽는지 직접 확인해야 할 때 쓴다.
+_VERBOSE_ENV = "DOCSTRUCT_PYHWP_VERBOSE"
+
+
+def _verbose_pyhwp() -> bool:
+    """pyhwp 원문 경고를 그대로 흘릴지.
+
+    입력: 없음 (`DOCSTRUCT_PYHWP_VERBOSE`)
+    출력: 켜져 있으면 True (계수기를 달지 않는다)
+    """
+    import os
+
+    return os.environ.get(_VERBOSE_ENV, "").strip().lower() in ("1", "true", "on", "yes")
+
+
+class _NoiseCounter(logging.Filter):
+    """되풀이되는 pyhwp 경고를 종류별로 세고 출력은 막는다.
+
+    입력(필드): counts — 요약 문구 → 횟수
+    출력: filter() 가 False 를 돌려 해당 레코드를 버린다
+    비고:
+        통째로 가리지 않는다. `_NOISY_PATTERNS` 에 걸리는 것만 삼키고
+        나머지는 통과시킨다. 삼킨 것도 버리지 않고 종류별로 세어,
+        호출부가 문서당 한 줄로 요약한다.
+
+        `defined name/values:` 로 시작하는 줄은 앞선 `undefined …` 경고에
+        딸린 Enum 표 덤프다. 한 번에 열 줄이 넘어가므로 세지 않고 버린다
+        — 같은 정보가 앞 줄에 이미 요약돼 있다.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.counts: dict[str, int] = {}
+
+    @property
+    def total(self) -> int:
+        """삼킨 경고의 총 횟수.
+
+        입력: 없음
+        출력: counts 값의 합
+        """
+        return sum(self.counts.values())
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """레코드를 통과시킬지 정한다.
+
+        입력: record — 로그 레코드
+        출력: 되풀이 경고면 False (버림), 그 밖에는 True
+        """
+        message = str(record.getMessage())
+        lowered = message.lower()
+        if not any(pattern in lowered for pattern in _NOISY_PATTERNS):
+            return True                      # 모르는 경고는 그대로 보여 준다
+        if lowered.startswith("defined name/values"):
+            return False                     # 앞 줄에 딸린 표 덤프 — 세지 않는다
+        key = message[:80]
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return False
+
+    def summary(self) -> str:
+        """문서당 한 줄 요약.
+
+        입력: 없음
+        출력: `필드 짝 경고 47건 · UnderlineStyle 15 1,168건` 형태.
+              삼킨 것이 없으면 빈 문자열
+        """
+        if not self.counts:
+            return ""
+        parts = [
+            f"{key} {count:,}건"
+            for key, count in sorted(self.counts.items(), key=lambda kv: -kv[1])
+        ]
+        return " · ".join(parts)
+
+
+@contextmanager
+def _quiet_warnings() -> "Iterator[_NoiseCounter]":
+    """되풀이 경고 계수기를 붙였다가 반드시 뗀다.
 
     입력: 없음
-    출력: 없음
+    출력: _NoiseCounter (with 블록 안에서 counts 를 읽는다)
     비고:
-        `hwp5.bintype` 이 모델 타입을 컴파일할 때마다 INFO 를 남긴다.
-        문서 하나에 수십 줄이 쏟아져 우리 로그를 덮는다. 경고 이상만 남긴다.
+        떼는 일을 호출부의 finally 에 맡겼더니, 파일 열기가 먼저 실패하는
+        경로에서 계수기가 로거에 남았다. 배치로 손상 파일을 계속 만나면
+        필터가 무한히 쌓인다. 붙이고 떼는 짝을 여기서 묶는다.
+
+        `DOCSTRUCT_PYHWP_VERBOSE=true` 면 아무것도 달지 않아 pyhwp 경고가
+        원문 그대로 나온다.
     """
     for name in ("hwp5.bintype", "hwp5.binmodel", "hwp5.filestructure"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    counter = _NoiseCounter()
+    if _verbose_pyhwp():
+        yield counter                        # 계수기를 달지 않는다 — 원문 그대로
+        return
+
+    loggers = [logging.getLogger(name) for name in _NOISY_LOGGERS]
+    for logger in loggers:
+        logger.addFilter(counter)
+    try:
+        yield counter
+    finally:
+        for logger in loggers:
+            logger.removeFilter(counter)
 
 
 def _section_count(hwp) -> int:
