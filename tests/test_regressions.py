@@ -2039,3 +2039,60 @@ def test_slim_output_drops_trace_keeps_content():
 
     full = doc.to_dict()
     assert "trace" in full["pages"][0], "기본 출력은 trace 를 유지해야 합니다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.72 — 표 렌더 정확성 (셀 텍스트를 기호가 끊던 문제)
+#
+# 배경: 원본 성과계획서와 셀 단위로 대조한 결과 **데이터 유실은 0%** 였다.
+#       문제는 표현이었다. 좁은 칸에서 작성자가 Enter 로 나눈 줄마다 강조가
+#       걸려 `**프로그램목표Ⅰ-1** **의정활동의 …**` 가 됐고, 셀 중간에 낀
+#       `**` 가 문자열 매칭을 깨뜨렸다 — 대조 검증에서 멀쩡한 셀 75개가
+#       유실로 오판됐다. RAG 색인·LLM 판정도 같은 이유로 잘못 읽는다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_render_table_drops_leading_empty_rows():
+    """맨 앞의 완전히 빈 행은 헤더로 쓰지 않는다.
+
+    정부 HWP 문서는 표 위에 여백용 빈 행을 두는 일이 흔한데, 그것이 GFM
+    헤더가 되면 `|||||||||` 같은 빈 머리행이 나와 표의 의미가 사라진다.
+    """
+    from docstruct.converters.hwp.hwp5tree import _Cell, _Table, _render_table
+
+    table = _Table(cols=2)
+    table.cells = [
+        _Cell(col=0, row=0, blocks=[]), _Cell(col=1, row=0, blocks=[]),
+        _Cell(col=0, row=1, blocks=["구분"]), _Cell(col=1, row=1, blocks=["금액"]),
+        _Cell(col=0, row=2, blocks=["인건비"]), _Cell(col=1, row=2, blocks=["100"]),
+    ]
+    header = _render_table(table).splitlines()[0]
+    assert "구분" in header and "금액" in header
+
+
+def test_render_table_keeps_row_with_any_value():
+    """값이 하나라도 있는 행은 버리지 않는다."""
+    from docstruct.converters.hwp.hwp5tree import _Cell, _Table, _render_table
+
+    table = _Table(cols=2)
+    table.cells = [
+        _Cell(col=0, row=0, blocks=[]), _Cell(col=1, row=0, blocks=["합계"]),
+        _Cell(col=0, row=1, blocks=["인건비"]), _Cell(col=1, row=1, blocks=["100"]),
+    ]
+    header = _render_table(table).splitlines()[0]
+    assert "합계" in header
+
+
+def test_render_table_keeps_fully_empty_table():
+    """표 전체가 비어 있으면 그대로 둔다 (원본이 장식용 빈 상자)."""
+    from docstruct.converters.hwp.hwp5tree import _Cell, _Table, _render_table
+
+    table = _Table(cols=1)
+    table.cells = [_Cell(col=0, row=0, blocks=[])]
+    assert _render_table(table).splitlines()[0] == "|  |"
+
+
+def test_hwp_fill_html_option_exists():
+    """정확성 우선 작업에서 표 재추출 근거를 확보하는 설정이 있다."""
+    import docstruct
+
+    assert "hwp_fill_html" in docstruct.option_keys()

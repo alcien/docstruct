@@ -470,13 +470,81 @@ def _render_table(table: _Table) -> str:
     for cell in table.cells:
         if not (0 <= cell.row < rows and 0 <= cell.col < cols):
             continue
-        text = CELL_LINE_JOIN.join(b.strip() for b in cell.blocks if b.strip())
-        grid[cell.row][cell.col] = _escape_cell(text)
+        grid[cell.row][cell.col] = _escape_cell(_join_cell_blocks(cell.blocks))
+
+    # 맨 앞의 **완전히 빈 행**은 헤더로 쓰지 않는다. 정부 HWP 문서는 표
+    # 위쪽에 여백용 빈 행을 두는 일이 흔한데, 그것이 GFM 헤더가 되면
+    # `|||||||||` 같은 빈 머리행이 나와 표의 의미가 사라진다. 값이 없는
+    # 행이므로 버려도 잃는 정보가 없다 — 값이 하나라도 있으면 남긴다.
+    while len(grid) > 1 and not any(c.strip() for c in grid[0]):
+        grid.pop(0)
 
     lines = ["| " + " | ".join(grid[0]) + " |",
              "| " + " | ".join(["---"] * cols) + " |"]
     lines.extend("| " + " | ".join(row) + " |" for row in grid[1:])
     return "\n".join(lines)
+
+
+#: 굵게 표시. styling.format_paragraph 가 문단 전체에 두르는 기호다.
+_BOLD = "**"
+
+
+def _is_bold_block(block: str) -> bool:
+    """이 블록이 **우리가** 두른 굵게인지 판별한다.
+
+    입력: block — 셀 안의 문단 하나
+    출력: 양끝이 `**` 로 감싸였고 안쪽에 내용이 있으면 True
+    비고:
+        원문에 들어 있던 별표와 구분하기 위한 검사다. 정부 문서에는
+        `96.25*0.4` 같은 계산식이나 `* 주:` 각주가 흔하다. 문자열 전체를
+        정규식으로 훑으면 그런 별표까지 건드려, 셀이 통째로 사라지는
+        일이 생긴다 — 실제로 `*****` 만 담긴 셀이 빈 칸이 됐다.
+        블록 단위로 양끝만 보면 원문 별표는 손대지 않는다.
+    """
+    return (
+        len(block) > 2 * len(_BOLD)
+        and block.startswith(_BOLD)
+        and block.endswith(_BOLD)
+    )
+
+
+def _join_cell_blocks(blocks: list[str]) -> str:
+    """셀 안의 문단들을 이어 붙이되, 끊긴 굵게를 하나로 합친다.
+
+    입력: blocks — 셀 안의 문단 목록
+    출력: 이어 붙인 셀 텍스트
+    비고:
+        좁은 칸에서 작성자가 Enter 로 줄을 나누면 문단마다 굵게가 걸려
+        `**프로그램목표Ⅰ-1** **의정활동의 …**` 가 된다. 보기 나쁜 데서
+        그치지 않는다 — 셀 중간에 낀 `**` 가 문자열 매칭을 깨뜨려,
+        원본 대조 검증에서 멀쩡한 셀 75개가 유실로 오판됐다. RAG 색인이나
+        LLM 판정도 같은 이유로 이 셀들을 잘못 읽는다.
+
+        **글자와 공백은 건드리지 않는다.** `년 도` 를 `년도` 로 붙일지는
+        문서마다 답이 달라(`성과관리대상 사업` 은 띄어야 맞다) 추측하면
+        안 되고, 여기서 고치려는 것은 기호뿐이다.
+    """
+    parts = [b.strip() for b in blocks if b.strip()]
+    if not parts:
+        return ""
+
+    out: list[str] = []
+    run: list[str] = []                          # 연속된 굵게 블록의 알맹이
+
+    def flush() -> None:
+        """모아둔 굵게 블록을 한 덩어리로 내보낸다."""
+        if run:
+            out.append(_BOLD + CELL_LINE_JOIN.join(run) + _BOLD)
+            run.clear()
+
+    for part in parts:
+        if _is_bold_block(part):
+            run.append(part[len(_BOLD):-len(_BOLD)])
+        else:
+            flush()
+            out.append(part)
+    flush()
+    return CELL_LINE_JOIN.join(out)
 
 
 def _escape_cell(text: str) -> str:

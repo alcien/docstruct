@@ -90,6 +90,7 @@ _ENV_KEYS: dict[str, str] = {
     "ocr_lang": "DOCLING_OCR_LANG",
     "force_full_page_ocr": "DOCLING_FORCE_FULL_PAGE_OCR",
     "generate_parsed_pages": "DOCLING_GENERATE_PARSED_PAGES",
+    "hwp_fill_html": "DOCSTRUCT_HWP_FILL_HTML",
     "code_formula_enrichment": "DOCLING_CODE_FORMULA_ENRICHMENT",
     # 성능
     "device": "DOCLING_DEVICE",

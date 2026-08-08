@@ -27,6 +27,7 @@ from docstruct.converters.hwp.hwpml import to_markdown as hwpml_to_markdown
 from docstruct.converters.hwp.hwpml import to_text as hwpml_to_text
 from docstruct.converters.hwp.hwpml import to_xml as hwpml_to_xml
 from docstruct.converters.hwp import hwp5tree
+from docstruct.core.config import get_settings
 from docstruct.converters.hwp.diagnose import diagnose
 from docstruct.converters.hwp.olefile import clean_text, extract_raw_text, text_to_html, text_to_markdown, text_to_xml
 import logging
@@ -297,16 +298,36 @@ class HwpConverter(BaseConverter):
         """원본 `<table>` HTML 조각을 문서 순서로 얻는다.
 
         입력: 없음
-        출력: HTML 문자열 목록. HWPML·olefile 경로이거나 bs4 미설치면 빈 목록
-        비고: 페이지 이미지가 없는 HWP 에서 표 재추출의 근거로 쓴다
+        출력: HTML 문자열 목록. 근거를 만들 수 없으면 빈 목록
+        비고:
+            페이지 이미지가 없는 HWP 에서 표 재추출의 근거로 쓴다.
+
+            hwp5-tree 로 이미 잘 뽑았다면 기본적으로는 빈 목록을 준다 —
+            근거를 만들려고 hwp5html 을 한 번 더 돌리는 비용(문서당 수십 초)
+            이 크기 때문이다. 그런데 그 때문에 **hwp5-tree 로 성공한 문서는
+            표 재추출을 아예 할 수 없었다.** 판정에서 insufficient 가 나와도
+            고칠 방법이 없었다는 뜻이다.
+
+            정확성이 속도보다 중요한 작업에서는 `hwp_fill_html=True` 로
+            켜면 hwp5-tree 경로에서도 hwp5html 을 추가로 돌려 근거를 만든다.
         """
-        if is_hwpml(self.path) or self._get_tree_markdown() is not None:
+        if is_hwpml(self.path):
+            return []
+        if self._get_tree_markdown() is not None and not get_settings().hwp_fill_html:
             return []
         if self._uses_ole_fallback():
             return []
         if not BS4_AVAILABLE:
             return []
-        soup = BeautifulSoup(self._get_html(), "html.parser")
+        try:
+            html = self._get_html()
+        except Exception as exc:                 # noqa: BLE001 - 근거가 없을 뿐, 추출은 이미 끝났다
+            _log.warning(
+                "표 재추출 근거용 HTML 을 얻지 못했습니다 (추출 결과에는 영향 없음): %s",
+                exc,
+            )
+            return []
+        soup = BeautifulSoup(html, "html.parser")
         return [str(table) for table in soup.find_all("table")]
 
     def to_xml(self) -> str:

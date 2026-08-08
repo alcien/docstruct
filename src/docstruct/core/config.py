@@ -712,6 +712,7 @@ class Settings:
     picture_mode: str
     code_formula_enrichment: bool        # 수식·코드 VLM (무거움, 표 추출엔 불필요)
     generate_parsed_pages: bool          # 페이지 셀 보관 (OCR/텍스트레이어 측정용, 메모리↑)
+    hwp_fill_html: bool                  # HWP 표 재추출 근거용 HTML 을 추가로 뽑을지 (느림)
 
     def describe(self) -> list[tuple[str, str, bool]]:
         """사람이 읽는 설정 요약을 만든다.
@@ -1048,6 +1049,7 @@ def _build_settings() -> Settings:
         # 켜면 페이지별 text_layer/OCR 판별이 가능해집니다. 끄면 파싱은
         # 동일하게 되지만 처리 경로가 "측정 안 함" 으로 표시됩니다.
         generate_parsed_pages=_get_bool("DOCLING_GENERATE_PARSED_PAGES", False),
+        hwp_fill_html=_get_bool("DOCSTRUCT_HWP_FILL_HTML", False),
         llm=llm,
         llm_fallback=_build_fallback(),
         local_vlm=_build_local_vlm(),
