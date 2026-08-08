@@ -742,15 +742,15 @@ class DocStruct(_SettingsMixin):
         """
         return [t for p in self.document.pages for t in p.tables]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, slim: bool = False) -> dict[str, Any]:
         """구조화 결과를 dict 로 얻는다.
 
         입력: 없음
         출력: document.json 과 같은 구조의 dict
         """
-        return self.document.to_dict()
+        return self.document.to_dict(slim=slim)
 
-    def to_json_str(self, *, indent: int = 2) -> str:
+    def to_json_str(self, *, indent: int = 2, slim: bool = False) -> str:
         """구조화 결과를 JSON 문자열로 얻는다 (파일 저장 없음).
 
         입력: indent — 들여쓰기 칸 수. None 이면 한 줄로 압축
@@ -760,16 +760,21 @@ class DocStruct(_SettingsMixin):
             쓴다. 이 메서드는 HTTP 응답 본문이나 로그처럼 문자열이 필요할 때
             쓴다.
         """
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
+        return json.dumps(self.to_dict(slim=slim), ensure_ascii=False, indent=indent)
 
-    def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> Path:
+    def to_json(self, path: str | Path | None = None, *, indent: int = 2,
+                slim: bool = False) -> Path:
         """구조화 결과를 JSON 파일로 저장한다.
 
         입력:
             path    저장 경로. 생략하면 원본 파일명 옆에 <문서명>.json
             indent  들여쓰기 칸 수
+            slim    True 면 실행 기록(trace)을 빼고 본문·표만 담는다
         출력: 저장된 Path (내용이 아니라 **경로**)
-        비고: 내용이 필요하면 to_dict() 또는 to_json_str() 을 쓴다.
+        비고:
+            내용이 필요하면 to_dict() 또는 to_json_str() 을 쓴다.
+            slim 은 사람이 읽거나 RAG 로 넘길 때 쓴다 — 72쪽 문서에서
+            trace 가 파일의 85%를 차지한다. 진단이 필요하면 끄면 된다.
         """
         if path is None:
             base = self._source or Path("document")
@@ -778,7 +783,7 @@ class DocStruct(_SettingsMixin):
         path.parent.mkdir(parents=True, exist_ok=True)
         # 임시 폴더에 있는 이미지를 JSON 옆으로 건져낸 뒤 경로를 쓴다.
         _rescue_scratch(self.document, path.parent)
-        path.write_text(self.to_json_str(indent=indent), encoding="utf-8")
+        path.write_text(self.to_json_str(indent=indent, slim=slim), encoding="utf-8")
         _log.info("JSON 저장: %s", path)
         return path
 
@@ -983,7 +988,7 @@ class DocStructBatch(_SettingsMixin):
         """
         return list(self._failures)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, slim: bool = False) -> dict[str, Any]:
         """전체 결과를 dict 로 얻는다.
 
         입력: 없음
@@ -994,7 +999,7 @@ class DocStructBatch(_SettingsMixin):
             "total": len(self._paths),
             "succeeded": len(self._documents),
             "failed": len(self._failures),
-            "documents": [d.to_dict() for d in self._documents],
+            "documents": [d.to_dict(slim=slim) for d in self._documents],
             "failures": [
                 {"file": str(p), "error": f"{type(e).__name__}: {e}"}
                 for p, e in self._failures
@@ -1039,13 +1044,13 @@ class DocStructBatch(_SettingsMixin):
         _log.info("JSON 저장: %s 아래 %d건", out, len(written))
         return written
 
-    def to_json_str(self, *, indent: int = 2) -> str:
+    def to_json_str(self, *, indent: int = 2, slim: bool = False) -> str:
         """전체 결과를 JSON 문자열로 얻는다 (파일 저장 없음).
 
         입력: indent — 들여쓰기 칸 수. None 이면 한 줄로 압축
         출력: JSON 문자열 (to_dict() 와 같은 구조)
         """
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
+        return json.dumps(self.to_dict(slim=slim), ensure_ascii=False, indent=indent)
 
     def save(self, out_dir: str | Path, *, unique: bool = False) -> dict[str, list[Path]]:
         """문서별로 산출물 전체를 저장한다.

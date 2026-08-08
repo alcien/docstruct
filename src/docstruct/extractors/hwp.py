@@ -138,12 +138,36 @@ def _split_by_page_break(
                 page_no_kind="document",
                 content=chunk,
                 tables=page_tables,
-                trace=trace,
+                # 페이지마다 **독립된** trace 를 준다. 같은 객체를 공유하면
+                # 이후 단계가 페이지별로 남기는 기록이 한 리스트에 쌓이고,
+                # 그 리스트가 페이지 수만큼 직렬화된다 — 72쪽 문서에서
+                # 203단계가 72번 복제돼 JSON 의 85%(2.5MB)가 중복이었다.
+                # 게다가 1쪽 기록과 72쪽 기록을 구분할 수 없었다.
+                trace=_clone_trace(trace, table_count=len(page_tables)),
                 page_image_path=page_image_path if index == 1 else None,
             )
         )
     _log.info("쪽 나눔 표식으로 %d쪽으로 나눴습니다", len(pages))
     return pages
+
+
+def _clone_trace(trace: PageTrace, *, table_count: int) -> PageTrace:
+    """분할 전까지의 기록을 복사한 새 PageTrace 를 만든다.
+
+    입력: trace — 분할 전 trace, table_count — 이 쪽의 표 개수
+    출력: steps 를 복사한 독립 PageTrace
+    비고:
+        추출까지의 기록(어느 경로로 파싱했는지)은 모든 쪽에 공통이라
+        복사해 남기고, 이후 단계는 쪽마다 따로 쌓이게 한다.
+    """
+    clone = PageTrace(
+        extractor=trace.extractor,
+        text_source=trace.text_source,
+        ocr_ratio=trace.ocr_ratio,
+        table_count=table_count,
+    )
+    clone.steps = list(trace.steps)
+    return clone
 
 
 def _apply_preview(

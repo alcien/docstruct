@@ -1446,3 +1446,46 @@ XSLT 를 얹은 것뿐이라, 둘 다 실패했다면 원인이 같을 가능성
 죽은 쪽이 진짜 원인에 가깝다.
 
 ### 테스트 3건 추가 (총 143건)
+
+## 0.1.71 (2026-08-07) — trace 객체 공유로 JSON 의 85%가 중복
+
+72쪽 성과계획서 결과 JSON(4.3MB) 검토 중 발견. 모든 쪽의 trace.steps 가
+**203개로 동일**했고 1쪽과 72쪽의 내용이 완전히 같았다.
+
+### 원인
+
+`extractors/hwp._split_by_page_break()` 가 쪽마다 PageContent 를 만들면서
+`trace=trace` 로 **같은 PageTrace 객체를 넘겼다.** 이후 단계가 쪽마다 남기는
+기록이 한 리스트에 쌓이고, 그 리스트가 쪽 수만큼 직렬화됐다.
+
+    docstruct.tables.tags    5,184 = 72쪽 × 72번
+    docstruct.tables.assess  4,824
+    docstruct.tables.fill    4,464
+    합계 14,616 steps · 2.5MB (파일의 85%)
+
+쪽별 기록을 구분할 수 없다는 점이 더 큰 문제였다 — 어느 쪽에서 판정이
+생략됐는지 알 수 없었다.
+
+### 수정
+
+`_clone_trace()` 로 쪽마다 독립 PageTrace 를 만든다. 분할 전 공통 기록
+(어느 경로로 파싱했는지)은 복사해 남기고, 이후 단계는 쪽마다 따로 쌓인다.
+`table_count` 도 쪽별 실제 표 개수로 바로잡았다.
+
+    14,616 steps → 283 steps  (98% 감소)
+    JSON 4.3MB → 575KB
+
+### 함께 추가 — `slim=True` 출력
+
+"모듈 정보가 너무 많아 파악이 힘들다" 는 요청. `to_dict`/`to_json_str`/
+`to_json` 에 `slim` 을 넣었다. trace·layout·pipeline·timings 를 빼고
+본문·표·그림만 남긴다.
+
+    ds.to_json("결과.json", slim=True)
+    batch.to_json("결과/", slim=True)
+
+정보를 지우는 게 아니라 가린다 — 진단이 필요하면 slim 없이 뽑으면 된다.
+표는 `{id, table_num, title, markdown}` 로, 쪽 처리 경로는 `extraction`
+한 줄 요약으로 줄인다.
+
+### 테스트 5건 추가 (총 148건)

@@ -378,13 +378,33 @@ class PageContent:
     #: 레이아웃 모델이 인식한 영역 목록 (PDF 만). docstruct.layout.LayoutItem
     layout: list[Any] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, slim: bool = False) -> dict[str, Any]:
         """JSON 직렬화용 dict.
 
-        입력: 없음
+        입력: slim — True 면 실행 기록(trace·layout)을 빼고 내용만 남긴다
         출력: 페이지 필드 + tables/images/trace/layout 을 각자의 to_dict 로
               푼 dict
+        비고:
+            slim 은 **읽을 사람**을 위한 것이다. 72쪽 문서에서 trace 가
+            파일의 85%를 차지해 본문을 찾기 어려웠다. 진단이 필요하면
+            slim 없이 뽑으면 된다 — 정보를 지우는 게 아니라 가리는 것이다.
         """
+        if slim:
+            return {
+                "page_no": self.page_no,
+                "content": self.content,
+                "tables": [
+                    {"id": t.id, "table_num": t.table_num,
+                     "title": t.llm_title, "markdown": t.markdown}
+                    for t in self.tables
+                ],
+                "images": [
+                    {"id": i.id, "description": i.description,
+                     "text": i.vlm_markdown}
+                    for i in self.images
+                ],
+                "extraction": self.trace.summary(),
+            }
         return {
             "page_no": self.page_no,
             "page_no_kind": self.page_no_kind,
@@ -431,12 +451,20 @@ class PageDocument:
         """
         return len(self.pages)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, slim: bool = False) -> dict[str, Any]:
         """JSON 직렬화용 dict (document.json 의 최상위 구조).
 
-        입력: 없음
+        입력: slim — True 면 실행 기록을 빼고 본문·표 중심으로 담는다
         출력: 문서 메타 + page_count + pages 목록을 담은 dict
         """
+        if slim:
+            return {
+                "filename": self.filename,
+                "source_format": self.source_format,
+                "page_count": len(self.pages),
+                "failed_pages": self.failed_pages,
+                "pages": [p.to_dict(slim=True) for p in self.pages],
+            }
         return {
             "filename": self.filename,
             "source_format": self.source_format,

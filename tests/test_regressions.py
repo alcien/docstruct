@@ -1956,3 +1956,86 @@ def test_fallback_reason_includes_first_failure():
         assert "HWPTAG_LIST_HEADER" in reason, "첫 실패가 최종 사유에 없습니다"
     finally:
         hwp5tree.to_markdown, conv.hwp_to_html_str, conv.is_hwpml = o1, o2, o3
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.71 — 쪽 나눔 시 PageTrace 객체를 공유하던 문제
+#
+# 배경: HWP 를 쪽 표식으로 나눌 때 72개 PageContent 가 **같은 PageTrace
+#       객체**를 참조했다. 이후 단계가 쪽마다 남기는 기록이 한 리스트에
+#       쌓이고, 그 리스트가 쪽 수만큼 직렬화돼 JSON 의 85%(2.5MB)가
+#       중복이었다. 1쪽 기록과 72쪽 기록도 구분할 수 없었다.
+# ────────────────────────────────────────────────────────────────────
+
+def _split_pages(chunks: int = 3):
+    """쪽 나눔을 거친 PageContent 목록을 만든다."""
+    from docstruct.converters.hwp.hwp5tree import PAGE_BREAK
+    from docstruct.extractors.hwp import _split_by_page_break
+    from docstruct.models import PageTrace, TableInfo
+
+    tables = [
+        TableInfo(id=f"table_{i}", table_num=i,
+                  placeholder=f"<table {i}>", markdown="| a |")
+        for i in range(1, chunks + 1)
+    ]
+    content = PAGE_BREAK.join(
+        f"본문 {i}\n\n<table {i}>\n\n| a |\n\n</table {i}>" for i in range(1, chunks + 1)
+    )
+    trace = PageTrace(extractor="hwp5-tree", text_source="n/a", table_count=chunks)
+    trace.add("converters.hwp.hwp5tree", "파싱", "공통 기록")
+    return _split_by_page_break(content, tables, trace, None)
+
+
+def test_split_pages_get_independent_traces():
+    """쪽마다 독립된 PageTrace 를 갖는다 (객체·리스트 모두)."""
+    pages = _split_pages(3)
+    assert len(pages) == 3
+    assert len({id(p.trace) for p in pages}) == 3, "trace 객체를 공유합니다"
+    assert len({id(p.trace.steps) for p in pages}) == 3, "steps 리스트를 공유합니다"
+
+
+def test_split_pages_do_not_accumulate_each_others_steps():
+    """한 쪽에 기록을 남겨도 다른 쪽에 번지지 않는다."""
+    pages = _split_pages(3)
+    before = [len(p.trace.steps) for p in pages]
+    pages[0].trace.add("docstruct.tables.assess", "판정", "1쪽만")
+    after = [len(p.trace.steps) for p in pages]
+    assert after[0] == before[0] + 1
+    assert after[1:] == before[1:], "다른 쪽에 기록이 번졌습니다"
+
+
+def test_split_pages_keep_common_history():
+    """분할 전 공통 기록은 모든 쪽에 남는다."""
+    pages = _split_pages(3)
+    for page in pages:
+        assert any(s.module == "converters.hwp.hwp5tree" for s in page.trace.steps)
+
+
+def test_split_pages_carry_own_table_count():
+    """쪽마다 자기 표 개수를 갖는다 (공유 trace 는 전체 수를 들고 있었다)."""
+    pages = _split_pages(3)
+    assert [p.trace.table_count for p in pages] == [1, 1, 1]
+
+
+# ── slim 출력 ────────────────────────────────────────────────────────
+
+def test_slim_output_drops_trace_keeps_content():
+    """slim=True 는 실행 기록을 빼고 본문·표를 남긴다."""
+    from docstruct.models import PageContent, PageDocument, TableInfo
+
+    page = PageContent(
+        page_no=1, page_no_kind="document", content="본문\n\n<table 1>",
+        tables=[TableInfo(id="table_1", table_num=1, placeholder="<table 1>",
+                          markdown="| a |", llm_title="예산 현황")],
+    )
+    doc = PageDocument(filename="x.hwp", source_format="hwp", pages=[page])
+
+    slim = doc.to_dict(slim=True)
+    assert "pipeline" not in slim and "timings" not in slim
+    assert "trace" not in slim["pages"][0]
+    assert slim["pages"][0]["content"] == "본문\n\n<table 1>"
+    assert slim["pages"][0]["tables"][0]["title"] == "예산 현황"
+    assert slim["pages"][0]["tables"][0]["markdown"] == "| a |"
+
+    full = doc.to_dict()
+    assert "trace" in full["pages"][0], "기본 출력은 trace 를 유지해야 합니다"
