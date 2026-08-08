@@ -425,9 +425,17 @@ def process_tables(
                 if html_frag:
                     jobs.append(FillJob(page, table, "html", html_frag))  # 우선순위 ②: HWP
                 else:
+                    # 사유를 함께 남긴다. 예전에는 id 만 찍혀서, 왜 이 표가
+                    # 재추출 대상이 됐는지 결과 JSON 을 따로 열어봐야 알 수
+                    # 있었다. 사유가 보이면 "정말 고쳐야 할 표인가" 를 그
+                    # 자리에서 판단할 수 있다 — 실제로 병합 셀을 빈 칸으로
+                    # 오해한 오탐이 섞여 있었다.
                     _log.warning(
-                        "재추출 근거 없음 (페이지 이미지·원본 HTML 모두 부재): id=%s",
+                        "재추출 근거 없음 (페이지 이미지·원본 HTML 모두 부재): "
+                        "id=%s · 품질=%s · 사유=%s",
                         table.id,
+                        table.quality or "?",
+                        table.reason or "(사유 없음)",
                     )
 
     if not jobs or not can_call:

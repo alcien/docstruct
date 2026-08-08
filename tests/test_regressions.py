@@ -2096,3 +2096,85 @@ def test_hwp_fill_html_option_exists():
     import docstruct
 
     assert "hwp_fill_html" in docstruct.option_keys()
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.74 — 재추출 불가 로그에 판정 사유가 없던 문제
+#
+# 배경: `재추출 근거 없음 … id=table_32` 만 찍혀서, 왜 그 표가 대상이
+#       됐는지 결과 JSON 을 따로 열어봐야 알 수 있었다. 사유가 보이면
+#       "정말 고쳐야 할 표인가" 를 그 자리에서 판단할 수 있다 — 실제로
+#       병합 셀을 빈 칸으로 오해한 오탐이 섞여 있었다.
+# ────────────────────────────────────────────────────────────────────
+
+def _pending_table(**kwargs):
+    """재추출 대상인 TableInfo 를 만든다."""
+    from docstruct.models import TableInfo
+
+    defaults = dict(
+        id="table_32", table_num=32, placeholder="<table 32>",
+        markdown="| **구분** |  |", content_type="table",
+        quality="insufficient", llm_title="국회 소통 채널 주요 성과",
+        reason="인스타그램 행의 값이 모두 비어 있어 데이터가 불완전함",
+    )
+    defaults.update(kwargs)
+    return TableInfo(**defaults)
+
+
+def test_unfillable_log_includes_quality_and_reason(caplog):
+    """근거가 없어 재추출을 못 할 때 품질과 사유를 함께 남긴다."""
+    import logging
+
+    from docstruct.models import PageContent
+    from docstruct.tables import fill as fill_mod
+
+    table = _pending_table()
+    page = PageContent(page_no=1, page_no_kind="document",
+                       content="<table 32>\n| a |\n</table 32>", tables=[table])
+
+    with caplog.at_level(logging.WARNING, logger=fill_mod.__name__):
+        fill_mod.process_tables([page], table_html=None)
+
+    message = " ".join(r.getMessage() for r in caplog.records)
+    assert "table_32" in message
+    assert "insufficient" in message
+    assert "인스타그램" in message, "판정 사유가 로그에 없습니다"
+
+
+def test_unfillable_log_handles_missing_reason(caplog):
+    """사유가 비어 있어도 로그가 깨지지 않는다."""
+    import logging
+
+    from docstruct.models import PageContent
+    from docstruct.tables import fill as fill_mod
+
+    page = PageContent(page_no=1, page_no_kind="document",
+                       content="<table 32>\n| a |\n</table 32>",
+                       tables=[_pending_table(reason=None)])
+
+    with caplog.at_level(logging.WARNING, logger=fill_mod.__name__):
+        fill_mod.process_tables([page], table_html=None)
+
+    message = " ".join(r.getMessage() for r in caplog.records)
+    assert "사유 없음" in message
+
+
+def test_assess_prompt_warns_about_merged_cells():
+    """판정 프롬프트가 병합 셀의 빈 칸을 데이터 손실로 오해하지 말라고 알린다.
+
+    markdown 은 rowspan/colspan 을 표현하지 못해, 병합된 아래 행이 빈 칸으로
+    남는다. 실제 문서에서 `(2,1) rowspan=2` 인 셀 때문에 멀쩡한 표가
+    insufficient 로 잘못 판정됐다.
+    """
+    from docstruct.tables.assess import _ASSESS_PROMPT
+
+    prompt = _ASSESS_PROMPT.format(content="<content>")
+    assert "병합" in prompt
+    assert "rowspan" in prompt
+
+
+def test_needs_fill_is_a_property_not_a_method():
+    """needs_fill 은 프로퍼티다 (호출하면 TypeError 가 난다)."""
+    table = _pending_table()
+    assert table.needs_fill is True
+    assert not callable(table.needs_fill)

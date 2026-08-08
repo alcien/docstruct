@@ -300,10 +300,17 @@ def build_document(
                 # 재추출은 페이지 이미지를 근거로 삼습니다. 이미지가 없으면
                 # 애초에 호출조차 하지 않으므로 사유를 구분해 남깁니다.
                 if not page.page_image_path:
+                    pending = [t for t in page.tables if t.needs_fill]
+                    detail = "; ".join(
+                        f"{t.id}({t.quality}): {t.reason or '사유 없음'}"
+                        for t in pending[:5]
+                    )
+                    if len(pending) > 5:
+                        detail += f" … 외 {len(pending) - 5}건"
                     page.trace.add(
                         "docstruct.tables.fill", "재추출 불가",
-                        "재추출 근거 없음 — 페이지 이미지(PDF)도 원본 표 HTML(HWP)도 "
-                        "확보되지 않음",
+                        "근거 부재(페이지 이미지·원본 표 HTML 모두 없음) — "
+                        f"{detail}",
                         status="warn",
                     )
                 else:
