@@ -2507,3 +2507,63 @@ Windows 에는 그 폴더가 없다. `tempfile.gettempdir()` 로 바꿨다.
 주석 속 경로는 예시일 수 있어 검사에서 제외한다.
 
 ### 테스트 2건 추가 (총 207건)
+
+## 0.1.98 (2026-08-13) — README 갱신 (0.1.46 → 0.1.98)
+
+50판 넘게 기능을 추가하는 동안 README 의 설치 버전이 **v0.1.46** 에
+머물러 있었다. 그 사이 들어온 것이 하나도 적히지 않았다.
+
+### 추가한 절
+
+- **실행 기록 빼기(`slim`)** — 단건·배치·CLI
+- **스캔 PDF (OCR)** — `force_full_page_ocr`, 한국어 인식 모델,
+  `rapidocr_ko`·`glyph_probe` 진단 도구, 관련 환경변수 4개
+- **표 정확도** — `hwp_fill_html`, 병합 셀 `〃` 표기
+- **backend API** — `/convert`·`/export_json`·`/export_folder`·
+  `/export_group`·`/jobs/{id}`·`/ui`
+- 문서 목록에 `LICENSES.md` 추가
+
+### 검증
+
+README 에 적은 설정 키·모듈 경로·환경변수·문서 파일이 **전부 실존**하는지
+확인했다(12개 문서 파일 포함).
+
+### 다시 낡지 않도록
+
+    test_readme_pins_current_version    설치 버전 = 패키지 버전
+    test_readme_documents_current_options  주요 설정이 적혀 있는지
+
+버전을 올리면 README 도 함께 고치지 않는 한 테스트가 실패한다. 실제로
+v0.1.46 으로 되돌려 실패하는 것을 확인했다.
+
+### 테스트 2건 추가 (총 209건)
+
+## 0.1.99 (2026-08-13) — numpy 배열에 `or []` 를 쓰던 문제
+
+한국어 모델로 실행하니 이렇게 죽었다.
+
+    ValueError: The truth value of an array with more than one element
+                is ambiguous. Use a.any() or a.all()
+
+### 원인
+
+rapidocr 은 `boxes` 를 **numpy 배열**로 돌려주는데, 아래가 배열의 진리값을
+묻는다.
+
+    boxes = list(getattr(result, "boxes", None) or [])
+                                                ^^ 여기
+
+`_as_list()` 로 바꿨다 — `is None` 으로만 판별하고, 길이 0인 배열도 목록으로
+바꾸면 자연스럽게 빈 목록이 된다. 꼭짓점 좌표도 numpy 스칼라일 수 있어
+`float()` 로 변환해 둔다.
+
+### 이 환경에서 못 잡은 이유
+
+modelscope.cn 이 막혀 모델을 못 받아 `read_image` 까지 도달하지 못했다.
+엔진 생성 단계에서 멈추니 그 뒤 코드가 한 번도 실행되지 않았다. 실제 실행
+환경에서만 드러나는 자리였다.
+
+가짜 결과 객체로 numpy 경로를 시험하는 테스트를 넣어, 모델 없이도 검증되게
+했다. 옛 코드로 되돌려 같은 ValueError 가 나는 것을 확인했다.
+
+### 테스트 3건 추가 (총 212건)

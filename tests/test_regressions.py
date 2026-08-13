@@ -3015,3 +3015,109 @@ def test_compare_uses_portable_temp_dir():
 
     source = inspect.getsource(compare)
     assert "gettempdir" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.98 — README 가 0.1.46 에서 멈춰 있던 문제
+#
+# 배경: 기능을 50판 넘게 추가하는 동안 README 의 설치 버전이 v0.1.46 에
+#       머물러 있었고, slim·force_full_page_ocr·rapidocr_ko 같은 것이
+#       하나도 적히지 않았다. 문서가 낡으면 사용자는 없는 방법을 찾거나
+#       있는 기능을 모른 채 지나간다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_readme_pins_current_version():
+    """README 의 설치 버전이 패키지 버전과 같다."""
+    import re
+    import tomllib
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent.parent
+    version = tomllib.loads(
+        (root / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["version"]
+
+    pinned = set(re.findall(r"docstruct\.git@v([\d.]+)",
+                            (root / "README.md").read_text(encoding="utf-8")))
+    assert pinned, "README 에 설치 버전 핀이 없습니다"
+    assert pinned == {version}, (
+        f"README 는 {sorted(pinned)} 를 가리키는데 패키지는 {version} 입니다"
+    )
+
+
+def test_readme_documents_current_options():
+    """README 가 주요 설정을 안내한다.
+
+    있는데 안 적혀 있으면 사용자는 그 기능을 모른 채 지나간다.
+    """
+    from pathlib import Path as _Path
+
+    readme = (_Path(__file__).resolve().parent.parent
+              / "README.md").read_text(encoding="utf-8")
+    for option in ("slim", "force_full_page_ocr", "hwp_fill_html"):
+        assert option in readme, f"README 에 {option} 안내가 없습니다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.99 — numpy 배열에 `or []` 를 쓰던 문제
+#
+# 배경: 한국어 모델로 실행하니 이렇게 죽었다.
+#
+#     ValueError: The truth value of an array with more than one element
+#                 is ambiguous. Use a.any() or a.all()
+#
+#       rapidocr 은 `boxes` 를 **numpy 배열**로 돌려주는데,
+#       `getattr(result, "boxes", None) or []` 가 배열의 진리값을 물어
+#       터진다. 이 환경에서는 모델을 못 받아 read_image 까지 도달하지
+#       못했고, 실제 실행 환경에서만 드러났다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_as_list_handles_numpy():
+    """numpy 배열·None·목록을 모두 목록으로 바꾼다 (or 를 쓰지 않는다)."""
+    np = pytest.importorskip("numpy")
+    from docstruct.converters.pdf.rapidocr_ko import _as_list
+
+    assert len(_as_list(np.array([[1, 2], [3, 4]]))) == 2
+    assert len(_as_list(np.array([0.9, 0.8]))) == 2
+    assert _as_list(np.array([])) == []
+    assert _as_list(None) == []
+    assert _as_list(["가", "나"]) == ["가", "나"]
+
+
+def test_read_image_accepts_numpy_result(monkeypatch):
+    """rapidocr 이 numpy 를 돌려줘도 정상 처리한다."""
+    np = pytest.importorskip("numpy")
+    from docstruct.converters.pdf import rapidocr_ko as ko
+
+    class _Result:
+        txts = np.array(["주택과 세금", "연중 세무 일정", ""], dtype=object)
+        scores = np.array([0.95, 0.88, 0.3])
+        boxes = np.array([
+            [[10, 50], [90, 50], [90, 70], [10, 70]],
+            [[10, 80], [90, 80], [90, 100], [10, 100]],
+            [[10, 110], [90, 110], [90, 130], [10, 130]],
+        ])
+
+    monkeypatch.setattr(ko, "get_engine", lambda: (lambda _p: _Result()))
+    lines = ko.read_image("dummy.png")
+
+    # 빈 문자열과 신뢰도 0.3(하한 0.5 미만)은 빠진다
+    assert [line.text for line in lines] == ["주택과 세금", "연중 세무 일정"]
+    assert lines[0].box == [(10.0, 50.0), (90.0, 50.0), (90.0, 70.0), (10.0, 70.0)]
+
+
+def test_read_page_text_orders_by_position(monkeypatch):
+    """좌표가 있으면 위→아래, 왼쪽→오른쪽으로 잇는다."""
+    np = pytest.importorskip("numpy")
+    from docstruct.converters.pdf import rapidocr_ko as ko
+
+    class _Result:
+        txts = np.array(["아래", "위"], dtype=object)
+        scores = np.array([0.9, 0.9])
+        boxes = np.array([
+            [[10, 200], [90, 200], [90, 220], [10, 220]],
+            [[10, 50], [90, 50], [90, 70], [10, 70]],
+        ])
+
+    monkeypatch.setattr(ko, "get_engine", lambda: (lambda _p: _Result()))
+    assert ko.read_page_text("dummy.png") == "위\n아래"

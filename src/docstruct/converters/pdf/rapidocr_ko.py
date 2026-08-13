@@ -191,6 +191,26 @@ def get_engine():
         return _engine
 
 
+def _as_list(value: Any) -> list:
+    """결과 필드를 목록으로 바꾼다.
+
+    입력: value — rapidocr 결과의 한 필드 (numpy 배열·목록·None)
+    출력: 파이썬 목록. 값이 없으면 빈 목록
+    비고:
+        `value or []` 를 쓰면 안 된다. rapidocr 은 `boxes` 를 **numpy 배열**로
+        주는데, 배열에 `or` 를 걸면 진리값을 물어 이렇게 터진다.
+
+            ValueError: The truth value of an array with more than one
+                        element is ambiguous.
+
+        `is None` 으로만 판별하고, 길이가 0인 배열도 목록으로 바꾸면
+        자연스럽게 빈 목록이 된다.
+    """
+    if value is None:
+        return []
+    return list(value)
+
+
 def read_image(image: str | Path) -> list[OcrLine]:
     """이미지 하나를 읽어 텍스트 줄 목록을 낸다.
 
@@ -207,22 +227,24 @@ def read_image(image: str | Path) -> list[OcrLine]:
         _log.warning("OCR 실패 (%s): %s", image, exc)
         return []
 
-    texts = list(getattr(result, "txts", None) or [])
-    scores = list(getattr(result, "scores", None) or [])
-    boxes = list(getattr(result, "boxes", None) or [])
+    texts = _as_list(getattr(result, "txts", None))
+    scores = _as_list(getattr(result, "scores", None))
+    boxes = _as_list(getattr(result, "boxes", None))
 
     threshold = _min_score()
     lines: list[OcrLine] = []
     for index, text in enumerate(texts):
-        if not (text or "").strip():
+        text = str(text).strip()
+        if not text:
             continue
         score = float(scores[index]) if index < len(scores) else 1.0
         if score < threshold:
             continue
         box = None
         if index < len(boxes) and boxes[index] is not None:
-            box = [(float(x), float(y)) for x, y in boxes[index]]
-        lines.append(OcrLine(text=text.strip(), score=score, box=box))
+            # 꼭짓점도 numpy 배열일 수 있다 — 파이썬 실수로 바꿔 둔다.
+            box = [(float(point[0]), float(point[1])) for point in boxes[index]]
+        lines.append(OcrLine(text=text, score=score, box=box))
     return lines
 
 
@@ -290,7 +312,7 @@ def compare(pdf_path: str | Path, page_no: int = 1, *, scale: float = 2.0) -> No
     print("── 기본 설정 (현재 파이프라인)")
     try:
         plain = RapidOCR()(str(render_path))
-        text = " ".join(getattr(plain, "txts", None) or [])
+        text = " ".join(str(x) for x in _as_list(getattr(plain, "txts", None)))
         print(f"   한글 {ratio(text):.1%} · {len(text)}자")
         print(f"   {text[:150]}")
     except Exception as exc:                     # noqa: BLE001 - 비교 도구다

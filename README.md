@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.46"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.99"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,7 +29,7 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.46"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.99"
 ```
 
 노트북 UI(파일 선택 위젯)가 필요하면 `[notebook]` 을 붙이세요.
@@ -118,7 +118,28 @@ print(option_keys())     # 설정 가능한 키 전체
 
 ## 사용
 
-### 문서 하나
+### backend API
+
+`docstruct-backend-overlay` 를 적용하면 HTTP 로도 쓸 수 있습니다.
+자세한 내용은 overlay 의 `README.md` 를 보세요.
+
+| 엔드포인트 | 하는 일 |
+|---|---|
+| `POST /convert` | 문서 → 텍스트·마크다운·HTML·XML |
+| `POST /export_json` | 문서 → 구조화 JSON 파일 |
+| `POST /export_folder` | 폴더·여러 파일·zip → JSON 묶음 (백그라운드) |
+| `POST /export_group` | zip → DocStructBatch 처리 (백그라운드) |
+| `GET /jobs/{id}` | 진행 상황 |
+| `GET /jobs/{id}/download` | 결과 zip |
+| `GET /ui` | 브라우저에서 업로드·진행·다운로드 |
+
+수십 분 걸리는 묶음 작업은 작업 ID 를 먼저 돌려주고, `/jobs/{id}` 로
+진행을 조회한 뒤 완료되면 내려받습니다. `/ui` 가 그 과정을 자동으로
+처리합니다.
+
+---
+
+## 문서 하나
 
 ```python
 from docstruct import DocStruct
@@ -269,6 +290,25 @@ out/<문서명>/
 
 ---
 
+### 실행 기록 빼기 (`slim`)
+
+`document.json` 에는 어느 모듈이 어떤 단계를 처리했는지 기록(`trace`)이
+함께 들어갑니다. 진단에는 쓸모 있지만 본문을 찾기 어려워질 만큼 큽니다 —
+72쪽 문서에서 파일의 대부분을 차지했습니다.
+
+```python
+ds.to_json("결과.json", slim=True)      # 단건
+batch.to_json("결과/", slim=True)       # 배치
+```
+
+```bash
+docstruct 문서.hwp -o out --slim
+```
+
+`trace`·`layout`·`pipeline`·`timings` 를 빼고 본문·표·그림만 남깁니다.
+
+---
+
 ## 처리 흐름
 
 ```
@@ -317,6 +357,95 @@ for page in ds.pages:
 | 실제로는 표인데 라벨이 `그림`/`본문` | 레이아웃 모델 오인식 |
 | 라벨은 `표` 인데 내용이 깨짐 | 표 구조 복원 또는 변환 문제 |
 | 처리가 `버려짐` | 영역은 잡았으나 텍스트 추출 실패 |
+
+---
+
+## 스캔 PDF (OCR)
+
+텍스트 레이어가 없는 스캔본은 OCR 로 읽습니다. 두 가지를 확인하세요.
+
+### 전면 OCR
+
+```python
+ds = docstruct.DocStruct("스캔본.pdf", force_full_page_ocr=True).run()
+```
+
+```bash
+docstruct 스캔본.pdf -o out --set force_full_page_ocr=true
+```
+
+기본값(`False`)은 **텍스트 레이어가 없는 영역만** OCR 합니다. 그래서
+브라우저로 인쇄한 PDF 처럼 머리말·꼬리말만 텍스트로 들어 있으면, 그것을
+"텍스트가 있다" 고 보고 본문을 읽지 않습니다.
+
+### 한국어 인식 모델
+
+rapidocr 3.x 의 기본 인식 모델(PP-OCRv6 small)에는 **한국어가 없습니다.**
+한글 지면이 한자·가나로 나오면 이 문제입니다.
+
+```
+气····吾·咎今          ← 원본은 "2025 주택과 세금"
+ヤ君居 |0号 |0 后雨立
+```
+
+한 쪽만 30초 안에 확인할 수 있습니다.
+
+```bash
+python -m docstruct.converters.pdf.rapidocr_ko 문서.pdf 16
+```
+
+```
+── 기본 설정: 한글 0.0% · 26.5.11. 5:44 2025 wwo. 2025号 1 2.10. Y* ...
+── 한국어 모델: (여기에 한글 비율이 나옵니다)
+```
+
+한국어 모델은 처음 실행할 때 자동으로 내려받습니다. 사내망에서
+`modelscope.cn` 이 막혀 있으면 미리 받아 두고 지정하세요.
+
+| 환경변수 | 뜻 |
+|---|---|
+| `DOCSTRUCT_RAPIDOCR_MODEL_DIR` | 미리 받아 둔 모델 폴더 |
+| `DOCSTRUCT_RAPIDOCR_VERSION` | `v5`(기본) 또는 `v4` |
+| `DOCSTRUCT_RAPIDOCR_MIN_SCORE` | 낮은 신뢰도 조각 제거 (기본 0.5) |
+
+### 글자 깨짐 진단
+
+HWP 에서 내보낸 PDF 는 글머리표(□ ○ ※)의 폰트 매핑이 깨져 한글 음절로
+나오는 일이 있습니다(`숿`, `슻` 등). 정상 한글이라 자동 교정이 위험하므로
+진단만 제공합니다.
+
+```bash
+python -m docstruct.converters.pdf.glyph_probe 문서.pdf 5
+```
+
+---
+
+## 표 정확도
+
+### HWP 표 재추출 (`hwp_fill_html`)
+
+HWP 는 페이지 이미지가 없어 표 재추출의 근거가 부족합니다. 기본 경로
+(hwp5-tree)로 성공한 문서는 재추출 자체를 하지 못합니다.
+
+```python
+ds = docstruct.DocStruct("문서.hwp", hwp_fill_html=True).run()
+```
+
+켜면 재추출 근거를 만들지만 느려집니다. 같은 문서 실측: 근거 0개 → 114개,
+2.4초 → 126초. 기본값은 `False` 입니다.
+
+### 병합 셀 표기
+
+markdown 은 병합 셀(rowspan)을 표현하지 못합니다. 값을 맨 윗행에만 두고
+아래를 비우면 **그 값이 윗행만의 것으로 읽힙니다.**
+
+```
+| 페이스북   | 콘텐츠 상호작용 | 15.7만 |
+| 인스타그램 | 〃              | 〃     |   ← 두 행이 공유하는 값
+```
+
+`〃` 로 이어짐을 표시합니다. 예전 산출물과 대조할 때는
+`DOCSTRUCT_TABLE_MERGE_MARK=off` 로 끌 수 있습니다.
 
 ---
 
@@ -429,3 +558,4 @@ setx PYTHONUTF8 1
 | `GITLAB.md` | 사내 GitLab 배포 |
 | `BUILD.md` | 빌드·배포 절차 |
 | `WINDOWS.md` | Windows 관련 |
+| `LICENSES.md` | 의존성 라이선스 조사 (pyhwp 는 AGPL — 검토 필요) |
