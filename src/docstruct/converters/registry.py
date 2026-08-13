@@ -16,6 +16,7 @@ from pathlib import Path
 from docstruct.converters.base import BaseConverter
 from docstruct.converters.hwp.converter import HwpConverter
 from docstruct.converters.hwp.hwpml import is_hwpml
+from docstruct.converters.signature import effective_suffix
 from docstruct.converters.hwpx.converter import HwpxConverter
 from docstruct.converters.pdf.converter import PdfConverter
 
@@ -41,10 +42,15 @@ def get_converter(path: str | Path) -> BaseConverter:
     입력: path — 파일 경로
     출력: BaseConverter 구현 인스턴스
     예외: 미지원 확장자면 ValueError (지원 목록 포함)
-    비고: HWPML(확장자는 .hwp 지만 내용은 XML)도 HwpConverter 가 처리한다.
+    비고:
+        HWPML(확장자는 .hwp 지만 내용은 XML)도 HwpConverter 가 처리한다.
+
+        확장자와 내용이 어긋나면 **내용을 따른다.** 실제 문서에서 이름만
+        `.hwpx` 이고 내용은 HWP 바이너리인 파일이 있었다. 확장자만 믿으면
+        python-hwpx 가 `BadZipFile` 을 내며 멈춘다. 어긋남은 경고로 남긴다.
     """
     resolved = Path(path).resolve()
-    ext = resolved.suffix.lower()
+    ext = effective_suffix(resolved)
 
     if ext == ".hwp" or (ext == "" and is_hwpml(str(resolved))):
         return HwpConverter(resolved)

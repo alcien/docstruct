@@ -21,16 +21,19 @@ from docstruct.models import (  # noqa: F401 - IMAGE/TABLE/TEXT 는 재노출
 )
 
 
-def write_json(doc: PageDocument, path: str | Path) -> Path:
+def write_json(doc: PageDocument, path: str | Path, *, slim: bool = False) -> Path:
     """구조화 결과를 JSON 으로 저장한다.
 
-    입력: doc — PageDocument, path — 저장 경로
+    입력:
+        doc   PageDocument
+        path  저장 경로
+        slim  True 면 실행 기록(trace)을 빼고 본문·표만 담는다
     출력: 저장된 Path (document.json)
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
-        json.dumps(doc.to_dict(), ensure_ascii=False, indent=2),
+        json.dumps(doc.to_dict(slim=slim), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return out

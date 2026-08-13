@@ -171,6 +171,129 @@ def collapse_vertical_text(text: str) -> str:
     return "\n".join(out)
 
 
+#: 앞에 공백이 오면 안 되는 문자 — 닫는 괄호·따옴표와 종결 부호.
+#: `입법 , 예` → `입법, 예`
+_NO_SPACE_BEFORE = r",.;:!?)\]}»〉》」』】〕｣）］｝"
+
+#: 뒤에 공백이 오면 안 되는 문자 — 여는 괄호·따옴표.
+#: `｢ 헌법 ｣` → `｢헌법｣`
+_NO_SPACE_AFTER = r"([{«〈《「『【〔｢（［｛"
+
+#: 양옆 공백을 없앨 가운뎃점류. `예 · 결산` → `예·결산`
+_TIGHT_MIDDOT = r"·‧・"
+
+_SPACE_BEFORE_RE = re.compile(rf"[ \t]+(?=[{_NO_SPACE_BEFORE}])")
+_SPACE_AFTER_RE = re.compile(rf"(?<=[{_NO_SPACE_AFTER}])[ \t]+")
+#: 가운뎃점 양옆 공백. 양옆 글자를 소비하면 `가 · 나 · 다` 처럼 연달아
+#: 나올 때 겹쳐서 하나를 건너뛴다. lookahead 로 소비하지 않고 확인만 한다.
+_MIDDOT_RE = re.compile(rf"[ \t]*([{_TIGHT_MIDDOT}])[ \t]*(?=\S)")
+_MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
+
+
+def tighten_punctuation(text: str) -> str:
+    """구두점·괄호 주위에 잘못 끼어든 공백을 없앤다.
+
+    입력: text — 한 줄 문자열
+    출력: 공백이 정리된 문자열
+    비고:
+        PDF 텍스트 레이어에는 글자마다 좌표만 있고 단어 경계가 없다.
+        한국어 조판은 구두점 앞뒤 자간이 넓어, 좌표로 단어를 재조립하는
+        쪽(docling 등)이 그 틈을 공백으로 읽는다. 같은 문서에서
+
+            PDF  국민의 대의기관으로 입법 , 예 · 결산 심사 , 국정감 · 조사 등 의
+            HWP  국민의 대의기관으로 입법, 예·결산 심사, 국정감·조사 등의
+
+        처럼 갈렸고, 이런 자리가 527군데였다.
+
+        **원문에 있던 공백은 건드리지 않는다.** 구두점 바로 앞, 여는 괄호
+        바로 뒤, 가운뎃점 양옆 — 한국어 표기에서 공백이 올 수 없는 자리만
+        좁힌다. `등 의` 처럼 일반 글자 사이 공백은 판단 근거가 없어 그대로
+        둔다 — 붙여야 할지 아닌지는 문맥을 봐야 알 수 있다.
+    """
+    if not text:
+        return text
+    # 줄 맨 앞의 가운뎃점은 글머리표다(`· 항목`). 뒤 공백을 지우면
+    # 본문에 붙어 버리므로 그 부분만 떼어 두고 나중에 되돌린다.
+    lead = ""
+    body = text
+    marker = re.match(rf"\s*[{_TIGHT_MIDDOT}][ \t]+", text)
+    if marker:
+        lead = marker.group(0)
+        body = text[marker.end():]
+
+    out = _SPACE_BEFORE_RE.sub("", body)
+    out = _SPACE_AFTER_RE.sub("", out)
+    out = _MIDDOT_RE.sub(r"\1", out)
+    return lead + _MULTI_SPACE_RE.sub(" ", out)
+
+
+#: 같은 낱말이 몇 번 반복돼야 중복으로 볼지.
+_MIN_REPEAT = 3
+
+
+def collapse_repeated_words(text: str) -> str:
+    """같은 낱말이나 구절이 연달아 반복되면 하나로 줄인다.
+
+    입력: text — 한 줄 문자열
+    출력: 반복이 정리된 문자열
+    비고:
+        제목에 그림자·테두리 효과를 준 지면에서 나온다. 같은 글자가 조금씩
+        어긋난 위치에 여러 번 그려져 있고, 텍스트 레이어에는 그것이 전부
+        들어 있다. 실제로 이런 줄들이 나왔다.
+
+            별첨3 별첨3 별첨3
+            성과계획 목표체계 성과계획 목표체계 성과계획 목표체계 제1장 제1장 제1장
+
+        낱말 하나뿐 아니라 **여러 낱말로 된 구절**도 반복되므로, 길이 1부터
+        차례로 늘려 가며 본다.
+
+        **세 번 이상**부터 줄인다. 두 번은 `국가 국가` 처럼 실제로 그렇게
+        쓰인 경우가 있어 구분할 수 없다.
+    """
+    if not text:
+        return text
+    tokens = text.split()
+    if len(tokens) < _MIN_REPEAT:
+        return text
+
+    out: list[str] = []
+    index = 0
+    while index < len(tokens):
+        best = 1                             # 이 자리에서 건너뛸 토큰 수
+        # 긴 구절을 먼저 잡아야 `A B A B A B` 가 `A B` 로 줄어든다.
+        # 낱말 단위로 먼저 보면 반복을 못 알아본다.
+        for size in range((len(tokens) - index) // _MIN_REPEAT, 0, -1):
+            unit = tokens[index:index + size]
+            repeat = 1
+            while (tokens[index + repeat * size: index + (repeat + 1) * size] == unit):
+                repeat += 1
+            if repeat >= _MIN_REPEAT:
+                out.extend(unit)
+                best = repeat * size
+                break
+        if best == 1:
+            out.append(tokens[index])
+        index += best
+    return " ".join(out)
+
+
+def normalize_pdf_text(text: str) -> str:
+    """PDF 텍스트 레이어 특유의 손상까지 함께 정리한다.
+
+    입력: text — 페이지에서 뽑은 문자열
+    출력: 정규화된 문자열
+    비고:
+        `normalize_korean_text` 에 구두점 공백·낱말 반복 정리를 더한 것이다.
+        **PDF 경로에서만** 쓴다. HWP·HWPX 는 바이너리에서 글자를 직접 읽어
+        이런 손상이 없고(같은 문서에서 527건 대 0건), 정상 텍스트에 규칙을
+        더 걸면 고칠 것 없이 위험만 는다.
+    """
+    normalized = normalize_korean_text(text)
+    lines = (collapse_repeated_words(tighten_punctuation(line))
+             for line in normalized.split("\n"))
+    return "\n".join(lines)
+
+
 def normalize_korean_text(text: str, *, collapse: bool = True) -> str:
     """PUA 매핑과 균등배분 복원을 함께 적용한다.
 

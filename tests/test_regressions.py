@@ -2178,3 +2178,741 @@ def test_needs_fill_is_a_property_not_a_method():
     table = _pending_table()
     assert table.needs_fill is True
     assert not callable(table.needs_fill)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.75 — 세로 병합이 빈 칸이 되어 값이 잘못 귀속되던 문제
+#
+# 배경: `국회 소통 채널 주요 성과` 표에서 콘텐츠 상호작용·15.7만·3.0만 이
+#       페이스북과 인스타그램 두 행에 걸친 병합 셀(rowspan=2)이었다.
+#       markdown 은 맨 윗행에만 값을 넣고 아래를 비웠고, 그 결과
+#         원본: 페이스북+인스타그램 합계 = 15.7만
+#         출력: 페이스북 단독 = 15.7만 / 인스타그램 = 데이터 없음
+#       으로 **사실이 달라졌다.** LLM 이 insufficient 로 잡은 것은 정확한
+#       지적이었다 — 표시 문제가 아니라 값의 귀속이 틀린 것이었다.
+# ────────────────────────────────────────────────────────────────────
+
+def _sns_table():
+    """실제 table_32 구조 (병합 셀 포함)."""
+    from docstruct.converters.hwp.hwp5tree import _Cell, _Table
+
+    table = _Table(cols=4)
+    table.cells = [
+        _Cell(col=0, row=0, colspan=2, blocks=["구분"]),
+        _Cell(col=2, row=0, blocks=["2025년"]),
+        _Cell(col=3, row=0, blocks=["2026년"]),
+        _Cell(col=0, row=1, blocks=["유튜브"]), _Cell(col=1, row=1, blocks=["조회수"]),
+        _Cell(col=2, row=1, blocks=["13,391,527"]), _Cell(col=3, row=1, blocks=["5,377,768"]),
+        _Cell(col=0, row=2, blocks=["페이스북"]),
+        _Cell(col=1, row=2, rowspan=2, blocks=["콘텐츠 상호작용"]),
+        _Cell(col=2, row=2, rowspan=2, blocks=["15.7만"]),
+        _Cell(col=3, row=2, rowspan=2, blocks=["3.0만"]),
+        _Cell(col=0, row=3, blocks=["인스타그램"]),
+    ]
+    return table
+
+
+def test_rowspan_continuation_is_marked_not_blank():
+    """세로 병합이 이어지는 칸은 빈 칸이 아니라 표식으로 남는다."""
+    from docstruct.converters.hwp.hwp5tree import MERGE_UP, _render_table
+
+    rows = _render_table(_sns_table()).splitlines()
+    last = rows[-1]
+    assert "인스타그램" in last
+    assert last.count(MERGE_UP) == 3, f"병합 표식이 없습니다: {last}"
+
+
+def test_rowspan_value_stays_on_first_row():
+    """값 자체는 맨 윗행에 그대로 있고 복제되지 않는다.
+
+    복제하면 같은 값이 검색에 여러 번 걸리고, 합계가 행마다 있는 것처럼
+    보인다.
+    """
+    md = None
+    from docstruct.converters.hwp.hwp5tree import _render_table
+
+    md = _render_table(_sns_table())
+    assert md.count("15.7만") == 1
+    assert "| 페이스북 | 콘텐츠 상호작용 | 15.7만 | 3.0만 |" in md
+
+
+def test_rowspan_rows_are_not_truncated():
+    """rowspan 이 표 끝까지 이어져도 행이 잘리지 않는다.
+
+    행 수를 `max(row)+1` 로 세면 마지막 셀이 rowspan 으로 아래를 덮을 때
+    그 행이 사라진다. `max(row + rowspan)` 이어야 한다.
+    """
+    from docstruct.converters.hwp.hwp5tree import MERGE_UP, _Cell, _Table, _render_table
+
+    table = _Table(cols=2)
+    table.cells = [
+        _Cell(col=0, row=0, blocks=["가"]),
+        _Cell(col=1, row=0, rowspan=3, blocks=["공유값"]),
+        _Cell(col=0, row=1, blocks=["나"]),
+        _Cell(col=0, row=2, blocks=["다"]),
+    ]
+    md = _render_table(table)
+    assert "다" in md
+    assert md.count(MERGE_UP) == 2
+
+
+def test_merge_mark_can_be_disabled(monkeypatch):
+    """표식은 끌 수 있다 (예전 산출물과 대조할 때)."""
+    from docstruct.converters.hwp.hwp5tree import MERGE_MARK_ENV, MERGE_UP, _render_table
+
+    monkeypatch.setenv(MERGE_MARK_ENV, "off")
+    assert MERGE_UP not in _render_table(_sns_table())
+
+
+def test_assess_prompt_asks_to_distinguish_merge_cause():
+    """프롬프트가 병합을 '무시하라' 가 아니라 '원인을 밝히라' 고 한다.
+
+    무시하게 하면 값의 귀속이 틀린 진짜 결함까지 묻힌다.
+    """
+    from docstruct.tables.assess import _ASSESS_PROMPT
+
+    prompt = _ASSESS_PROMPT.format(content="<content>")
+    assert "병합" in prompt and "rowspan" in prompt
+    assert "원인" in prompt
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.76 — slim 이 단건에만 연결돼 있던 문제
+#
+# 배경: 0.1.71 에서 slim 을 넣으면서 DocStruct.to_json 에만 연결하고
+#       DocStructBatch.to_json 과 CLI 는 빠뜨렸다. 배치로 돌리면 여전히
+#       trace 가 그대로 실렸다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_batch_to_json_accepts_slim():
+    """배치 to_json 도 slim 을 받는다 (단건과 같은 이름·의미)."""
+    import inspect
+
+    from docstruct import DocStruct, DocStructBatch
+
+    for cls in (DocStruct, DocStructBatch):
+        params = inspect.signature(cls.to_json).parameters
+        assert "slim" in params, f"{cls.__name__}.to_json 에 slim 이 없습니다"
+
+
+def test_write_json_accepts_slim():
+    """report.write_json 도 slim 을 받는다 (CLI 가 쓰는 경로)."""
+    import inspect
+
+    from docstruct.report import write_json
+
+    assert "slim" in inspect.signature(write_json).parameters
+
+
+def test_cli_has_slim_flag():
+    """CLI 에 --slim 이 있다."""
+    from docstruct.cli import _build_parser
+
+    actions = {a.dest for a in _build_parser()._actions}
+    assert "slim" in actions
+
+
+def test_write_json_slim_drops_trace(tmp_path):
+    """write_json(slim=True) 결과에 trace 가 없다."""
+    import json
+
+    from docstruct.models import PageContent, PageDocument
+    from docstruct.report import write_json
+
+    doc = PageDocument(
+        filename="x.hwp", source_format="hwp",
+        pages=[PageContent(page_no=1, page_no_kind="document", content="본문")],
+    )
+    path = write_json(doc, tmp_path / "d.json", slim=True)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert "trace" not in data["pages"][0]
+    assert data["pages"][0]["content"] == "본문"
+
+    path2 = write_json(doc, tmp_path / "d2.json")
+    assert "trace" in json.loads(path2.read_text(encoding="utf-8"))["pages"][0]
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.78 — 누름틀 필드 상태가 본문에 섞이던 문제
+#
+# 배경: `{"fields": {},"simplefields": {}}` 가 본문에 나왔다. 원본 HWP 의
+#       `FieldClickHere`(누름틀, chid='%clk') 안에 들어 있는 값으로,
+#       command 속성은 `Clickhere:set:53:Direction:...데이터 조회중...`
+#       이었다. 화면·인쇄물에는 보이지 않지만 텍스트 레이어에는 남아,
+#       HWP 로 읽든 PDF 로 내보내든 따라온다(PDF p.144·146 에서도 확인).
+#
+#       주의: **필드 자체를 버리면 안 된다.** 이 문서에서 FieldClickHere 는
+#       5,306회 쓰였고 그 안에 `기획예산처`·`전략목표` 같은 진짜 본문이
+#       들어 있다. 처음에 필드 전체를 건너뛰게 만들었다가, 본문이 통째로
+#       사라지는 것을 확인하고 되돌렸다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_field_payload_is_detected():
+    """필드 상태 직렬화 값을 걸러낸다."""
+    from docstruct.converters.hwp.hwp5tree import _is_field_payload
+
+    assert _is_field_payload('{"fields": {},"simplefields": {}}')
+    assert _is_field_payload('  {"fields": {},"simplefields": {}}  ')
+    assert _is_field_payload('{"fields": {"a":1},"simplefields": {"b":2}}')
+
+
+def test_field_payload_does_not_eat_real_content():
+    """본문에 나오는 정상 텍스트·JSON 은 건드리지 않는다.
+
+    넓게 잡으면 문서에 실린 코드 조각이나 설명문까지 지운다.
+    """
+    from docstruct.converters.hwp.hwp5tree import _is_field_payload
+
+    assert not _is_field_payload("simplefields 를 설명하는 본문")
+    assert not _is_field_payload('{"name": "홍길동"}')
+    assert not _is_field_payload('예시: {"simplefields": {}} 참고')
+    assert not _is_field_payload("기획예산처")
+    assert not _is_field_payload("")
+
+
+def test_field_inner_text_is_kept():
+    """누름틀 안의 실제 본문은 살아남는다.
+
+    필드 모델 전체를 건너뛰면 이 텍스트가 사라진다 — 실제로 그렇게
+    구현했다가 되돌린 자리다.
+    """
+    from docstruct.converters.hwp.hwp5tree import _is_field_payload
+
+    for real in ("기획예산처", "전략목표", "83", "1. 임무와 비전"):
+        assert not _is_field_payload(real)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.80 — HWPX XML 직접 파서 (pyhwp 대체 후보)
+#
+# 배경: pyhwp 가 AGPL 이라 대체 경로를 찾던 중, HWPX 파일 자체에는 표
+#       212개·셀 5,391개가 온전히 들어 있음을 확인했다. 손실은 변환이
+#       아니라 python-hwpx 의 markdown 내보내기에서 생긴다(표 94개,
+#       셀 93.8%, 전 텍스트에 취소선 4,456회). XML 을 직접 읽으면
+#       pyhwp 와 같은 품질을 9배 빠르게 낸다.
+#
+#       hwp5tree 에서 잡은 개선을 그대로 옮겨야 한다. 옮기지 않으면
+#       경로를 바꾸는 순간 이미 고친 문제들이 되살아난다.
+# ────────────────────────────────────────────────────────────────────
+
+def _hwpx_table(rows: int, cols: int, cells: list[tuple]):
+    """(row, col, rowspan, colspan, text) 목록으로 _Table 을 만든다."""
+    from docstruct.converters.hwpx.hwpxtree import _Cell, _Table
+
+    table = _Table(rows=rows, cols=cols)
+    table.cells = [
+        _Cell(row=r, col=c, rowspan=rs, colspan=cs, blocks=[t] if t else [])
+        for r, c, rs, cs, t in cells
+    ]
+    return table
+
+
+def test_hwpx_render_marks_vertical_merge():
+    """세로 병합이 이어지는 칸에 표식을 남긴다 (hwp5tree 0.1.75 와 동일)."""
+    from docstruct.converters.hwpx.hwpxtree import MERGE_UP, _render_table
+
+    md = _render_table(_hwpx_table(2, 2, [
+        (0, 0, 1, 1, "페이스북"), (0, 1, 2, 1, "15.7만"),
+        (1, 0, 1, 1, "인스타그램"),
+    ]))
+    assert md.splitlines()[-1].count(MERGE_UP) == 1
+    assert md.count("15.7만") == 1          # 값은 복제하지 않는다
+
+
+def test_hwpx_render_drops_leading_empty_row():
+    """맨 앞의 완전히 빈 행은 헤더로 쓰지 않는다 (0.1.72 와 동일)."""
+    from docstruct.converters.hwpx.hwpxtree import _render_table
+
+    md = _render_table(_hwpx_table(3, 2, [
+        (0, 0, 1, 1, ""), (0, 1, 1, 1, ""),
+        (1, 0, 1, 1, "구분"), (1, 1, 1, 1, "금액"),
+        (2, 0, 1, 1, "인건비"), (2, 1, 1, 1, "100"),
+    ]))
+    assert "구분" in md.splitlines()[0]
+
+
+def test_hwpx_join_cell_blocks_merges_bold():
+    """셀 안 끊긴 굵게를 하나로 합친다 (0.1.73 과 동일)."""
+    from docstruct.converters.hwpx.hwpxtree import _join_cell_blocks
+
+    assert _join_cell_blocks(["**년**", "**도**"]) == "**년 도**"
+    assert _join_cell_blocks(["*****"]) == "*****"          # 원문 별표 보존
+    assert _join_cell_blocks(["**A**", "중간", "**B**"]) == "**A** 중간 **B**"
+
+
+def test_hwpx_drops_field_payload():
+    """누름틀 상태 직렬화 값을 걸러낸다 (0.1.78 과 동일)."""
+    from docstruct.converters.hwpx.hwpxtree import _is_field_payload
+
+    assert _is_field_payload('{"fields": {},"simplefields": {}}')
+    assert not _is_field_payload('{"name": "홍길동"}')
+    assert not _is_field_payload("기획예산처")
+
+
+def test_hwpx_paragraph_excludes_table_runs():
+    """문단 텍스트에 표 내부 런이 섞이지 않는다.
+
+    `para.iter()` 로 훑으면 문단 안에 놓인 표의 런까지 빨아들여, 표
+    내용이 본문에 한 번 더 실린다. 실제로 본문 글자가 29,713 대
+    72,288 로 부풀었다.
+    """
+    from xml.etree import ElementTree as ET
+
+    from docstruct.converters.hwpx.hwpxtree import HP, _paragraph_text
+
+    xml = (
+        f'<p xmlns:hp="{HP}">'
+        f'<hp:run charPrIDRef="1"><hp:t>본문</hp:t></hp:run>'
+        f'<hp:tbl><hp:tr><hp:tc><hp:subList><hp:p>'
+        f'<hp:run charPrIDRef="1"><hp:t>표안</hp:t></hp:run>'
+        f'</hp:p></hp:subList></hp:tc></hp:tr></hp:tbl>'
+        f'</p>'
+    )
+    text = _paragraph_text(ET.fromstring(xml), set())
+    assert text == "본문"
+    assert "표안" not in text
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.81 — HWP → HWPX 변환 어댑터
+#
+# 배경: HWPX 경로를 쓰려면 .hwp 를 .hwpx 로 바꿔야 하는데, 쓸 만한 변환기는
+#       모두 외부 프로세스(Java 등)다. 어느 도구를 쓸지 아직 정하지 못했으므로
+#       호출 규약만 고정하고, **변환기가 없으면 조용히 물러나** 기존 경로가
+#       계속 쓰이게 한다. 설치 여부가 파이프라인을 깨뜨리면 안 된다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_converter_absent_by_default(monkeypatch):
+    """변환기가 설정되지 않으면 사용 불가로 보고 None 을 준다."""
+    from docstruct.converters.hwpx import convert as conv
+
+    monkeypatch.delenv(conv.CONVERTER_ENV, raising=False)
+    assert conv.is_available() is False
+    assert conv.try_convert("/tmp/whatever.hwp") is None
+
+
+def test_converter_detects_missing_executable(monkeypatch):
+    """명령만 설정하고 설치를 안 했으면 미리 잡아낸다.
+
+    문서마다 실패하고 나서 알게 되면 배치가 통째로 헛돈다.
+    """
+    from docstruct.converters.hwpx import convert as conv
+
+    monkeypatch.setenv(conv.CONVERTER_ENV, "존재하지않는도구 {input} {output}")
+    assert conv.is_available() is False
+
+
+def test_converter_runs_and_returns_path(tmp_path, monkeypatch):
+    """정상 변환 시 결과 경로를 돌려준다."""
+    from docstruct.converters.hwpx import convert as conv
+
+    source = tmp_path / "in.hwp"
+    source.write_bytes(b"dummy hwp bytes")
+    script = tmp_path / "conv.sh"
+    script.write_text('#!/bin/sh\ncp "$1" "$2"\n')
+    script.chmod(0o755)
+
+    monkeypatch.setenv(conv.CONVERTER_ENV, f"{script} {{input}} {{output}}")
+    out = conv.convert(source, tmp_path / "out")
+    assert out.is_file()
+    assert out.suffix == ".hwpx"
+    assert out.stat().st_size > 0
+
+
+def test_converter_rejects_empty_result(tmp_path, monkeypatch):
+    """종료코드가 0 이어도 결과가 없으면 실패로 본다.
+
+    실제로 그렇게 동작하는 도구를 겪었다 (hwp5odt 등).
+    """
+    from docstruct.converters.hwpx import convert as conv
+
+    source = tmp_path / "in.hwp"
+    source.write_bytes(b"dummy")
+    script = tmp_path / "noop.sh"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    script.chmod(0o755)
+
+    monkeypatch.setenv(conv.CONVERTER_ENV, f"{script} {{input}} {{output}}")
+    with pytest.raises(RuntimeError, match="결과 파일"):
+        conv.convert(source, tmp_path / "out")
+    assert conv.try_convert(source, tmp_path / "out2") is None
+
+
+def test_converter_reports_failure_tail(tmp_path, monkeypatch):
+    """실패 시 표준 오류의 끝부분을 메시지에 싣는다."""
+    from docstruct.converters.hwpx import convert as conv
+
+    source = tmp_path / "in.hwp"
+    source.write_bytes(b"dummy")
+    script = tmp_path / "fail.sh"
+    script.write_text('#!/bin/sh\necho "무언가 잘못됨" >&2\nexit 3\n')
+    script.chmod(0o755)
+
+    monkeypatch.setenv(conv.CONVERTER_ENV, f"{script} {{input}} {{output}}")
+    with pytest.raises(RuntimeError, match="무언가 잘못됨"):
+        conv.convert(source, tmp_path / "out")
+
+
+def test_converter_timeout_is_configurable(monkeypatch):
+    """제한 시간을 환경변수로 조정할 수 있고 잘못된 값은 기본으로 돌아간다."""
+    from docstruct.converters.hwpx import convert as conv
+
+    monkeypatch.setenv(conv.TIMEOUT_ENV, "45")
+    assert conv.timeout_seconds() == 45.0
+    monkeypatch.setenv(conv.TIMEOUT_ENV, "숫자아님")
+    assert conv.timeout_seconds() == conv.DEFAULT_TIMEOUT
+    monkeypatch.setenv(conv.TIMEOUT_ENV, "-5")
+    assert conv.timeout_seconds() == conv.DEFAULT_TIMEOUT
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.82 / 0.1.90 — HWP→HWPX 변환기 설치 도우미
+#
+# 배경: hwp2hwpx 는 Java 라이브러리라 매번 준비가 필요하다. 처음에는
+#       colab.py 에 뒀는데, 실제 시험은 **사내 서버**에서 한다. `colab.`
+#       이름을 달고 있으면 서버에서 부를 때 헷갈리므로
+#       converters/hwpx/convert.py 로 옮기고 이름도 바꿨다.
+#         install_hwp2hwpx → install_converter
+#         use_hwp2hwpx     → use_converter
+#         check_hwp2hwpx   → check_converter
+#       기존 노트북을 위해 colab 에서 재노출한다.
+#
+#       hwp2hwpx 는 **라이브러리**여서 main 메서드가 없다(README 확인).
+#       `java -jar` 로 실행되지 않으므로 README 의 3줄 사용법을 담은 얇은
+#       CLI 를 직접 컴파일한다 — 진입점 클래스 이름을 추측하지 않는다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_converter_helpers_live_in_converters_module():
+    """설치 도우미는 변환 어댑터 옆에 있다 (Colab 전용이 아니다)."""
+    from docstruct.converters.hwpx import convert as conv
+
+    assert callable(conv.install_converter)
+    assert callable(conv.use_converter)
+    assert callable(conv.check_converter)
+
+
+def test_colab_reexports_old_names():
+    """기존 노트북이 쓰던 이름도 그대로 동작한다."""
+    from docstruct import colab
+    from docstruct.converters.hwpx import convert as conv
+
+    assert colab.install_hwp2hwpx is conv.install_converter
+    assert colab.use_hwp2hwpx is conv.use_converter
+    assert colab.check_hwp2hwpx is conv.check_converter
+
+
+def test_default_install_dir_is_not_colab_only():
+    """기본 설치 폴더가 /content 로 고정돼 있지 않다.
+
+    사내 서버에는 /content 가 없다. Colab 이면 /content, 그 밖에는 /opt 를
+    쓰고 `DOCSTRUCT_HWP2HWPX_DIR` 로 바꿀 수 있다.
+    """
+    from pathlib import Path as _Path
+
+    from docstruct.converters.hwpx.convert import DEFAULT_INSTALL_DIR
+
+    if not _Path("/content").is_dir():
+        assert str(DEFAULT_INSTALL_DIR) == "/opt/hwp2hwpx"
+
+
+def test_converter_needs_all_three_jars(tmp_path):
+    """jar 가 하나라도 빠지면 어느 것인지 알려 준다.
+
+    hwp2hwpx 는 fat jar 가 아니라 hwplib·hwpxlib 도 클래스패스에 있어야
+    한다. 하나만 빠져도 NoClassDefFoundError 가 난다.
+    """
+    from docstruct.converters.hwpx import convert as conv
+
+    with pytest.raises(RuntimeError, match="hwp2hwpx"):
+        conv.use_converter(tmp_path, verbose=False)
+
+    (tmp_path / "hwp2hwpx-1.0.3.jar").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="hwplib"):
+        conv.use_converter(tmp_path, verbose=False)
+
+
+def test_converter_accepts_versioned_jar_names(tmp_path, monkeypatch):
+    """버전이 붙은 파일명을 그대로 받아들인다.
+
+    Maven 에서 받으면 `hwplib-1.1.10.jar` 처럼 버전이 붙는다. 이름을
+    정확히 맞추라고 요구하면 사용자가 매번 파일명을 바꿔야 한다.
+    """
+    from docstruct.converters.hwpx import convert as conv
+
+    for name in ("hwp2hwpx-1.0.3", "hwplib-1.1.10", "hwpxlib-1.0.6"):
+        (tmp_path / f"{name}.jar").write_bytes(b"x")
+
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with pytest.raises(RuntimeError, match="javac"):
+        conv.use_converter(tmp_path, verbose=False)
+
+
+def test_converter_missing_directory_is_reported(tmp_path):
+    """없는 폴더를 주면 그렇게 말한다."""
+    from docstruct.converters.hwpx import convert as conv
+
+    with pytest.raises(RuntimeError, match="찾을 수 없습니다"):
+        conv.use_converter(tmp_path / "없는폴더", verbose=False)
+
+
+def test_check_converter_reports_unconfigured(monkeypatch, capsys):
+    """설정 전에는 안내만 하고 False 를 준다."""
+    from docstruct.converters.hwpx import convert as conv
+
+    monkeypatch.delenv(conv.CONVERTER_ENV, raising=False)
+    assert conv.check_converter() is False
+    out = capsys.readouterr().out
+    assert "use_converter" in out, "서버 사용자에게 맞는 안내여야 합니다"
+
+
+# ────────────────────────────────────────────────────────────────────
+
+def test_detect_format_reads_signature(tmp_path):
+    """파일 앞부분으로 실제 형식을 알아본다."""
+    from docstruct.converters.signature import detect_format
+
+    hwp = tmp_path / "a.hwpx"
+    hwp.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"rest")
+    assert detect_format(hwp) == "hwp"
+
+    zipped = tmp_path / "b.hwpx"
+    zipped.write_bytes(b"PK\x03\x04" + b"rest")
+    assert detect_format(zipped) == "hwpx"
+
+    pdf = tmp_path / "c.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n")
+    assert detect_format(pdf) == "pdf"
+
+    unknown = tmp_path / "d.hwp"
+    unknown.write_bytes(b"plain text")
+    assert detect_format(unknown) is None
+
+
+def test_detect_format_survives_missing_file(tmp_path):
+    """없는 파일에도 예외를 내지 않는다."""
+    from docstruct.converters.signature import detect_format
+
+    assert detect_format(tmp_path / "없음.hwp") is None
+
+
+def test_effective_suffix_corrects_mismatch(tmp_path, caplog):
+    """확장자가 내용과 다르면 내용을 따르고 경고를 남긴다."""
+    import logging
+
+    from docstruct.converters import signature
+
+    path = tmp_path / "위장.hwpx"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"rest")
+
+    with caplog.at_level(logging.WARNING, logger=signature.__name__):
+        assert signature.effective_suffix(path) == ".hwp"
+    assert any("내용은" in r.getMessage() for r in caplog.records), \
+        "어긋남을 조용히 넘기면 사용자가 잘못 저장한 사실을 모른다"
+
+
+def test_effective_suffix_leaves_matching_files_alone(tmp_path):
+    """어긋나지 않으면 원래 확장자를 그대로 둔다."""
+    from docstruct.converters.signature import effective_suffix
+
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n")
+    assert effective_suffix(pdf) == ".pdf"
+
+    hwp = tmp_path / "b.hwp"
+    hwp.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    assert effective_suffix(hwp) == ".hwp"
+
+
+def test_effective_suffix_does_not_relabel_zip_as_hwpx(tmp_path):
+    """ZIP 서명만 보고 `.hwpx` 로 바꾸지 않는다.
+
+    ZIP 은 HWPX·DOCX·일반 zip 이 공유한다. `.pdf` 로 선언된 zip 을
+    `.hwpx` 로 바꿔치기하면 더 이상해진다.
+    """
+    from docstruct.converters.signature import effective_suffix
+
+    path = tmp_path / "a.pdf"
+    path.write_bytes(b"PK\x03\x04rest")
+    assert effective_suffix(path) == ".pdf"
+
+
+def test_extract_retries_with_actual_format(tmp_path, caplog):
+    """1차 실패 후 실제 형식으로 재시도한다."""
+    import logging
+
+    from docstruct import pipeline
+
+    path = tmp_path / "위장.hwpx"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+
+    calls: list[str] = []
+
+    def fake_get_extractor(suffix):
+        def run(_path, *, image_dir=None):
+            calls.append(suffix)
+            if suffix == ".hwpx":
+                raise ValueError("HWP v5(.hwp) 형식은 지원하지 않습니다")
+            return "OK"
+        return run
+
+    import docstruct.extractors.registry as reg
+    original = reg.get_extractor
+    reg.get_extractor = fake_get_extractor
+    try:
+        with caplog.at_level(logging.WARNING, logger=pipeline.__name__):
+            assert pipeline._extract(path, "hwpx", None) == "OK"
+    finally:
+        reg.get_extractor = original
+
+    assert calls == [".hwpx", ".hwp"], "실제 형식으로 재시도해야 합니다"
+    assert any("다시 시도" in r.getMessage() for r in caplog.records)
+
+
+def test_extract_raises_first_error_when_retry_also_fails(tmp_path):
+    """재시도까지 실패하면 처음 예외를 올린다.
+
+    사용자가 넣은 형식 기준의 오류가 원인에 가깝고, 재시도는 구제
+    시도일 뿐이다.
+    """
+    from docstruct import pipeline
+
+    path = tmp_path / "위장.hwpx"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+
+    def fake_get_extractor(suffix):
+        def run(_path, *, image_dir=None):
+            raise ValueError(f"{suffix} 실패")
+        return run
+
+    import docstruct.extractors.registry as reg
+    original = reg.get_extractor
+    reg.get_extractor = fake_get_extractor
+    try:
+        with pytest.raises(ValueError, match=r"\.hwpx 실패"):
+            pipeline._extract(path, "hwpx", None)
+    finally:
+        reg.get_extractor = original
+
+
+def test_extract_does_not_retry_when_format_matches(tmp_path):
+    """형식이 일치하면 재시도하지 않는다 (불필요한 두 번 실행 방지)."""
+    from docstruct import pipeline
+
+    path = tmp_path / "a.hwp"
+    path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+
+    calls: list[str] = []
+
+    def fake_get_extractor(suffix):
+        def run(_path, *, image_dir=None):
+            calls.append(suffix)
+            raise ValueError("파싱 실패")
+        return run
+
+    import docstruct.extractors.registry as reg
+    original = reg.get_extractor
+    reg.get_extractor = fake_get_extractor
+    try:
+        with pytest.raises(ValueError):
+            pipeline._extract(path, "hwp", None)
+    finally:
+        reg.get_extractor = original
+
+    assert calls == [".hwp"], "같은 형식으로 두 번 시도하면 안 됩니다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.95 — PDF 본문 텍스트 정규화
+#
+# 배경: 같은 문서를 PDF 로 처리하면 본문에 손상이 생긴다.
+#
+#     PDF  국민의 대의기관으로 입법 , 예 · 결산 심사 , 국정감 · 조사 등 의
+#     HWP  국민의 대의기관으로 입법, 예·결산 심사, 국정감·조사 등의
+#
+#       PDF 텍스트 레이어에는 글자마다 좌표만 있고 단어 경계가 없다. 한국어
+#       조판은 구두점 앞뒤 자간이 넓어, 좌표로 단어를 재조립하는 쪽이 그
+#       틈을 공백으로 읽는다. 527군데였다.
+#
+#       **OCR 문제가 아니다.** 이 문서는 텍스트 PDF 라 OCR 이 돌지 않는다
+#       (RapidOCR returned empty result 경고가 그 증거). OCR 엔진을 바꿔도
+#       이 경로에는 영향이 없다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_tighten_punctuation_removes_stray_spaces():
+    """구두점·괄호 주위의 잘못된 공백을 없앤다."""
+    from docstruct.converters.korean_text import tighten_punctuation
+
+    assert tighten_punctuation("입법 , 예 · 결산 심사") == "입법, 예·결산 심사"
+    assert tighten_punctuation("｢ 헌법 ｣ 및 ｢ 국회법 ｣") == "｢헌법｣ 및 ｢국회법｣"
+    assert tighten_punctuation("( 국회 )") == "(국회)"
+    assert tighten_punctuation("가 · 나 · 다 · 라") == "가·나·다·라"
+
+
+def test_tighten_punctuation_keeps_characters():
+    """공백만 지우고 글자는 하나도 잃지 않는다."""
+    import re
+
+    from docstruct.converters.korean_text import tighten_punctuation
+
+    for line in ("입법 , 예 · 결산", "｢ 헌법 ｣ 에  따라", "( 국회 ) 사무처"):
+        strip = lambda t: re.sub(r"\s", "", t)      # noqa: E731
+        assert strip(tighten_punctuation(line)) == strip(line)
+
+
+def test_tighten_punctuation_protects_bullet():
+    """줄 맨 앞의 가운뎃점은 글머리표이므로 뒤 공백을 지키다.
+
+    지우면 `· 항목` 이 `·항목` 이 되어 본문에 붙는다.
+    """
+    from docstruct.converters.korean_text import tighten_punctuation
+
+    assert tighten_punctuation("· 시작 항목") == "· 시작 항목"
+    assert tighten_punctuation("  · 들여쓴 항목") == "  · 들여쓴 항목"
+
+
+def test_tighten_punctuation_leaves_normal_text():
+    """이미 올바른 표기는 건드리지 않는다."""
+    from docstruct.converters.korean_text import tighten_punctuation
+
+    for line in ("정상·표기", "각 부처별 사업 현황", "입법, 예·결산", ""):
+        assert tighten_punctuation(line) == line
+
+
+def test_collapse_repeated_words_handles_phrases():
+    """낱말뿐 아니라 여러 낱말로 된 구절 반복도 줄인다.
+
+    제목에 그림자 효과를 준 지면에서 같은 글자가 여러 번 그려진다.
+    """
+    from docstruct.converters.korean_text import collapse_repeated_words
+
+    assert collapse_repeated_words("별첨3 별첨3 별첨3") == "별첨3"
+    assert collapse_repeated_words(
+        "성과계획 목표체계 성과계획 목표체계 성과계획 목표체계 제1장 제1장 제1장"
+    ) == "성과계획 목표체계 제1장"
+
+
+def test_collapse_repeated_words_needs_three():
+    """두 번 반복은 실제 표현일 수 있어 건드리지 않는다."""
+    from docstruct.converters.korean_text import collapse_repeated_words
+
+    assert collapse_repeated_words("국가 국가") == "국가 국가"
+    assert collapse_repeated_words("매우 매우 좋다") == "매우 매우 좋다"
+    assert collapse_repeated_words("가 나 다 라") == "가 나 다 라"
+
+
+def test_normalize_pdf_text_is_pdf_only():
+    """PDF 전용 정규화는 HWP 경로에 걸지 않는다.
+
+    HWP·HWPX 는 바이너리에서 글자를 직접 읽어 이런 손상이 없다(같은
+    문서에서 527건 대 0건). 정상 텍스트에 규칙을 더 걸면 고칠 것 없이
+    위험만 는다.
+    """
+    from pathlib import Path as _Path
+
+    src = _Path(__file__).resolve().parent.parent / "src" / "docstruct"
+    pdf_extractor = (src / "extractors" / "pdf.py").read_text(encoding="utf-8")
+    assert "normalize_pdf_text" in pdf_extractor
+
+    for name in ("hwp5tree.py", "olefile.py"):
+        text = (src / "converters" / "hwp" / name).read_text(encoding="utf-8")
+        assert "normalize_pdf_text" not in text, f"{name} 에 PDF 전용 규칙이 걸렸습니다"

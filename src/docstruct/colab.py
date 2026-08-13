@@ -274,6 +274,19 @@ def _load_secrets() -> None:
 from docstruct.checks import check_llm_reachable  # noqa: E402,F401
 
 
+# ── HWP → HWPX 변환기 -------------------------------------------------------
+# 설치·확인 기능은 converters/hwpx/convert.py 로 옮겼습니다. Colab 전용이
+# 아니라 사내 서버·도커에서도 쓰기 때문입니다 — `colab.` 이름을 달고 있으면
+# 서버에서 부를 때 헷갈립니다.
+#
+# 기존 노트북과의 호환을 위해 여기서 그대로 재노출합니다.
+from docstruct.converters.hwpx.convert import (  # noqa: E402,F401
+    check_converter as check_hwp2hwpx,
+    install_converter as install_hwp2hwpx,
+    use_converter as use_hwp2hwpx,
+)
+
+
 # ── 결과 반출 ---------------------------------------------------------------
 
 def download_outputs(out_dir: str | Path, *, name: str | None = None) -> Path:

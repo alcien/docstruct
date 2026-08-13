@@ -21,7 +21,7 @@ from docstruct.converters.pdf.table_extract import (
 )
 from docstruct.layout import LayoutItem, item_bbox, label_name, preview_text
 from docstruct.media.picture import picture_to_block
-from docstruct.converters.korean_text import normalize_korean_text
+from docstruct.converters.korean_text import normalize_pdf_text
 from docstruct.models import ImageInfo, PageContent, PageTrace, TableInfo
 from docstruct.tables.docling import docling_table_to_markdown
 from docstruct.tables.tags import make_table_block, make_table_id, open_tag
@@ -146,7 +146,7 @@ def extract_pdf_pages(
         else:
             chunk = non_table_item_to_markdown(item, doc)
             if chunk and chunk.strip():
-                page_parts[page].append(normalize_korean_text(chunk.strip()))
+                page_parts[page].append(normalize_pdf_text(chunk.strip()))
                 record.outcome = "text"
                 record.text = preview_text(chunk)
                 record.char_count = len(chunk.strip())
@@ -301,7 +301,7 @@ def _inject_region_text(
         for info in images:
             if info.region_kind != "text" or not info.region_text:
                 continue
-            text = normalize_korean_text(info.region_text.strip())
+            text = normalize_pdf_text(info.region_text.strip())
             if not text:
                 continue
             placeholder = info.placeholder

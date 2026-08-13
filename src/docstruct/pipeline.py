@@ -54,14 +54,48 @@ def source_format(path: Path) -> str:
 
 
 def _extract(path: Path, fmt: str, image_dir: Path | None):
-    """포맷에 맞는 추출기를 찾아 실행한다.
+    """포맷에 맞는 추출기를 찾아 실행한다 (실패 시 실제 형식으로 재시도).
 
     입력: path(문서 경로), fmt(pdf|hwp|hwpx), image_dir(이미지 저장 위치)
     출력: ExtractionResult (pages, failed_pages, table_html)
+    예외: 재시도까지 실패하면 **처음 예외**를 그대로 올린다
+    동작:
+        ① 확장자가 가리키는 추출기로 시도한다.
+        ② 실패하면 파일 내용(시그니처)으로 실제 형식을 알아보고, 확장자와
+           다를 때만 그 추출기로 한 번 더 시도한다.
+        ③ 그래도 실패하면 ①의 예외를 낸다.
+
+        ②를 두는 이유: 실제 문서에서 이름만 `.hwpx` 이고 내용은 HWP
+        바이너리인 파일이 있었다(한글에서 형식을 `한글 문서(*.hwp)` 로 둔
+        채 파일명에 `.hwpx` 를 타이핑한 경우). 확장자만 믿으면 python-hwpx
+        가 `BadZipFile` 을 내며 멈춘다.
+
+        재시도가 실패하면 **처음 예외를 올린다.** 사용자가 넣은 형식 기준의
+        오류가 원인에 가깝고, 재시도는 어디까지나 구제 시도이기 때문이다.
     """
+    from docstruct.converters.signature import detect_format
     from docstruct.extractors.registry import get_extractor
 
-    return get_extractor(f".{fmt}")(path, image_dir=image_dir)
+    try:
+        return get_extractor(f".{fmt}")(path, image_dir=image_dir)
+    except Exception as first_error:
+        actual = detect_format(path)
+        if not actual or actual == fmt:
+            raise
+        _log.warning(
+            "%s: %s 로 읽지 못했습니다 — 내용이 %s 형식이라 다시 시도합니다 (%s)",
+            path.name, fmt.upper(), actual.upper(), first_error,
+        )
+        try:
+            result = get_extractor(f".{actual}")(path, image_dir=image_dir)
+        except Exception:
+            raise first_error from None
+        _log.warning(
+            "%s: %s 형식으로 처리했습니다. 확장자(.%s)와 내용이 다릅니다 — "
+            "한글에서 '다른 이름으로 저장' 시 파일 형식을 확인하세요.",
+            path.name, actual.upper(), fmt,
+        )
+        return result
 
 
 def _render_page_images(

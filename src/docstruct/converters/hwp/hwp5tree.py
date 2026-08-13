@@ -431,7 +431,10 @@ def _read_section(
                 if blocks and blocks[-1] != PAGE_BREAK:
                     blocks.append(PAGE_BREAK)
         elif name == "Text":
-            para.append(attrs.get("text") or "")
+            text = attrs.get("text") or ""
+            if _is_field_payload(text):
+                continue                     # 필드 상태 직렬화 — 본문이 아니다
+            para.append(text)
             cid = attrs.get("charshape_id")
             if cid is not None:
                 if style_ref["char"] is None:
@@ -447,14 +450,74 @@ def _read_section(
     return blocks
 
 
+#: 한글이 누름틀(FieldClickHere) 상태를 직렬화해 Text 런에 넣어 두는 값.
+#: 화면·인쇄물에는 보이지 않지만 텍스트 레이어에는 남아, HWP 로 읽든
+#: PDF 로 내보내든 본문에 섞여 나온다. 실제 성과계획서에서 문서당 2회쯤
+#: 발견됐고 값은 늘 같았다.
+#:
+#: **필드 자체를 버리면 안 된다.** 이 문서에서 FieldClickHere 는 5,306회
+#: 쓰였고 그 안에 `기획예산처`·`전략목표`·`83` 같은 진짜 본문이 들어 있다.
+#: 걸러낼 것은 필드가 아니라 이 직렬화 값 하나뿐이다.
+_FIELD_PAYLOAD_MARK = '"simplefields"'
+
+
+def _is_field_payload(text: str) -> bool:
+    """필드 상태 직렬화 값인지 판별한다.
+
+    입력: text — Text 런의 내용
+    출력: 필드 상태 JSON 이면 True
+    비고:
+        `{"fields": {},"simplefields": {}}` 형태만 노린다. 넓게 잡으면
+        본문에 나오는 정상적인 JSON 예시까지 지운다 — 정부 문서에도
+        코드 조각이 실릴 수 있다. 양끝이 중괄호이고 이 표식을 가진
+        경우로 한정한다.
+    """
+    stripped = text.strip()
+    return (
+        _FIELD_PAYLOAD_MARK in stripped
+        and stripped.startswith("{")
+        and stripped.endswith("}")
+    )
+
+
+#: 세로 병합이 아래로 이어지는 칸에 넣는 표식.
+#: 빈 칸으로 두면 "그 행에는 값이 없다" 로 읽혀, 위 행 하나에만 값이
+#: 귀속된다. 원본에서 두 행이 공유하던 값이라면 사실과 달라진다.
+MERGE_UP = "〃"
+
+#: 병합 표식을 넣을지. 끄면 예전처럼 빈 칸으로 둔다.
+MERGE_MARK_ENV = "DOCSTRUCT_TABLE_MERGE_MARK"
+
+
+def _merge_marks_enabled() -> bool:
+    """세로 병합 표식을 넣을지.
+
+    입력: 없음 (`DOCSTRUCT_TABLE_MERGE_MARK`, 기본 켜짐)
+    출력: 켜져 있으면 True
+    비고:
+        기존 결과와 비교해야 할 때 끌 수 있게 해 둔다. 표식이 들어가면
+        markdown 문자열이 달라지므로, 예전 산출물과 대조하는 검증에는
+        꺼야 할 수 있다.
+    """
+    import os
+
+    return os.environ.get(MERGE_MARK_ENV, "").strip().lower() not in ("0", "false", "off", "no")
+
+
 def _render_table(table: _Table) -> str:
     """표를 GFM markdown 으로 만든다.
 
     입력: table — 셀 목록과 열 수
     출력: markdown 표 문자열. 셀이 없으면 빈 문자열
     비고:
-        병합 셀은 왼쪽 위 칸에만 내용을 넣고 나머지는 비운다. GFM 이 병합을
-        표현하지 못하므로, 값을 복제하면 같은 내용이 여러 번 검색에 걸린다.
+        GFM 은 병합을 표현하지 못한다. 값을 복제하면 같은 내용이 검색에
+        여러 번 걸리고, 빈 칸으로 두면 **값이 맨 윗행만의 것으로 읽힌다** —
+        실제 문서에서 `페이스북+인스타그램 합계 15.7만` 이 `페이스북 단독
+        15.7만` 으로 잘못 읽혔다. 그래서 세로 병합이 이어지는 칸에는
+        `〃` 표식을 남겨 "위 값과 같은 칸" 임을 드러낸다.
+
+        가로 병합은 왼쪽 칸에만 값을 넣고 나머지를 비운다. 제목 행처럼
+        한 값이 여러 열을 덮는 경우가 대부분이라 오해의 소지가 적다.
     """
     if not table.cells:
         return ""
@@ -464,13 +527,19 @@ def _render_table(table: _Table) -> str:
     measured = max(c.col + c.colspan for c in table.cells)
     cols = max(table.cols, measured) if table.cols else measured
     cols = max(1, min(cols, MAX_COLS))
-    rows = max(c.row for c in table.cells) + 1
+    rows = max(c.row + c.rowspan for c in table.cells)
     grid = [["" for _ in range(cols)] for _ in range(rows)]
 
+    mark_merges = _merge_marks_enabled()
     for cell in table.cells:
         if not (0 <= cell.row < rows and 0 <= cell.col < cols):
             continue
         grid[cell.row][cell.col] = _escape_cell(_join_cell_blocks(cell.blocks))
+        if not mark_merges or cell.rowspan <= 1:
+            continue
+        # 세로로 이어지는 칸에 표식을 남긴다 (맨 윗행은 값 그대로).
+        for row in range(cell.row + 1, min(cell.row + cell.rowspan, rows)):
+            grid[row][cell.col] = MERGE_UP
 
     # 맨 앞의 **완전히 빈 행**은 헤더로 쓰지 않는다. 정부 HWP 문서는 표
     # 위쪽에 여백용 빈 행을 두는 일이 흔한데, 그것이 GFM 헤더가 되면

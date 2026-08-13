@@ -68,6 +68,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="문서 파일 또는 디렉터리 (--check 만 할 때는 생략 가능)")
     p.add_argument("-o", "--out", default="out", help="출력 디렉터리 (기본: out)")
     p.add_argument(
+        "--slim", action="store_true",
+        help="document.json 에서 실행 기록(trace)을 빼고 본문·표만 담는다",
+    )
+    p.add_argument(
         "--glob",
         default="*",
         help="input이 디렉터리일 때 대상 패턴 (기본: *)",
@@ -195,7 +199,7 @@ def _process(src: Path, out_root: Path, args) -> None:
 
     written = [
         write_markdown(doc, out_dir / "document.md"),
-        write_json(doc, out_dir / "document.json"),
+        write_json(doc, out_dir / "document.json", slim=args.slim),
         write_tables_report(doc, out_dir / "tables.md"),
         write_pipeline_report(doc, out_dir / "pipeline.md"),
         write_layout_report(doc, out_dir / "layout.md"),

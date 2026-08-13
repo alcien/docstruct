@@ -1008,7 +1008,8 @@ class DocStructBatch(_SettingsMixin):
         }
 
     def to_json(
-        self, out: str | Path, *, combined: bool = False, indent: int = 2
+        self, out: str | Path, *, combined: bool = False, indent: int = 2,
+        slim: bool = False,
     ) -> list[Path] | Path:
         """결과를 JSON 으로 저장한다.
 
@@ -1016,8 +1017,13 @@ class DocStructBatch(_SettingsMixin):
             out       combined=False 면 디렉터리, True 면 파일 경로
             combined  True 면 전체를 파일 하나에 담는다
             indent    들여쓰기 칸 수
+            slim      True 면 실행 기록(trace)을 빼고 본문·표만 담는다
         출력:
             combined=False 면 저장된 Path 목록, True 면 Path 하나
+        비고:
+            slim 은 단건 DocStruct.to_json 과 같은 의미다. 0.1.71 에서
+            단건에만 연결하고 배치에는 빠뜨려, 배치 결과만 trace 가
+            그대로 실렸다.
         """
         out = Path(out).expanduser()
 
@@ -1026,7 +1032,7 @@ class DocStructBatch(_SettingsMixin):
             for doc in self._documents:
                 _rescue_scratch(doc, out.parent)
             out.write_text(
-                json.dumps(self.to_dict(), ensure_ascii=False, indent=indent),
+                json.dumps(self.to_dict(slim=slim), ensure_ascii=False, indent=indent),
                 encoding="utf-8",
             )
             _log.info("JSON 저장: %s (%d건)", out, len(self._documents))
@@ -1038,7 +1044,7 @@ class DocStructBatch(_SettingsMixin):
             path = out / f"{Path(doc.filename).stem}.json"
             _rescue_scratch(doc, out)
             path.write_text(
-                json.dumps(doc.to_dict(), ensure_ascii=False, indent=indent),
+                json.dumps(doc.to_dict(slim=slim), ensure_ascii=False, indent=indent),
                 encoding="utf-8",
             )
             written.append(path)
