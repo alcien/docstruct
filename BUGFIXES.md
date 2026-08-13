@@ -2495,3 +2495,15 @@ rapidocr 은 **PaddleOCR 모델을 ONNX 로 변환해 돌리는 래퍼**다
 버전을 바로잡으면 된다. easyocr 은 구세대 CRNN 계열이라 실익이 적다.
 
 ### 테스트 4건 추가 (총 205건)
+
+## 0.1.97 (2026-08-13) — 진단 도구가 Windows 에서 죽던 문제
+
+    FileNotFoundError: [Errno 2] No such file or directory: '\tmp\_ocr_compare_p1.png'
+
+0.1.96 의 비교 도구가 렌더 임시 파일 경로에 `/tmp` 를 박아 두었다.
+Windows 에는 그 폴더가 없다. `tempfile.gettempdir()` 로 바꿨다.
+
+같은 실수가 다른 곳에도 있는지 전수 확인했고(없었다), 테스트로 고정했다.
+주석 속 경로는 예시일 수 있어 검사에서 제외한다.
+
+### 테스트 2건 추가 (총 207건)

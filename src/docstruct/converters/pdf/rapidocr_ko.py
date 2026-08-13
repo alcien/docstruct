@@ -262,11 +262,13 @@ def compare(pdf_path: str | Path, page_no: int = 1, *, scale: float = 2.0) -> No
         나오므로, 개선 여부가 즉시 드러난다.
     """
     import re
+    import tempfile
 
     import pypdfium2 as pdfium
 
     source = Path(pdf_path).expanduser()
-    render_path = Path(f"/tmp/_ocr_compare_p{page_no}.png")
+    # `/tmp` 는 Windows 에 없다. OS 가 알려 주는 임시 폴더를 쓴다.
+    render_path = Path(tempfile.gettempdir()) / f"_ocr_compare_p{page_no}.png"
     document = pdfium.PdfDocument(str(source))
     try:
         if not 1 <= page_no <= len(document):

@@ -2984,3 +2984,34 @@ def test_ocr_line_sorting_keys():
     assert line.left == 10
     # 좌표가 없으면 원래 순서를 지켜야 하므로 0 을 준다
     assert OcrLine("나", 0.9).top == 0.0
+
+
+def test_no_hardcoded_tmp_paths():
+    """리눅스 전용 `/tmp` 를 코드에 박지 않는다.
+
+    Windows 에는 `/tmp` 가 없어 `FileNotFoundError: '\\tmp\\_ocr_compare_p1.png'`
+    가 났다. 임시 파일은 `tempfile.gettempdir()` 로 만든다.
+    """
+    import re
+    from pathlib import Path as _Path
+
+    src = _Path(__file__).resolve().parent.parent / "src" / "docstruct"
+    offenders: list[str] = []
+    pattern = re.compile(r"""["']/tmp[/'"]""")
+    for path in src.rglob("*.py"):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue                     # 주석 속 경로는 예시일 수 있다
+            if pattern.search(line):
+                offenders.append(f"{path.name}:{number}")
+    assert not offenders, f"하드코딩된 /tmp: {offenders}"
+
+
+def test_compare_uses_portable_temp_dir():
+    """진단 도구가 OS 임시 폴더를 쓴다."""
+    import inspect
+
+    from docstruct.converters.pdf.rapidocr_ko import compare
+
+    source = inspect.getsource(compare)
+    assert "gettempdir" in source
