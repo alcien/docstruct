@@ -2916,3 +2916,71 @@ def test_normalize_pdf_text_is_pdf_only():
     for name in ("hwp5tree.py", "olefile.py"):
         text = (src / "converters" / "hwp" / name).read_text(encoding="utf-8")
         assert "normalize_pdf_text" not in text, f"{name} 에 PDF 전용 규칙이 걸렸습니다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.1.96 — rapidocr 이 한국어를 중국어로 읽던 문제
+#
+# 배경: 스캔 PDF(2025 주택과 세금, 380쪽)에서 한글이 **0%** 나왔다. 본문이
+#       `气····吾·咎今`, `ヤ君居 |0号` 같은 한자·가나였다.
+#       `force_full_page_ocr=True` 로 전면 OCR 을 켜도 같았다.
+#
+#       원인은 rapidocr 3.x 가 기본 인식 모델을 PP-OCRv6 small 로 바꾼 것.
+#       그 모델에 한국어가 없어 아래처럼 거부되고 중국어로 되돌아간다.
+#
+#           ValueError: Unsupported rec.lang_type='korean'
+#                       for PP-OCRv6 small model.
+#
+#       우리 코드는 이미 `lang=["korean", "english"]` 를 넘기고 있었다 —
+#       옵션이 아니라 **모델 선택**이 문제였고, docling 의 RapidOcrOptions
+#       에는 모델 버전을 지정할 자리가 없다. 그래서 직접 호출한다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_korean_ocr_params_pin_all_three():
+    """한국어 모델은 세 값을 함께 줘야 선택된다.
+
+    lang_type 만 주면 기본 v6 small 이 골라지고 한국어가 없어 중국어로
+    되돌아간다. model_type·ocr_version 까지 지정해야 한다.
+    """
+    pytest.importorskip("rapidocr")
+    from docstruct.converters.pdf.rapidocr_ko import _build_params
+
+    params = _build_params()
+    assert params["Rec.lang_type"].name == "KOREAN"
+    # server 조합은 한국어 모델이 없다 — mobile 이어야 한다.
+    assert params["Rec.model_type"].name == "MOBILE"
+    assert params["Rec.ocr_version"].name in ("PPOCRV4", "PPOCRV5")
+
+
+def test_korean_ocr_version_is_configurable(monkeypatch):
+    """모델 버전을 환경변수로 고를 수 있고 잘못된 값은 기본으로 돌아간다."""
+    pytest.importorskip("rapidocr")
+    from docstruct.converters.pdf import rapidocr_ko as ko
+
+    monkeypatch.setenv(ko.VERSION_ENV, "v4")
+    assert ko._build_params()["Rec.ocr_version"].name == "PPOCRV4"
+
+    monkeypatch.setenv(ko.VERSION_ENV, "없는버전")
+    assert ko._build_params()["Rec.ocr_version"].name == "PPOCRV5"
+
+
+def test_ocr_min_score_guards_bad_values(monkeypatch):
+    """신뢰도 하한이 범위를 벗어나거나 숫자가 아니면 기본값을 쓴다."""
+    from docstruct.converters.pdf import rapidocr_ko as ko
+
+    monkeypatch.setenv(ko.SCORE_ENV, "0.7")
+    assert ko._min_score() == 0.7
+    for bad in ("숫자아님", "5", "-1"):
+        monkeypatch.setenv(ko.SCORE_ENV, bad)
+        assert ko._min_score() == ko.DEFAULT_MIN_SCORE
+
+
+def test_ocr_line_sorting_keys():
+    """읽기 순서 정렬에 쓰는 좌표 속성이 동작한다."""
+    from docstruct.converters.pdf.rapidocr_ko import OcrLine
+
+    line = OcrLine("가", 0.9, [(10, 50), (40, 50), (40, 70), (10, 70)])
+    assert line.top == 50
+    assert line.left == 10
+    # 좌표가 없으면 원래 순서를 지켜야 하므로 0 을 준다
+    assert OcrLine("나", 0.9).top == 0.0

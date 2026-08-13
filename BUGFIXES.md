@@ -2441,3 +2441,57 @@ result` 경고가 그 증거다. 글자는 PDF 안에 좌표와 함께 이미 �
 경로로 다뤄야 한다.
 
 ### 테스트 7건 추가 (총 201건)
+
+## 0.1.96 (2026-08-13) — rapidocr 이 한국어를 중국어로 읽던 문제
+
+스캔 PDF(2025 주택과 세금, 380쪽)에서 **한글 0%** 가 나왔다. 본문이
+`气····吾·咎今`, `ヤ君居 |0号 |0 后雨立` 같은 한자·가나였다.
+
+### 원인 — 모델에 한국어가 없다
+
+`force_full_page_ocr=True` 로 전면 OCR 을 켜도 같았다. 엔진은 도는데
+언어가 틀린 것이라 켜고 끄는 문제가 아니었다. 직접 실행해 원인을 잡았다.
+
+    Using PP-OCRv6_rec_small.onnx
+    ValueError: Unsupported rec.lang_type='korean' for PP-OCRv6 small model.
+
+rapidocr 3.x 가 기본 인식 모델을 **PP-OCRv6 small** 로 바꿨는데 그 모델에
+한국어가 없다. 우리 코드는 이미 `lang=["korean", "english"]` 를 넘기고
+있었고 주석도 정확했다 — **옵션이 아니라 모델 선택이 문제**였다.
+
+한국어 모델은 존재한다(`korean_PP-OCRv5_rec_mobile.onnx`). 다만 세 값을
+함께 지정해야 선택되고, docling 의 `RapidOcrOptions` 에는 그 자리가 없다.
+
+    Rec.lang_type   = KOREAN
+    Rec.model_type  = MOBILE      (server 조합은 한국어 모델이 없다)
+    Rec.ocr_version = PPOCRV5     (v4 도 있으나 v5 가 최신)
+
+### 수정 — rapidocr 직접 호출
+
+`converters/pdf/rapidocr_ko.py` 를 만들어 docling 을 우회한다. 모델은
+처음 실행할 때 rapidocr 이 알아서 받아 캐시하므로 파일을 챙길 필요는 없다.
+
+사내망에서 modelscope.cn 이 막혀 있으면 미리 받아 두고 지정한다.
+
+    DOCSTRUCT_RAPIDOCR_MODEL_DIR=/opt/ocr-models
+    DOCSTRUCT_RAPIDOCR_VERSION=v5        (v4 도 가능)
+    DOCSTRUCT_RAPIDOCR_MIN_SCORE=0.5     (낮은 신뢰도 조각 제거)
+
+### 진단 도구
+
+한 쪽만 30초 안에 비교한다. 380쪽을 다 돌려 보고 판단할 이유가 없다.
+
+    python -m docstruct.converters.pdf.rapidocr_ko 문서.pdf 16
+
+이 환경에서 실행한 결과(모델 내려받기는 네트워크 제한으로 실패):
+
+    ── 기본 설정: 한글 0.0% · 26.5.11. 5:44 2025 wwo. 2025号 1 2.10. Y* ...
+    ── 한국어 모델: (modelscope.cn 차단)
+
+### easyocr 을 권하지 않는 이유
+
+rapidocr 은 **PaddleOCR 모델을 ONNX 로 변환해 돌리는 래퍼**다
+(`PP` = PaddlePaddle). 이미 Paddle 을 쓰고 있으므로 엔진을 바꿀 게 아니라
+버전을 바로잡으면 된다. easyocr 은 구세대 CRNN 계열이라 실익이 적다.
+
+### 테스트 4건 추가 (총 205건)
