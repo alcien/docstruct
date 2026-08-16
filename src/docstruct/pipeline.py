@@ -171,22 +171,26 @@ def _render_page_images(
             )
 
 
-#: 텍스트 레이어가 쓸 만하다고 볼 최소 한글 글자 수.
-#: 스캔본에도 브라우저 인쇄 머리말·URL 이 텍스트로 들어 있어 글자 수만으로는
-#: 갈리지 않는다. URL 을 걷어낸 뒤 한글만 세면 분포가 확실히 나뉜다.
+#: 텍스트 레이어가 쓸 만하다고 볼 최소 글자 수 (한글 + 라틴).
+#: 스캔본에도 브라우저 인쇄 머리말·URL 이 텍스트로 들어 있어 전체 글자 수만
+#: 으로는 갈리지 않는다. URL 을 걷어낸 뒤 실제 낱말 글자만 세면 나뉜다.
 #:
-#:     스캔 PDF    모든 쪽 7자
+#:     스캔 PDF    쪽당 7자
 #:     텍스트 PDF  25% 지점 33자 · 중앙값 86자
 MIN_LAYER_HANGUL = 15
 
-#: 텍스트 레이어를 신뢰할 최소 한글 비율.
+#: 텍스트 레이어를 신뢰할 최소 낱말 비율.
 #: 실측: 텍스트 PDF 중앙값 0.61, 스캔 PDF 0.17.
 MIN_LAYER_HANGUL_RATIO = 0.3
 
 #: 재판독 대상 판정을 끄는 스위치. 켜면 모든 쪽을 다시 읽는다.
 FORCE_REREAD_ENV = "DOCSTRUCT_KOREAN_OCR_FORCE"
 
-_HANGUL_RE = re.compile(r"[가-힣]")
+#: 낱말을 이루는 글자 — 한글과 라틴 문자.
+#: **한글만 세면 영어 문서가 스캔본으로 오판된다.** NASA 약력(3,080자,
+#: 라틴 2,885자, 한글 0자)이 재판독 대상으로 잡혔다. 온전한 텍스트를
+#: 인식 결과로 바꾸게 되므로 라틴도 함께 센다.
+_WORD_CHAR_RE = re.compile(r"[가-힣A-Za-z]")
 
 
 def _has_usable_text_layer(text: str | None) -> bool:
@@ -201,17 +205,17 @@ def _has_usable_text_layer(text: str | None) -> bool:
         들어오므로 페이지마다 판단해야 한다.
 
         글자 수만으로는 갈리지 않는다. 브라우저로 인쇄한 스캔본에는
-        머리말·URL 이 텍스트로 들어 있어 쪽당 97자가 잡혔다(한글은 17자).
-        한글 수와 비율을 함께 본다.
+        머리말·URL 이 텍스트로 들어 있어 쪽당 97자가 잡혔다(낱말 글자는
+        7자). URL 과 태그를 걷어낸 뒤 한글·라틴 글자만 세고 비율까지 본다.
     """
     if not text:
         return False
     flat = re.sub(r"\s", "", re.sub(r"<[^>]+>|https?://\S+", "", text))
     if not flat:
         return False
-    hangul = len(_HANGUL_RE.findall(flat))
-    return (hangul >= MIN_LAYER_HANGUL
-            and hangul / len(flat) >= MIN_LAYER_HANGUL_RATIO)
+    words = len(_WORD_CHAR_RE.findall(flat))
+    return (words >= MIN_LAYER_HANGUL
+            and words / len(flat) >= MIN_LAYER_HANGUL_RATIO)
 
 
 def _force_reread() -> bool:

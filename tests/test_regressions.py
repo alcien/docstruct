@@ -3803,6 +3803,12 @@ def test_text_layer_detection():
         "https://www.nts.go.kr/upload/index.html  5/380")
     assert not _has_usable_text_layer("气····吾·咎今 品品品 昆品 早")
     assert not _has_usable_text_layer("2025 2026 2027 100 200")
+
+    # 영어 문서도 텍스트 레이어로 인정해야 한다 — 한글만 세면 스캔본으로
+    # 오판한다. NASA 약력(라틴 2,885자, 한글 0자)이 실제로 그랬다.
+    assert _has_usable_text_layer(
+        "MICHAEL COLLINS (MGEN, USAF, RET.) NASA ASTRONAUT (FORMER) "
+        "PERSONAL DATA: Born in Rome, Italy, on October 31, 1930.")
     assert not _has_usable_text_layer("<table 3>")
     assert not _has_usable_text_layer("국회")
     assert not _has_usable_text_layer("")
@@ -4188,3 +4194,46 @@ def test_tighten_punctuation_still_only_removes_spaces():
                  "2027 년도 예산 및 기금운용계획안"):
         strip = lambda t: re.sub(r"\s", "", t)      # noqa: E731
         assert strip(tighten_punctuation(line)) == strip(line)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.3 — 영어 문서를 스캔본으로 오판하던 문제
+#
+# 배경: 텍스트 레이어 판정이 **한글만** 셌다. NASA 약력 PDF 는 텍스트가
+#       3,080자(라틴 2,885자) 온전한데 한글이 0자라 재판독 대상으로 잡혔다.
+#       OCR 로 다시 읽으면 정확한 텍스트를 인식 결과로 바꾸게 된다.
+#
+#       한글·라틴을 함께 센다. 스캔본의 URL 은 판정 전에 걷어내므로 라틴을
+#       포함해도 오판이 늘지 않는다 — 세 문서로 확인했다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_english_document_keeps_text_layer():
+    """영어 텍스트 PDF 를 재판독 대상으로 잡지 않는다."""
+    from docstruct.pipeline import _has_usable_text_layer
+
+    english = ("MICHAEL COLLINS (MGEN, USAF, RET.)\n"
+               "NASA ASTRONAUT (FORMER)\n"
+               "PERSONAL DATA: Born in Rome, Italy, on October 31, 1930. "
+               "Married to the former Patricia M. Finnegan of Boston.")
+    assert _has_usable_text_layer(english)
+
+
+def test_scanned_header_still_detected_with_latin():
+    """라틴을 세더라도 스캔본 머리말은 걸러진다.
+
+    URL 과 태그를 판정 전에 걷어낸다. 그러지 않으면 URL 의 라틴 문자
+    때문에 스캔본이 텍스트 PDF 로 오판된다.
+    """
+    from docstruct.pipeline import _has_usable_text_layer
+
+    assert not _has_usable_text_layer(
+        "26. 5. 11. 오후 5:44  2025 주택과세금\n"
+        "https://www.nts.go.kr/upload/nts/ebook/2025주택과세금/index.html  5/380")
+
+
+def test_mixed_language_document_keeps_text_layer():
+    """한영 혼용 문서도 레이어를 그대로 쓴다."""
+    from docstruct.pipeline import _has_usable_text_layer
+
+    assert _has_usable_text_layer(
+        "NASA 우주비행사 Michael Collins 는 Apollo 11 사령선 조종사였다.")

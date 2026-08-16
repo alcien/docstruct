@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.2"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.3"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.2"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.3"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.2"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.3"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -421,6 +421,7 @@ ds = docstruct.DocStruct("문서.pdf").run()
 |---|---|
 | 스캔본 | 텍스트 레이어 없음 → OCR 로 읽음 |
 | 텍스트 PDF | 레이어 그대로 사용 (렌더도 하지 않음) |
+| 영어·혼용 문서 | 레이어 그대로 사용 |
 | 혼합 | 쪽마다 갈라서 처리 |
 
     실측 판정 정확도: 텍스트 PDF 98% · 스캔 PDF 100%
@@ -690,7 +691,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.2"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.3"
 ```
 
 ### 한글이 깨져 보일 때
