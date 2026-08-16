@@ -1279,7 +1279,7 @@ def test_fenced_object_map_guarded_too():
 
 def test_hwpx_rich_markdown_prefers_new_api():
     """6.0 신 API(doc.text.markdown)가 있으면 그것을 쓴다."""
-    from docstruct.extractors.hwpx import _rich_markdown
+    from docstruct.converters.hwpx.converter import rich_markdown as _rich_markdown
 
     class _Text:
         def markdown(self, *, rich=False):
@@ -1297,7 +1297,7 @@ def test_hwpx_rich_markdown_prefers_new_api():
 
 def test_hwpx_rich_markdown_falls_back_to_old_api():
     """5.x 구버전(export_rich_markdown 만 존재)에서도 동작한다."""
-    from docstruct.extractors.hwpx import _rich_markdown
+    from docstruct.converters.hwpx.converter import rich_markdown as _rich_markdown
 
     class _Doc:
         def export_rich_markdown(self):
@@ -1449,7 +1449,7 @@ def test_notebook_referenced_symbols_resolve():
 _DOC_IGNORE = {"docstruct.git", "docstruct.exe", "docstruct.models.page"}
 
 #: 과거 이력이라 현재 API 와 다를 수 있는 문서.
-_DOC_SKIP_FILES = {"BUGFIXES.md", "RESTRUCTURE.md"}
+_DOC_SKIP_FILES = {"BUGFIXES.md"}   # 이력 문서는 과거 API 를 담는다
 
 
 def _doc_files() -> list[Path]:
@@ -3121,3 +3121,1070 @@ def test_read_page_text_orders_by_position(monkeypatch):
 
     monkeypatch.setattr(ko, "get_engine", lambda: (lambda _p: _Result()))
     assert ko.read_page_text("dummy.png") == "위\n아래"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.2.0 — OCR 잡음 제거와 신뢰도 기본값
+#
+# 배경: 한국어 모델로 바꾸니 한글 0% → 46~70% 가 됐다(도표 46.8%,
+#       개정표 65.4%, 텍스트 70.6%). 남은 잡음은 색상 블록·로고를 글자로
+#       오인한 것이었다 — `YoHIYL`, `OSUMMM`, `C168zs운道lYR IIllY IY올`.
+#
+#       원본에 대응하는 글자가 없으므로 **고칠 대상이 아니라 지울 대상**이다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_default_min_score_raised():
+    """신뢰도 하한 기본값이 0.7 이다.
+
+    실측(26쪽)에서 0.5 → 0.7 로 올리니 잡음이 사라지고 글자는 7% 만
+    줄었다(714 → 662자). 오히려 잘려 있던 줄이 온전해졌다.
+    """
+    from docstruct.converters.pdf.rapidocr_ko import DEFAULT_MIN_SCORE
+
+    assert DEFAULT_MIN_SCORE == 0.7
+
+
+def test_is_noise_drops_garbage():
+    """장식·로고를 글자로 읽은 조각을 버린다."""
+    pytest.importorskip("kiwipiepy")
+    from docstruct.converters.pdf.rapidocr_ko import is_noise
+
+    for garbage in ("YoHIYL", "OSUMMM", "YYRY", "Y",
+                    "C168zs운道lYR IIllY IY올", "弓을YlYY 글 lo흐8lY", ""):
+        assert is_noise(garbage), f"{garbage!r} 를 버리지 못했습니다"
+
+
+def test_is_noise_keeps_real_text():
+    """정상 문장은 하나도 버리지 않는다.
+
+    오탐이 나면 내용을 잃는다. 실측에서 정상 문서 1,200줄의 오탐은
+    0.1%(1건, 그마저 HTML 주석)였다.
+    """
+    pytest.importorskip("kiwipiepy")
+    from docstruct.converters.pdf.rapidocr_ko import is_noise
+
+    for real in ("2025 주택과 세금", "국세청", "개  정", "종",
+                 "-공공기관,지방공기업도시정비법제2조",
+                 "-취득 후3년 내 신축", "2.10.", "1월하순",
+                 "※직계존속: 만 65세 이상(한명만 충족해도가능)",
+                 "-세대별 주민등록표에 함께 기재되어 있는 가족(동거인 제외)",
+                 "https://www.nts.go.kr/upload/index.html"):
+        assert not is_noise(real), f"{real!r} 를 잘못 버렸습니다"
+
+
+def test_noise_filter_can_be_disabled(monkeypatch):
+    """잡음 제거를 끌 수 있다 (원문 그대로 보고 싶을 때)."""
+    from docstruct.converters.pdf import rapidocr_ko as ko
+
+    monkeypatch.setenv(ko.KEEP_NOISE_ENV, "true")
+    assert ko._drop_noise() is False
+    monkeypatch.delenv(ko.KEEP_NOISE_ENV, raising=False)
+    assert ko._drop_noise() is True
+
+
+def test_noise_filter_survives_missing_kiwi(monkeypatch):
+    """kiwipiepy 가 없으면 잡음 제거를 건너뛴다.
+
+    선택 의존성이므로 설치 여부가 파이프라인을 깨뜨리면 안 된다.
+    """
+    from docstruct.converters.pdf import rapidocr_ko as ko
+
+    monkeypatch.setattr(ko, "_get_kiwi", lambda: None)
+    assert ko.is_noise("YoHIYL") is False       # 판별 못 하면 살린다
+    assert ko.is_noise("") is True              # 빈 문자열은 언제나 버린다
+
+
+def test_readme_has_no_dangling_doc_links():
+    """README 가 없는 문서를 가리키지 않는다.
+
+    문서를 README 하나로 합치면서 API.md·CLI.md 등을 지웠다. 참조가 남으면
+    사용자가 없는 파일을 찾게 된다.
+    """
+    import re
+    from pathlib import Path as _Path
+
+    #: 산출물 파일명이라 저장소에 없는 것이 정상이다.
+    #: BUGFIXES.md 는 배포물에 넣지 않고 따로 전달한다(2,800줄).
+    outputs = {"document.md", "layout.md", "pipeline.md", "outline.md",
+               "BUGFIXES.md"}
+
+    root = _Path(__file__).resolve().parent.parent
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    missing = [
+        name for name in re.findall(r"`([\w./]+\.md)`", readme)
+        if name not in outputs and not (root / name).exists()
+    ]
+    assert not missing, f"README 가 없는 문서를 가리킵니다: {missing}"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.2.2 — 표 셀과 OCR 조각 좌표 매칭
+#
+# 배경: 한국어 OCR 로 본문은 읽히게 됐지만(0% → 46~70%) 표 안 텍스트는
+#       여전히 docling 이 넣은 중국어였다. 실제 문서에서 셀 10개가 모두
+#       bbox·row_span·col_span 을 갖고 있었고 `text` 만 `品品品`·`昆品`
+#       이었다 — **인식 언어가 틀린 것이지 구조가 틀린 것이 아니다.**
+#
+#       그래서 TableFormer 가 만든 구조는 그대로 두고 텍스트만 갈아끼운다.
+#       좌표 기준이 같아(둘 다 TOPLEFT) 배율만 나누면 맞는다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_pixel_to_point_conversion():
+    """렌더 픽셀을 PDF 포인트로 되돌린다.
+
+    실측: 595.0 × 841.9 포인트 문서를 scale=2 로 렌더하면 1190 × 1684
+    픽셀이다. 셀 bbox (194.0, 473.3, 221.7, 488.0) 의 픽셀 대응은
+    (388, 947, 443, 976) 이다.
+    """
+    from docstruct.converters.pdf.cell_match import Box, from_pixels
+
+    point = from_pixels(Box(388, 947, 443, 976), 2.0)
+    assert abs(point.left - 194.0) < 0.5
+    assert abs(point.top - 473.3) < 0.5
+    assert abs(point.right - 221.7) < 0.5
+    assert abs(point.bottom - 488.0) < 0.5
+
+
+def test_overlap_ratio_is_stable_for_small_fragments():
+    """작은 조각이 큰 셀 안에 있으면 비율이 1.0 이다.
+
+    IoU 를 쓰면 크기 차 때문에 값이 낮게 나와 임계를 정하기 어렵다.
+    """
+    from docstruct.converters.pdf.cell_match import Box
+
+    cell = Box(0, 0, 100, 100)
+    fragment = Box(10, 10, 30, 20)
+    assert fragment.overlap_ratio(cell) == 1.0
+    assert fragment.iou(cell) < 0.1        # IoU 는 낮다
+
+
+def test_fragments_assigned_to_containing_cell():
+    """조각이 자기가 속한 셀에 배정된다."""
+    from docstruct.converters.pdf.cell_match import Box, fill_cells
+
+    cells = [Box(194, 473, 222, 488), Box(222, 473, 300, 488)]
+    fragments = [(Box(196, 475, 220, 486), "구분"),
+                 (Box(225, 475, 295, 486), "2025년")]
+    texts, dropped = fill_cells(cells, fragments)
+    assert texts == {0: "구분", 1: "2025년"}
+    assert dropped == 0
+
+
+def test_fragment_outside_any_cell_is_reported():
+    """표 밖 조각은 셀에 넣지 않고 개수로 알린다.
+
+    버리기만 하면 매칭이 잘 됐는지 알 수 없다.
+    """
+    from docstruct.converters.pdf.cell_match import Box, fill_cells
+
+    cells = [Box(194, 473, 222, 488)]
+    fragments = [(Box(196, 600, 220, 610), "표 밖 본문")]
+    texts, dropped = fill_cells(cells, fragments)
+    assert texts == {}
+    assert dropped == 1
+
+
+def test_straddling_fragment_goes_to_larger_overlap():
+    """셀 경계에 걸친 조각은 더 많이 겹치는 쪽으로 간다."""
+    from docstruct.converters.pdf.cell_match import Box, fill_cells
+
+    cells = [Box(194, 473, 222, 488), Box(222, 473, 300, 488)]
+    straddling = Box(215, 475, 240, 486)   # 셀0 에 7pt, 셀1 에 18pt
+    texts, _ = fill_cells(cells, [(straddling, "걸친글자")])
+    assert texts == {1: "걸친글자"}
+
+
+def test_multiple_lines_in_one_cell_are_ordered():
+    """한 셀에 여러 줄이 오면 위→아래로 잇는다.
+
+    줄바꿈이 아니라 공백으로 잇는다 — 셀 안에 줄바꿈이 들어가면 markdown
+    표가 깨진다.
+    """
+    from docstruct.converters.pdf.cell_match import Box, fill_cells
+
+    cells = [Box(194, 473, 222, 488)]
+    fragments = [(Box(196, 481, 220, 486), "아래줄"),
+                 (Box(196, 475, 220, 480), "위줄")]
+    texts, _ = fill_cells(cells, fragments)
+    assert texts[0] == "위줄 아래줄"
+    assert "\n" not in texts[0]
+
+
+def test_box_of_handles_rotated_quad():
+    """기울어진 사각형을 외접 상자로 바꾼다.
+
+    OCR 은 네 꼭짓점을 주는데 축에 나란하지 않을 수 있다.
+    """
+    from docstruct.converters.pdf.cell_match import box_of
+
+    box = box_of([(10, 12), (50, 10), (52, 30), (12, 32)])
+    assert (box.left, box.top, box.right, box.bottom) == (10, 10, 52, 32)
+    assert box_of([]).area == 0
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.2.3 — 한국어 OCR 로 본문 재판독 (파이프라인 연결)
+#
+# 배경: rapidocr_ko 를 만들어 두고도 파이프라인에 연결하지 않아
+#       `DocStruct(fn, force_full_page_ocr=True)` 는 여전히 한글 0% 였다.
+#       진단 도구로 직접 부를 때만 46~70% 가 나왔다.
+#
+#       연결하며 알게 된 것: `_render_page_images` 가 **표가 있는 페이지만**
+#       렌더했다(`if p.tables`). 원래 용도가 표 재추출의 시각 근거였기
+#       때문인데, 본문을 다시 읽으려면 표 없는 페이지도 이미지가 필요하다.
+# ────────────────────────────────────────────────────────────────────
+
+def _ocr_page(content, image=None):
+    """재판독 시험용 PageContent."""
+    from docstruct.models import PageContent, PageTrace
+
+    return PageContent(
+        page_no=1, page_no_kind="pdf", content=content,
+        page_image_path=str(image) if image else None,
+        trace=PageTrace(extractor="docling", text_source="ocr"),
+    )
+
+
+def test_korean_ocr_replaces_body(tmp_path, monkeypatch):
+    """재판독 결과로 본문을 바꾸고 표 자리표시자는 남긴다.
+
+    표 셀 교체는 좌표 매칭이 필요해 별도 단계다. 자리표시자를 잃으면
+    뒤따르는 표 판정·재추출이 표를 찾지 못한다.
+    """
+    from docstruct import pipeline
+    from docstruct.converters.pdf import rapidocr_ko
+
+    image = tmp_path / "p1.png"
+    image.write_bytes(b"fake")
+    monkeypatch.setattr(rapidocr_ko, "read_page_text",
+                        lambda _p: "국민의 대의기관으로 입법 , 예 · 결산")
+
+    pages = [_ocr_page("气····吾·咎今\n\n<table 3>\n\n| 品品品 |", image)]
+    assert pipeline._reread_with_korean_ocr(pages) == 1
+    # 정규화까지 적용된다 (구두점 앞 공백 제거)
+    assert pages[0].content == "국민의 대의기관으로 입법, 예·결산\n\n<table 3>"
+
+
+def test_korean_ocr_keeps_original_when_empty(tmp_path, monkeypatch):
+    """새로 읽은 결과가 비면 원본을 그대로 둔다.
+
+    OCR 이 실패한 지면에서 있던 내용까지 지우면 안 된다.
+    """
+    from docstruct import pipeline
+    from docstruct.converters.pdf import rapidocr_ko
+
+    image = tmp_path / "p1.png"
+    image.write_bytes(b"fake")
+    monkeypatch.setattr(rapidocr_ko, "read_page_text", lambda _p: "   ")
+
+    pages = [_ocr_page("원본 내용", image)]
+    assert pipeline._reread_with_korean_ocr(pages) == 0
+    assert pages[0].content == "원본 내용"
+
+
+def test_korean_ocr_skips_pages_without_image():
+    """이미지가 없는 페이지는 건너뛴다."""
+    from docstruct import pipeline
+
+    pages = [_ocr_page("원본 내용", None)]
+    assert pipeline._reread_with_korean_ocr(pages) == 0
+    assert pages[0].content == "원본 내용"
+
+
+def test_korean_ocr_records_failure(tmp_path, monkeypatch):
+    """OCR 이 실패하면 원본을 지키고 trace 에 남긴다."""
+    from docstruct import pipeline
+    from docstruct.converters.pdf import rapidocr_ko
+
+    image = tmp_path / "p1.png"
+    image.write_bytes(b"fake")
+
+    def _boom(_path):
+        raise RuntimeError("모델 없음")
+
+    monkeypatch.setattr(rapidocr_ko, "read_page_text", _boom)
+    pages = [_ocr_page("원본 내용", image)]
+    assert pipeline._reread_with_korean_ocr(pages) == 0
+    assert pages[0].content == "원본 내용"
+    assert any("실패" in step.action for step in pages[0].trace.steps)
+
+
+def test_render_all_pages_flag():
+    """all_pages=True 면 표가 없는 페이지도 렌더 대상이 된다."""
+    import inspect
+
+    from docstruct import pipeline
+
+    source = inspect.getsource(pipeline._render_page_images)
+    assert "all_pages" in source
+    # 재판독 대상만 렌더할 수 있어야 한다 — 텍스트 레이어가 온전한 쪽까지
+    # 렌더하면 155쪽 문서에서 50초쯤 헛돈다.
+    assert "only" in source
+
+
+def test_korean_ocr_option_exists():
+    """설정으로 켤 수 있다."""
+    import docstruct
+
+    assert "korean_ocr" in docstruct.option_keys()
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.2.4 — HWPX 파서를 파이프라인에 연결
+#
+# 배경: 0.1.80 에서 `hwpxtree` 를 만들어 셀 100%·9배 빠름을 검증해 놓고도
+#       연결하지 않아, 실제 HWPX 처리는 계속 python-hwpx 내보내기를 썼다.
+#
+#           python-hwpx markdown   표  94개 · 셀 93.8% · 취소선 4,456회
+#           XML 직접 파싱          표 212개 · 셀 100%  · 취소선 0
+#
+#       변환 파일 자체에는 표 212개가 온전히 들어 있다. 손실은 파일이
+#       아니라 **내보내기 단계**에서 생긴다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_hwpx_extractor_uses_xml_parser():
+    """추출기가 XML 직접 파싱을 먼저 쓴다."""
+    import inspect
+
+    from docstruct.extractors import hwpx
+
+    source = inspect.getsource(hwpx.extract_hwpx_pages)
+    assert "hwpxtree" in source
+    # 폴백이 남아 있어야 한다 — 새 파서가 죽어도 문서를 잃지 않는다
+    assert "_fallback_markdown" in source
+
+
+def test_hwpx_converter_uses_xml_parser():
+    """/convert 경로도 같은 파서를 쓴다.
+
+    한쪽만 바꾸면 API 와 파이프라인 결과가 어긋난다.
+    """
+    import inspect
+
+    from docstruct.converters.hwpx.converter import HwpxConverter
+
+    source = inspect.getsource(HwpxConverter.to_markdown)
+    assert "hwpxtree" in source
+    assert "rich_markdown" in source           # 폴백
+
+
+def test_hwpx_falls_back_when_xml_parser_fails(monkeypatch, tmp_path):
+    """XML 파싱이 실패하면 python-hwpx 로 물러난다."""
+    pytest.importorskip("hwpx")
+    from pathlib import Path as _Path
+
+    sample = _Path("notebooks/samples/sample.hwpx")
+    if not sample.is_file():
+        pytest.skip("sample.hwpx 없음")
+
+    from docstruct.converters.hwpx import hwpxtree
+    from docstruct.extractors.hwpx import extract_hwpx_pages
+
+    def _boom(_path):
+        raise RuntimeError("일부러 실패")
+
+    monkeypatch.setattr(hwpxtree, "to_markdown", _boom)
+    pages = extract_hwpx_pages(str(sample))
+    assert pages[0].trace.extractor == "python-hwpx"
+    assert pages[0].content            # 내용을 잃지 않았다
+
+
+def test_hwpx_trace_names_the_parser():
+    """어느 파서로 읽었는지 trace 에 남는다.
+
+    두 경로의 품질 차가 커서, 결과만 보고는 어느 쪽이었는지 알 수 없으면
+    문제를 추적할 수 없다.
+    """
+    from pathlib import Path as _Path
+
+    sample = _Path("notebooks/samples/sample.hwpx")
+    if not sample.is_file():
+        pytest.skip("sample.hwpx 없음")
+
+    from docstruct.extractors.hwpx import extract_hwpx_pages
+
+    trace = extract_hwpx_pages(str(sample))[0].trace
+    assert trace.extractor in ("hwpx-tree", "python-hwpx")
+    assert any("hwpxtree" in step.module for step in trace.steps)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.2.5 — 스캔 PDF 표 셀 한국어 재판독
+#
+# 배경: 0.2.3 에서 본문은 한국어로 읽히게 됐지만(0% → 46~70%) 표 안은
+#       docling 이 넣은 중국어가 남았다(`品品品`, `昆品`).
+#
+#       실제 문서에서 셀 10개가 모두 bbox·row_span·col_span 을 온전히 갖고
+#       `text` 만 틀렸다 — **구조는 맞고 언어가 틀렸다.** 그래서 행·열·병합은
+#       그대로 두고 텍스트만 갈아끼운다.
+# ────────────────────────────────────────────────────────────────────
+
+def _fake_cell(row, col, text, box, *, header=False):
+    """Docling TableCell 을 흉내낸 객체."""
+    from types import SimpleNamespace
+
+    left, top, right, bottom = box
+    return SimpleNamespace(
+        start_row_offset_idx=row, end_row_offset_idx=row + 1,
+        start_col_offset_idx=col, end_col_offset_idx=col + 1,
+        row_span=1, col_span=1, column_header=header, text=text,
+        bbox=SimpleNamespace(l=left, t=top, r=right, b=bottom),
+    )
+
+
+def _fake_table():
+    """2×2 표 (텍스트가 중국어로 잘못 인식된 상태)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(data=SimpleNamespace(
+        num_rows=2, num_cols=2,
+        table_cells=[
+            _fake_cell(0, 0, "品品品", (100, 100, 200, 120), header=True),
+            _fake_cell(0, 1, "昆品", (200, 100, 300, 120), header=True),
+            _fake_cell(1, 0, "早", (100, 120, 200, 140)),
+            _fake_cell(1, 1, "全气", (200, 120, 300, 140)),
+        ]))
+
+
+def _fake_lines():
+    """OCR 조각 (렌더 이미지 픽셀 좌표, scale=2)."""
+    from types import SimpleNamespace
+
+    def line(text, left, top, right, bottom):
+        return SimpleNamespace(text=text, score=0.9,
+                               box=[(left, top), (right, top),
+                                    (right, bottom), (left, bottom)])
+
+    return [line("구분", 210, 210, 390, 235),
+            line("2025년", 410, 210, 590, 235),
+            line("유튜브", 210, 250, 390, 275),
+            line("13,391,527", 410, 250, 590, 275)]
+
+
+def test_cell_texts_replaced_structure_kept(tmp_path, monkeypatch):
+    """텍스트만 바뀌고 행·열 구조는 그대로다."""
+    from docstruct.converters.pdf import rapidocr_ko
+    from docstruct.tables.docling import docling_table_to_markdown, replace_cell_texts
+
+    monkeypatch.setattr(rapidocr_ko, "read_image", lambda _i: _fake_lines())
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+
+    item = _fake_table()
+    stat = replace_cell_texts(item, image, scale=2.0)
+    assert stat["changed"] == 4
+    assert stat["near_miss"] == 0
+
+    markdown = docling_table_to_markdown(item)
+    assert "구분" in markdown and "13,391,527" in markdown
+    assert "品品品" not in markdown
+    # 2행 2열이 유지된다 (헤더줄 + 구분선 + 데이터줄)
+    assert len([ln for ln in markdown.splitlines() if ln.startswith("|")]) == 3
+
+
+def test_cell_texts_keep_original_when_ocr_empty(tmp_path, monkeypatch):
+    """OCR 이 아무것도 못 읽으면 원래 텍스트를 남긴다."""
+    from docstruct.converters.pdf import rapidocr_ko
+    from docstruct.tables.docling import replace_cell_texts
+
+    monkeypatch.setattr(rapidocr_ko, "read_image", lambda _i: [])
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+
+    item = _fake_table()
+    assert replace_cell_texts(item, image, scale=2.0)["changed"] == 0
+    assert item.data.table_cells[0].text == "品品品"
+
+
+def test_cell_texts_skip_cells_without_bbox(tmp_path, monkeypatch):
+    """bbox 가 없는 셀은 건드리지 않는다."""
+    from docstruct.converters.pdf import rapidocr_ko
+    from docstruct.tables.docling import replace_cell_texts
+
+    monkeypatch.setattr(rapidocr_ko, "read_image", lambda _i: _fake_lines())
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+
+    item = _fake_table()
+    item.data.table_cells[0].bbox = None
+    assert replace_cell_texts(item, image, scale=2.0)["changed"] == 3
+    assert item.data.table_cells[0].text == "品品品"
+
+
+def test_table_info_source_item_not_serialized():
+    """원본 Docling 객체는 JSON 에 넣지 않는다.
+
+    `asdict()` 가 모든 필드를 담으므로 빼 주지 않으면 to_json 이 통째로
+    실패한다.
+    """
+    import json
+
+    from docstruct.models import TableInfo
+
+    table = TableInfo(id="table_1", table_num=1, placeholder="<table 1>",
+                      markdown="| a |", source_item=object())
+    data = table.to_dict()
+    assert "source_item" not in data
+    json.dumps(data)          # 예외가 나지 않아야 한다
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.2.7 — 셀 배정 진단 지표가 원인을 가리던 문제
+#
+# 배경: 실문서에서 `미배정 조각 81` 이 나와 매칭이 크게 실패한 것처럼
+#       보였다. 파보니 **표 밖 본문 조각**이었다 — 페이지 전체를 OCR 하는데
+#       표 영역만 배정하니 나머지가 전부 거기 잡힌 것이다. 동작은 정상인데
+#       지표가 원인을 가렸다.
+#
+#       세 값으로 나눠 세면 원인이 갈린다.
+#
+#           near_miss > 0                표 안인데 셀에 못 들어감
+#                                        → 겹침 임계·셀 bbox 가 좁음
+#           near_miss = 0, empty_cells>0 셀 bbox 가 조각을 아예 안 덮음
+#                                        → TableFormer 쪽 문제
+#           outside                      표 밖 본문 (정상)
+# ────────────────────────────────────────────────────────────────────
+
+def _one_row_table(*boxes):
+    """한 행짜리 표 (셀 텍스트는 전부 중국어)."""
+    from types import SimpleNamespace
+
+    cells = []
+    for col, (left, top, right, bottom) in enumerate(boxes):
+        cells.append(SimpleNamespace(
+            start_row_offset_idx=0, end_row_offset_idx=1,
+            start_col_offset_idx=col, end_col_offset_idx=col + 1,
+            row_span=1, col_span=1, column_header=False, text="品",
+            bbox=SimpleNamespace(l=left, t=top, r=right, b=bottom)))
+    return SimpleNamespace(data=SimpleNamespace(
+        num_rows=1, num_cols=len(boxes), table_cells=cells))
+
+
+def _point_line(text, left, top, right, bottom):
+    """포인트 좌표로 주는 OCR 조각 (scale=1 로 쓴다)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(text=text, score=0.9,
+                           box=[(left, top), (right, top),
+                                (right, bottom), (left, bottom)])
+
+
+def test_near_miss_flags_threshold_problem(tmp_path, monkeypatch):
+    """표 안이지만 어느 셀과도 겹침이 모자라면 near_miss 로 잡힌다.
+
+    셀 사이 여백에 놓인 조각이 그렇다 — 표 영역 안이지만 어느 칸에도
+    충분히 들어가지 않는다.
+    """
+    from docstruct.converters.pdf import rapidocr_ko
+    from docstruct.tables.docling import replace_cell_texts
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    # 셀은 100~140 과 160~200. 조각은 그 사이 여백(142~158)에 걸친다.
+    monkeypatch.setattr(rapidocr_ko, "read_image",
+                        lambda _i: [_point_line("여백텍스트", 142, 105, 158, 115)])
+
+    stat = replace_cell_texts(
+        _one_row_table((100, 100, 140, 120), (160, 100, 200, 120)),
+        image, scale=1.0)
+    assert stat["near_miss"] == 1
+    assert stat["outside"] == 0
+
+
+def test_empty_cells_without_near_miss_flags_bbox_problem(tmp_path, monkeypatch):
+    """셀 bbox 가 조각을 아예 안 덮으면 near_miss 없이 empty_cells 만 오른다.
+
+    이 경우는 임계를 낮춰도 해결되지 않는다 — TableFormer 가 셀 위치를
+    잘못 잡은 것이다.
+    """
+    from docstruct.converters.pdf import rapidocr_ko
+    from docstruct.tables.docling import replace_cell_texts
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(rapidocr_ko, "read_image",
+                        lambda _i: [_point_line("멀리있는텍스트", 300, 105, 400, 115)])
+
+    stat = replace_cell_texts(_one_row_table((100, 100, 120, 120)),
+                              image, scale=1.0)
+    assert stat["near_miss"] == 0
+    assert stat["empty_cells"] == 1
+    assert stat["outside"] == 1        # 표 밖 조각으로 세어진다
+
+
+def test_overlap_threshold_is_configurable(monkeypatch):
+    """겹침 임계를 조정할 수 있다.
+
+    **OCR 신뢰도 임계와 다르다.** 이 값을 낮춰도 잡음이 늘지 않는다 —
+    이미 신뢰도 검사를 통과한 조각 중 어느 셀에 넣을지만 정한다.
+    """
+    from docstruct.converters.pdf import cell_match
+
+    monkeypatch.setenv(cell_match.OVERLAP_ENV, "0.3")
+    assert cell_match.min_overlap_setting() == 0.3
+    for bad in ("숫자아님", "0", "1.5", "-1"):
+        monkeypatch.setenv(cell_match.OVERLAP_ENV, bad)
+        assert cell_match.min_overlap_setting() == cell_match.MIN_OVERLAP
+
+
+def test_straddling_fragment_fills_both_cells(tmp_path, monkeypatch):
+    """두 셀에 걸친 조각은 양쪽이 모두 가져간다.
+
+    조각마다 셀 하나만 고르던 방식은 한쪽만 채우고 다른 쪽을 비웠다.
+    실문서에서 왼쪽 열이 통째로 빈 표가 나왔다 — `지방세법`·`종합부동산세법`
+    이 OCR 에는 읽혔는데 셀에는 없었다.
+    """
+    from docstruct.converters.pdf import rapidocr_ko
+    from docstruct.tables.docling import replace_cell_texts
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    # 셀 100~150 과 150~200, 조각은 130~170 — 양쪽에 50% 씩
+    monkeypatch.setattr(rapidocr_ko, "read_image",
+                        lambda _i: [_point_line("걸친텍스트", 130, 105, 170, 115)])
+
+    stat = replace_cell_texts(
+        _one_row_table((100, 100, 150, 120), (150, 100, 200, 120)),
+        image, scale=1.0)
+    assert stat["changed"] == 2
+    assert stat["near_miss"] == 0
+
+
+def test_dominant_fragment_is_not_duplicated(tmp_path, monkeypatch):
+    """한 셀에 확실히 들어간 조각은 옆 셀로 번지지 않는다.
+
+    없으면 경계를 살짝 스친 셀까지 같은 텍스트를 받아 표가 같은 말로
+    뒤덮인다.
+    """
+    from docstruct.converters.pdf import rapidocr_ko
+    from docstruct.tables.docling import replace_cell_texts
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(rapidocr_ko, "read_image",
+                        lambda _i: [_point_line("왼쪽전용", 105, 105, 145, 115)])
+
+    item = _one_row_table((100, 100, 150, 120), (150, 100, 200, 120))
+    stat = replace_cell_texts(item, image, scale=1.0)
+    assert stat["changed"] == 1
+    assert item.data.table_cells[1].text == "品"      # 옆 셀은 그대로
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.2.9 — 텍스트 PDF 를 OCR 로 덮어쓰던 문제
+#
+# 배경: `korean_ocr=True` 는 **모든 페이지**를 다시 읽었다. 스캔본에는 맞지만
+#       실무에서는 텍스트 PDF 와 섞여 들어온다. 그때 정확한 텍스트 레이어를
+#       인식 결과로 바꾸게 된다 — 스캔본에서 OCR 이 46~70% 였으니 손해가
+#       크다.
+#
+#       글자 수만으로는 갈리지 않는다. 브라우저로 인쇄한 스캔본에는 머리말·
+#       URL 이 텍스트로 들어 있어 쪽당 97자가 잡혔다. URL 을 걷어낸 뒤 한글만
+#       세면 분포가 확실히 나뉜다.
+#
+#           스캔 PDF    모든 쪽 7자
+#           텍스트 PDF  25% 지점 33자 · 중앙값 86자
+#
+#       원본 PDF 로 실측한 판정 정확도: 텍스트 PDF 98%, 스캔 PDF 100%.
+# ────────────────────────────────────────────────────────────────────
+
+def test_text_layer_detection():
+    """텍스트 레이어가 쓸 만한 쪽과 아닌 쪽을 가른다."""
+    from docstruct.pipeline import _has_usable_text_layer
+
+    assert _has_usable_text_layer(
+        "국민의 대의기관으로 입법, 예·결산 심사, 국정감·조사 등의 활동을 수행함")
+    assert _has_usable_text_layer(
+        "※ 본 성과계획서를 국가재정법 제34조에 의거하여 제출합니다")
+
+    # 스캔본의 브라우저 인쇄 머리말 — 텍스트는 있으나 본문이 아니다
+    assert not _has_usable_text_layer(
+        "26. 5. 11. 오후 5:44  2025 주택과세금\n"
+        "https://www.nts.go.kr/upload/index.html  5/380")
+    assert not _has_usable_text_layer("气····吾·咎今 品品品 昆品 早")
+    assert not _has_usable_text_layer("2025 2026 2027 100 200")
+    assert not _has_usable_text_layer("<table 3>")
+    assert not _has_usable_text_layer("국회")
+    assert not _has_usable_text_layer("")
+    assert not _has_usable_text_layer(None)
+
+
+def test_korean_ocr_skips_text_layer_pages(tmp_path, monkeypatch):
+    """텍스트 레이어가 있는 쪽은 재판독하지 않는다."""
+    from docstruct import pipeline
+    from docstruct.converters.pdf import rapidocr_ko
+
+    image = tmp_path / "p1.png"
+    image.write_bytes(b"fake")
+    monkeypatch.setattr(rapidocr_ko, "read_page_text",
+                        lambda _p: "OCR 이 읽은 다른 내용입니다")
+
+    good = _ocr_page("국민의 대의기관으로 입법, 예·결산 심사, 국정감·조사 등의 활동", image)
+    # 재판독 대상 목록이 비어 있으면 이 쪽은 건너뛴다
+    assert pipeline._reread_with_korean_ocr([good], set()) == 0
+    assert "대의기관" in good.content              # 원본 유지
+    assert any("생략" in step.action for step in good.trace.steps)
+
+
+def test_korean_ocr_rereads_scanned_pages(tmp_path, monkeypatch):
+    """텍스트 레이어가 쓸모없는 쪽은 다시 읽는다."""
+    from docstruct import pipeline
+    from docstruct.converters.pdf import rapidocr_ko
+
+    image = tmp_path / "p1.png"
+    image.write_bytes(b"fake")
+    monkeypatch.setattr(rapidocr_ko, "read_page_text",
+                        lambda _p: "주택과 관련된 연중 세무 일정")
+
+    scanned = _ocr_page("气····吾·咎今 品品品", image)
+    assert pipeline._reread_with_korean_ocr([scanned], {1}) == 1
+    assert "주택과 관련된" in scanned.content
+
+
+def test_korean_ocr_force_overrides_detection(tmp_path, monkeypatch):
+    """강제 설정이면 텍스트 레이어가 있어도 다시 읽는다."""
+    from pathlib import Path as _Path
+
+    from docstruct import pipeline
+    from docstruct.converters.pdf import rapidocr_ko
+
+    image = tmp_path / "p1.png"
+    image.write_bytes(b"fake")
+    monkeypatch.setattr(rapidocr_ko, "read_page_text", lambda _p: "다시 읽은 내용입니다")
+    monkeypatch.setenv(pipeline.FORCE_REREAD_ENV, "true")
+
+    page = _ocr_page("국민의 대의기관으로 입법, 예·결산 심사, 국정감·조사 등의 활동", image)
+    # 강제 설정이면 _pages_needing_ocr 가 모든 쪽을 대상으로 돌려준다
+    targets = pipeline._pages_needing_ocr(_Path("/없는파일.pdf"), [page])
+    assert pipeline._reread_with_korean_ocr([page], targets) == 1
+    assert "다시 읽은" in page.content
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.0 — 스캔본·텍스트 PDF 자동 분류
+#
+# 배경: `korean_ocr` 기본값이 False 라 **스캔본이 와도 아무것도 하지 않았다.**
+#       스캔본은 텍스트 파서로 읽을 길이 없다 — 20쪽 전체에서 한글 340자가
+#       나오는데 전부 `2025 주택과세금` 이라는 파일명이 URL·머리말에 반복된
+#       것이고 본문은 0자다. OCR 이 유일한 경로다.
+#
+#       켜 두면 판정이 알아서 갈라 주므로 사람이 매번 정할 일이 없다.
+#
+#       판정을 **렌더보다 먼저** 한다. 나중에 하면 텍스트 PDF 도 전 페이지를
+#       렌더하고 나서 전부 건너뛴다(155쪽에서 50초쯤).
+# ────────────────────────────────────────────────────────────────────
+
+def test_korean_ocr_enabled_by_default():
+    """기본으로 켜져 있다.
+
+    스캔본을 못 읽는 것보다, 텍스트 PDF 에서 판정 한 번 더 하는 편이 낫다.
+    """
+    from docstruct.core.config import get_settings
+
+    assert get_settings().korean_ocr is True
+
+
+def test_page_selection_uses_source_pdf(tmp_path):
+    """원본 PDF 의 텍스트 레이어로 대상 쪽을 가려낸다."""
+    pytest.importorskip("pypdfium2")
+    import pypdfium2 as pdfium
+
+    from docstruct import pipeline
+    from docstruct.models import PageContent, PageTrace
+
+    # 텍스트가 없는 빈 PDF — 스캔본과 같은 조건
+    blank = tmp_path / "blank.pdf"
+    document = pdfium.PdfDocument.new()
+    document.new_page(200, 300)
+    document.new_page(200, 300)
+    document.save(str(blank))
+    document.close()
+
+    pages = [
+        PageContent(page_no=n, page_no_kind="pdf", content="",
+                    trace=PageTrace(extractor="docling", text_source="ocr"))
+        for n in (1, 2)
+    ]
+    assert pipeline._pages_needing_ocr(blank, pages) == {1, 2}
+
+
+def test_page_selection_falls_back_to_all_on_error(tmp_path):
+    """원본을 못 읽으면 모든 쪽을 대상으로 본다.
+
+    판정을 못 했다는 이유로 스캔본을 건너뛰면 본문을 통째로 잃는다.
+    반대 방향의 실수는 시간만 더 쓴다.
+    """
+    from docstruct import pipeline
+    from docstruct.models import PageContent, PageTrace
+
+    pages = [
+        PageContent(page_no=n, page_no_kind="pdf", content="",
+                    trace=PageTrace(extractor="docling", text_source="ocr"))
+        for n in (1, 2, 3)
+    ]
+    assert pipeline._pages_needing_ocr(tmp_path / "없는파일.pdf", pages) == {1, 2, 3}
+
+
+def test_render_targets_narrow_to_ocr_pages():
+    """재판독 대상만 렌더하되 표가 있는 쪽은 항상 포함한다.
+
+    표가 있는 쪽은 재추출 근거로 이미지가 필요하다.
+    """
+    from docstruct.models import PageContent, PageTrace, TableInfo
+
+    def page(number, *, has_table=False):
+        return PageContent(
+            page_no=number, page_no_kind="pdf", content="",
+            tables=[TableInfo(id=f"t{number}", table_num=number,
+                              placeholder="", markdown="| a |")] if has_table else [],
+            trace=PageTrace(extractor="docling", text_source="ocr"))
+
+    pages = [page(1), page(2, has_table=True), page(3), page(4)]
+
+    def targets(all_pages, only):
+        return [p.page_no for p in pages
+                if p.tables or (all_pages and (only is None or p.page_no in only))]
+
+    assert targets(False, None) == [2]              # 기본: 표만
+    assert targets(True, None) == [1, 2, 3, 4]      # 전체
+    assert targets(True, {1, 3}) == [1, 2, 3]       # 대상 + 표
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.1 — 격자에 셀이 빠진 표 (표시 + VLM 재구성)
+#
+# 배경: 좌표 매칭은 **셀이 존재할 때만** 동작한다. 실제 문서에서 7행 2열
+#       (14칸)로 렌더되는 표의 셀이 7개뿐이었고 왼쪽 열이 아예 셀로 존재하지
+#       않았다. OCR 은 `지방세법`·`종합부동산세법` 을 읽었는데 넣을 자리가
+#       없었다.
+#
+#       앞서 "빈 셀 1~2개뿐이니 표 구조 인식은 제대로 됐다" 고 판단했는데,
+#       그것은 **존재하는 셀** 기준이라 틀렸다. 셀 수 자체가 모자란 것을
+#       못 봤다.
+#
+#       알고리즘으로는 고칠 수 없다 — 없는 칸에 값을 넣을 수는 없다.
+#       표시(flag_broken_tables)와 VLM 재구성(vlm_fix_tables)을 따로 켠다.
+# ────────────────────────────────────────────────────────────────────
+
+def _grid_cell(row, col, *, row_span=1, col_span=1):
+    """구조 검사용 셀."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        start_row_offset_idx=row, end_row_offset_idx=row + row_span,
+        start_col_offset_idx=col, end_col_offset_idx=col + col_span,
+        row_span=row_span, col_span=col_span,
+        column_header=False, text="x", bbox=None)
+
+
+def _grid_table(rows, cols, cells):
+    """구조 검사용 TableItem."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(data=SimpleNamespace(
+        num_rows=rows, num_cols=cols, table_cells=cells))
+
+
+def test_structure_gap_detects_missing_column():
+    """열이 통째로 빠진 표를 잡아낸다."""
+    from docstruct.tables.docling import structure_gap
+
+    # 7행 2열인데 오른쪽 열 셀만 있다 — 실제 문서에서 나온 형태
+    gap = structure_gap(_grid_table(7, 2, [_grid_cell(r, 1) for r in range(7)]))
+    assert gap["declared"] == 14
+    assert gap["covered"] == 7
+    assert gap["ratio"] == 0.5
+
+
+def test_structure_gap_counts_merged_cells():
+    """병합은 결함이 아니다.
+
+    `row_span`·`col_span` 이 큰 셀 하나가 여러 칸을 덮으므로, 셀 개수만
+    세면 정상 표도 부족해 보인다.
+    """
+    from docstruct.tables.docling import structure_gap
+
+    merged = _grid_table(2, 2, [_grid_cell(0, 0, col_span=2),
+                                _grid_cell(1, 0), _grid_cell(1, 1)])
+    assert structure_gap(merged)["missing"] == 0
+
+    normal = _grid_table(2, 2, [_grid_cell(0, 0), _grid_cell(0, 1),
+                                _grid_cell(1, 0), _grid_cell(1, 1)])
+    assert structure_gap(normal)["missing"] == 0
+
+
+def test_structure_gap_handles_empty_table():
+    """빈 표에도 예외를 내지 않는다."""
+    from docstruct.tables.docling import structure_gap
+
+    assert structure_gap(_grid_table(0, 0, []))["declared"] == 0
+
+
+def _rebuild_page(markdown, ratio, image):
+    """VLM 재구성 시험용 페이지."""
+    from docstruct.models import PageContent, PageTrace, TableInfo
+
+    return PageContent(
+        page_no=1, page_no_kind="pdf", content="본문",
+        page_image_path=str(image),
+        tables=[TableInfo(id="table_1", table_num=1, placeholder="<table 1>",
+                          markdown=markdown, structure_ratio=ratio)],
+        trace=PageTrace(extractor="docling", text_source="ocr"))
+
+
+def test_vlm_rebuild_replaces_broken_table(tmp_path, monkeypatch):
+    """구조 결함이 표시된 표를 다시 만든다."""
+    import docstruct.infrastructure.llm.client as llm_client
+    from docstruct.tables import vlm_rebuild
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(
+        vlm_rebuild, "invoke_llm",
+        lambda *a, **k: "| 구분 | 약칭 |\n|---|---|\n| 지방세법 | 지방령 |")
+
+    page = _rebuild_page("| 品品品 |\n|---|\n| 지방령 |", 0.5, image)
+    assert vlm_rebuild.rebuild_broken_tables([page]) == 1
+    assert "지방세법" in page.tables[0].markdown
+    assert page.tables[0].original_markdown is not None    # 원본 보관
+
+
+def test_vlm_rebuild_discards_shorter_result(tmp_path, monkeypatch):
+    """다시 만든 표가 원본보다 짧으면 되돌린다.
+
+    VLM 이 표를 일부만 옮기는 일이 있고, 그때 원본을 잃으면 손해다.
+    """
+    import docstruct.infrastructure.llm.client as llm_client
+    from docstruct.tables import vlm_rebuild
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(vlm_rebuild, "invoke_llm",
+                        lambda *a, **k: "| a |\n|---|\n| b |")
+
+    original = ("| 매우 긴 원본 표 내용 | 두번째 |\n|---|---|\n"
+                "| 값1 | 값2 |\n| 값3 | 값4 |")
+    page = _rebuild_page(original, 0.5, image)
+    assert vlm_rebuild.rebuild_broken_tables([page]) == 0
+    assert "매우 긴" in page.tables[0].markdown
+
+
+def test_vlm_rebuild_rejects_non_table_answer(tmp_path, monkeypatch):
+    """표 형태가 아닌 응답은 받아들이지 않는다."""
+    import docstruct.infrastructure.llm.client as llm_client
+    from docstruct.tables import vlm_rebuild
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+
+    for answer in ("이 이미지에는 표가 보이지 않습니다.", "없음", ""):
+        monkeypatch.setattr(vlm_rebuild, "invoke_llm", lambda *a, r=answer, **k: r)
+        page = _rebuild_page("| 品 |\n|---|\n| a |", 0.5, image)
+        assert vlm_rebuild.rebuild_broken_tables([page]) == 0
+
+
+def test_vlm_rebuild_skips_healthy_tables(tmp_path, monkeypatch):
+    """결함이 표시되지 않은 표는 건드리지 않는다.
+
+    VLM 은 못 읽은 것을 지어낸다. 좌표 매칭이 성공한 표까지 다시 만들면
+    검증된 결과를 추측으로 바꾸게 된다.
+    """
+    import docstruct.infrastructure.llm.client as llm_client
+    from docstruct.tables import vlm_rebuild
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+
+    page = _rebuild_page("| 정상 |\n|---|\n| 표 |", None, image)
+    assert vlm_rebuild.rebuild_broken_tables([page]) == 0
+
+
+def test_table_flags_are_toggleable():
+    """표시와 재구성을 따로 켜고 끌 수 있다."""
+    import docstruct
+
+    keys = docstruct.option_keys()
+    assert "flag_broken_tables" in keys
+    assert "vlm_fix_tables" in keys
+
+    from docstruct.core.config import get_settings
+
+    settings = get_settings()
+    assert settings.flag_broken_tables is True     # 표시는 기본으로 켠다
+    assert settings.vlm_fix_tables is False        # VLM 은 명시해야 돈다
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.2 — 텍스트 PDF 에 남아 있던 손상
+#
+# 배경: 0.1.95 이후 OCR 쪽만 보느라 텍스트 PDF 를 다시 재지 않았다.
+#       HWP 원본과 대조하니 손상이 남아 있었다.
+#
+#           · 1 급 (2 명 ), 2 급 (32 명 ), 3 급 (73 명 )
+#           → · 1급(2명), 2급(32명), 3급(73명)
+#
+#       0.1.95 는 여는 괄호 **뒤** 만 다뤘고 **앞** 은 남겼다. 숫자와 단위
+#       사이 공백(`1 급`, `169 명`)도 규칙이 없었다.
+#
+#       실측: 숫자+단위 229건, 괄호 주변 396건 → 각각 0.
+# ────────────────────────────────────────────────────────────────────
+
+def test_space_before_open_paren_removed():
+    """여는 괄호 앞 공백을 없앤다.
+
+    0.1.95 는 괄호 뒤만 다뤄 이쪽이 남았다.
+    """
+    from docstruct.converters.korean_text import tighten_punctuation
+
+    assert tighten_punctuation("국회 (사무처)") == "국회(사무처)"
+    assert tighten_punctuation("1 급 (2 명 )") == "1급(2명)"
+
+
+def test_space_between_number_and_unit_removed():
+    """숫자와 단위 사이 공백을 없앤다."""
+    from docstruct.converters.korean_text import tighten_punctuation
+
+    assert tighten_punctuation("총 169 명") == "총 169명"
+    assert tighten_punctuation("2027 년도 예산") == "2027년도 예산"
+    assert tighten_punctuation(
+        "· 1 급 (2 명 ), 2 급 (32 명 )") == "· 1급(2명), 2급(32명)"
+
+
+def test_number_unit_rule_is_conservative():
+    """한 글자 단위만 붙인다.
+
+    `5 개년 계획` 의 `개년` 처럼 두 글자 이상을 붙이면 다른 말이 될 수
+    있어 목록을 좁게 둔다.
+    """
+    from docstruct.converters.korean_text import tighten_punctuation
+
+    # 목록에 있는 단위는 붙인다
+    assert tighten_punctuation("3 년 계획") == "3년 계획"
+    # 목록에 없는 글자는 그대로
+    assert tighten_punctuation("2 부처 합동") == "2 부처 합동"
+    assert tighten_punctuation("각 부처별 사업") == "각 부처별 사업"
+
+
+def test_tighten_punctuation_still_only_removes_spaces():
+    """공백만 지우고 글자는 하나도 잃지 않는다.
+
+    실문서 2,119줄에서 글자 수 변화 0 을 확인했다.
+    """
+    import re
+
+    from docstruct.converters.korean_text import tighten_punctuation
+
+    for line in ("· 1 급 (2 명 ), 2 급 (32 명 )", "국회 (사무처) 소관",
+                 "2027 년도 예산 및 기금운용계획안"):
+        strip = lambda t: re.sub(r"\s", "", t)      # noqa: E731
+        assert strip(tighten_punctuation(line)) == strip(line)

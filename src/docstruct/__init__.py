@@ -75,7 +75,7 @@ from docstruct.pipeline import SUPPORTED_SUFFIXES, build_document
 from docstruct import preview, report  # noqa: E402,F401
 
 # winfix 는 core 안에 있지만 `from docstruct import winfix` 로 쓰도록
-# 문서(WINDOWS.md)가 안내해 왔습니다. 여기서 붙여 두면 패키지 배포본과
+# README 가 안내해 왔습니다. 여기서 붙여 두면 패키지 배포본과
 # backend 4-패키지 배치 양쪽에서 같은 한 줄이 통합니다.
 from docstruct.core import winfix  # noqa: E402,F401
 

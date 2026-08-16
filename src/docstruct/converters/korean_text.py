@@ -183,6 +183,19 @@ _NO_SPACE_AFTER = r"([{«〈《「『【〔｢（［｛"
 _TIGHT_MIDDOT = r"·‧・"
 
 _SPACE_BEFORE_RE = re.compile(rf"[ \t]+(?=[{_NO_SPACE_BEFORE}])")
+
+#: 소괄호 **앞** 의 공백. 한국어 표기에서 `1급 (2명)` 은 `1급(2명)` 이다.
+#: 0.1.95 는 괄호 뒤만 다뤄 이쪽이 남았다 — 실측 396건.
+#:
+#: **소괄호만** 다룬다. 인용부호(`｢ ｣`)까지 넣었더니 `및 ｢국회법｣` 의
+#: 낱말 사이 공백을 지웠다 — 그 자리는 원문에 공백이 있는 것이 맞다.
+_SPACE_BEFORE_OPEN_RE = re.compile(r"(?<=[\w가-힣])[ \t]+(?=[(（])")
+
+#: 숫자와 뒤따르는 한글 사이 공백. `1 급`·`2 명`·`169 명` 처럼 벌어진다.
+#: 좌표로 단어를 재조립하는 쪽이 숫자와 글자의 자간을 공백으로 읽는다.
+#: **한 글자 단위·조사만** 붙인다. `2027 년도` 는 맞지만 `5 개년 계획` 의
+#: `개년` 까지 붙이면 다른 말이 될 수 있어 보수적으로 둔다.
+_NUM_UNIT_RE = re.compile(r"(?<=\d)[ \t]+(?=[급명개년월일차호원건배쪽점])")
 _SPACE_AFTER_RE = re.compile(rf"(?<=[{_NO_SPACE_AFTER}])[ \t]+")
 #: 가운뎃점 양옆 공백. 양옆 글자를 소비하면 `가 · 나 · 다` 처럼 연달아
 #: 나올 때 겹쳐서 하나를 건너뛴다. lookahead 로 소비하지 않고 확인만 한다.
@@ -222,6 +235,8 @@ def tighten_punctuation(text: str) -> str:
         body = text[marker.end():]
 
     out = _SPACE_BEFORE_RE.sub("", body)
+    out = _SPACE_BEFORE_OPEN_RE.sub("", out)
+    out = _NUM_UNIT_RE.sub("", out)
     out = _SPACE_AFTER_RE.sub("", out)
     out = _MIDDOT_RE.sub(r"\1", out)
     return lead + _MULTI_SPACE_RE.sub(" ", out)

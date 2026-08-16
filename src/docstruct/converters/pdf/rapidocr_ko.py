@@ -55,8 +55,95 @@ MODEL_DIR_ENV = "DOCSTRUCT_RAPIDOCR_MODEL_DIR"
 VERSION_ENV = "DOCSTRUCT_RAPIDOCR_VERSION"
 
 #: 이 값 미만인 조각은 버린다. 낮은 신뢰도 조각은 대개 장식·괘선이다.
+#:
+#: 실측(2025 주택과 세금, 26쪽)에서 0.5 → 0.7 로 올리니 `Y늦`·`운은-`·`Y`
+#: 같은 잡음이 사라지고 글자는 7% 만 줄었다(714 → 662자). 오히려
+#: `-취득 후3년 내 신축` 처럼 잘려 있던 줄이 온전해졌다.
 SCORE_ENV = "DOCSTRUCT_RAPIDOCR_MIN_SCORE"
-DEFAULT_MIN_SCORE = 0.5
+DEFAULT_MIN_SCORE = 0.7
+
+#: 잡음 조각 제거를 끄는 스위치 (`DOCSTRUCT_OCR_KEEP_NOISE=true`).
+KEEP_NOISE_ENV = "DOCSTRUCT_OCR_KEEP_NOISE"
+
+#: 미등록어 비율이 이 값 이상이면 잡음으로 본다.
+_UNKNOWN_RATIO = 0.4
+
+#: 형태소 분석기가 "정상 낱말이 아니다" 로 붙이는 태그.
+#:   SL 외국어 · SH 한자 · SW 기호 · UN 미등록어 · NA 분석 불능
+_UNKNOWN_TAGS = frozenset({"SL", "SH", "SW", "UN", "NA"})
+
+_kiwi: Any = None
+_kiwi_lock = threading.Lock()
+
+
+def _get_kiwi() -> Any:
+    """형태소 분석기를 준비한다 (한 번만 만들고 재사용).
+
+    입력: 없음
+    출력: Kiwi 인스턴스. kiwipiepy 가 없으면 None
+    비고:
+        선택 의존성이다. 없으면 잡음 제거를 건너뛰고 OCR 결과를 그대로
+        쓴다 — 설치 여부가 파이프라인을 깨뜨리면 안 된다.
+    """
+    global _kiwi
+    if _kiwi is not None:
+        return _kiwi
+    with _kiwi_lock:
+        if _kiwi is not None:
+            return _kiwi
+        try:
+            from kiwipiepy import Kiwi
+        except ImportError:
+            _log.debug("kiwipiepy 가 없어 OCR 잡음 제거를 건너뜁니다")
+            return None
+        _kiwi = Kiwi()
+        return _kiwi
+
+
+def is_noise(text: str) -> bool:
+    """OCR 이 장식·로고를 글자로 잘못 읽은 조각인지 판별한다.
+
+    입력: text — 인식된 한 줄
+    출력: 잡음으로 보이면 True
+    비고:
+        이 문서에는 색상 블록과 아이콘이 많아 `YoHIYL`, `OSUMMM`,
+        `C168zs운道lYR IIllY IY올` 같은 조각이 섞인다. 원본에 대응하는
+        글자가 없으므로 **고칠 대상이 아니라 지울 대상**이다.
+
+        판별은 형태소 태그로 한다. 라틴·한자·기호·미등록어가 40% 이상이면
+        잡음으로 본다. 실측에서 잡음 10개 중 7개를 잡고 정상 문장
+        16개에는 오탐이 없었다. 정상 문서 1,200줄에서도 오탐은 0.1%(1건,
+        그마저 HTML 주석)였다.
+
+        **1음절 명사 연속 비율은 쓰지 않는다.** 신호로 유망해 보였으나
+        `개 정`(1.00), `-취득 후3년 내 신축`(0.50) 같은 정상 문구가 걸려
+        쓸 수 없었다.
+
+        `을글`·`운은-` 처럼 순수 한글로 이뤄진 잡음은 걸러지지 않는다.
+        그런 조각을 잡으려면 실제 낱말인지 판단해야 하는데, 사전에 있는
+        글자들의 조합이라 형태소 분석으로는 구분되지 않는다.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return True
+    kiwi = _get_kiwi()
+    if kiwi is None:
+        return False
+    tokens = kiwi.tokenize(stripped)
+    if not tokens:
+        return False
+    unknown = sum(1 for token in tokens if token.tag in _UNKNOWN_TAGS)
+    return unknown / len(tokens) >= _UNKNOWN_RATIO
+
+
+def _drop_noise() -> bool:
+    """잡음 조각을 버릴지.
+
+    입력: 없음 (`DOCSTRUCT_OCR_KEEP_NOISE`)
+    출력: 버리면 True (기본), 보존 설정이면 False
+    """
+    raw = os.environ.get(KEEP_NOISE_ENV, "").strip().lower()
+    return raw not in ("1", "true", "on", "yes")
 
 
 @dataclass
@@ -232,7 +319,9 @@ def read_image(image: str | Path) -> list[OcrLine]:
     boxes = _as_list(getattr(result, "boxes", None))
 
     threshold = _min_score()
+    skip_noise = _drop_noise()
     lines: list[OcrLine] = []
+    dropped = 0
     for index, text in enumerate(texts):
         text = str(text).strip()
         if not text:
@@ -240,11 +329,16 @@ def read_image(image: str | Path) -> list[OcrLine]:
         score = float(scores[index]) if index < len(scores) else 1.0
         if score < threshold:
             continue
+        if skip_noise and is_noise(text):
+            dropped += 1
+            continue
         box = None
         if index < len(boxes) and boxes[index] is not None:
             # 꼭짓점도 numpy 배열일 수 있다 — 파이썬 실수로 바꿔 둔다.
             box = [(float(point[0]), float(point[1])) for point in boxes[index]]
         lines.append(OcrLine(text=text, score=score, box=box))
+    if dropped:
+        _log.debug("잡음 조각 %d개를 버렸습니다 (%s)", dropped, image)
     return lines
 
 

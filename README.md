@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.99"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.2"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,11 +29,20 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.1.99"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.2"
 ```
 
+사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
+
+```bash
+pip install -U --force-reinstall --no-cache-dir \
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.2"
+```
+
+> **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
+> 모듈이 바뀌지 않습니다.
+
 노트북 UI(파일 선택 위젯)가 필요하면 `[notebook]` 을 붙이세요.
-자세한 내용은 `INSTALL.md` 를 보세요.
 
 지원 파이썬: **3.10 ~ 3.13**
 
@@ -164,7 +173,7 @@ docstruct.enable_logging()       # 진행 상황을 보고 싶으면
 ### 여러 문서
 
 `DocStruct` 는 문서 하나를 깊게, `DocStructBatch` 는 여럿을 넓게 다룹니다.
-**처리 경로 추적은 양쪽 모두에 있습니다** — 자세한 구분은 `API.md` 의
+**처리 경로 추적은 양쪽 모두에 있습니다** — 자세한 구분은
 "어느 것을 쓰나" 를 보세요.
 
 ```python
@@ -244,7 +253,7 @@ echo "OPENAI_API_KEY=sk-..." > .env
 | `--scale N` | 페이지 렌더 배율 (기본 2.0) |
 | `-q` / `-v` | 요약만 / DEBUG 로그 |
 
-종료 코드: 0 성공, 1 실패, 2 인자 오류. 자세한 내용은 `CLI.md` 를 보세요.
+종료 코드: 0 성공, 1 실패, 2 인자 오류. 전체 옵션은 `docstruct --help`.
 
 ---
 
@@ -391,13 +400,103 @@ rapidocr 3.x 의 기본 인식 모델(PP-OCRv6 small)에는 **한국어가 없�
 한 쪽만 30초 안에 확인할 수 있습니다.
 
 ```bash
-python -m docstruct.converters.pdf.rapidocr_ko 문서.pdf 16
+python -m converters.pdf.rapidocr_ko 문서.pdf 16
 ```
 
 ```
 ── 기본 설정: 한글 0.0% · 26.5.11. 5:44 2025 wwo. 2025号 1 2.10. Y* ...
 ── 한국어 모델: (여기에 한글 비율이 나옵니다)
 ```
+
+### 자동 분류
+
+**따로 켤 것이 없습니다.** 페이지마다 텍스트 레이어를 확인해 필요한 쪽만
+다시 읽습니다. 스캔본과 텍스트 PDF 를 섞어 넣어도 됩니다.
+
+```python
+ds = docstruct.DocStruct("문서.pdf").run()
+```
+
+| 입력 | 처리 |
+|---|---|
+| 스캔본 | 텍스트 레이어 없음 → OCR 로 읽음 |
+| 텍스트 PDF | 레이어 그대로 사용 (렌더도 하지 않음) |
+| 혼합 | 쪽마다 갈라서 처리 |
+
+    실측 판정 정확도: 텍스트 PDF 98% · 스캔 PDF 100%
+
+스캔본은 텍스트 파서로 읽을 길이 없습니다 — 20쪽 전체에서 한글 340자가
+나오는데 전부 파일명이 URL·머리말에 반복된 것이고 본문은 0자입니다.
+
+끄려면 `korean_ocr=false`, 판정을 무시하고 모든 쪽을 다시 읽으려면
+`DOCSTRUCT_KOREAN_OCR_FORCE=true` 입니다.
+
+페이지 이미지를 한국어 모델로 다시 읽어 **본문과 표 안 텍스트**를 바꿉니다.
+
+표는 행·열·병합을 그대로 두고 텍스트만 갈아끼웁니다. 셀 좌표와 OCR 조각
+좌표를 겹쳐 어느 셀에 속하는지 정합니다 — 두 좌표계 모두 원점이 TOPLEFT 라
+배율만 나누면 맞습니다(`포인트 = 픽셀 / render_scale`).
+
+    | 品品品 | 昆品 |        | 구분   | 2025년     |
+    | 早     | 全气 |   →    | 유튜브 | 13,391,527 |
+
+### 표 격자에 셀이 빠졌을 때
+
+표 구조 인식이 열이나 행을 통째로 놓치는 일이 있습니다. 실제 문서에서
+7행 2열(14칸)로 렌더되는 표의 셀이 **7개뿐**이었고 왼쪽 열이 아예 셀로
+존재하지 않았습니다. OCR 이 글자를 읽었어도 넣을 자리가 없습니다.
+
+```
+표 격자 결함 · table_1 · 14칸 중 7칸이 셀로 존재하지 않습니다 (50%)
+```
+
+좌표로는 고칠 수 없어(없는 칸에 값을 넣을 수 없습니다) 두 단계로 나눕니다.
+
+| 설정 | 기본 | 하는 일 |
+|---|---|---|
+| `flag_broken_tables` | 켬 | 결함을 표시만 합니다 (`structure_ratio`) |
+| `vlm_fix_tables` | 끔 | 표시된 표를 VLM 으로 다시 만듭니다 |
+
+```bash
+docstruct 문서.pdf -o out --set vlm_fix_tables=true
+```
+
+**표시는 켜 두고 재구성은 필요할 때만** 켜는 구성입니다. VLM 은 못 읽은
+것을 지어내므로, 좌표 매칭이 성공한 표까지 다시 만들면 검증된 결과를
+추측으로 바꾸게 됩니다.
+
+재구성 결과가 원본보다 짧으면 되돌립니다 — VLM 이 표를 일부만 옮기는
+일이 있습니다. 원본은 `original_markdown` 에 남습니다.
+
+---
+
+### 셀이 비어 있을 때
+
+처리 경로에 표별 진단이 남습니다.
+
+    table_2 · 셀 34개 교체
+    table_1 · 셀 5개 교체, 빈 셀 7, 표 안 미배정 3
+
+| 값 | 뜻 | 대처 |
+|---|---|---|
+| 표 안 미배정 > 0 | 표 안이지만 어느 칸과도 겹침이 모자람 | 겹침 임계를 낮춥니다 |
+| 빈 셀만 많음 | 셀 좌표가 글자를 안 덮음 (표 구조 인식 문제) | 임계로는 해결되지 않습니다 |
+
+```bash
+DOCSTRUCT_CELL_MIN_OVERLAP=0.2      # 기본 0.3
+```
+
+배정은 **셀 기준**입니다. 셀마다 자기 영역과 겹치는 조각을 모으므로, 한
+조각이 두 칸에 걸치면 양쪽이 모두 가져갑니다 — 표 괘선이 얇아 조각이 칸을
+넘는 일이 흔하고, 한쪽을 비우는 것보다 낫습니다. 다만 한 칸에 70% 이상
+들어간 조각은 그 칸에만 넣습니다.
+
+**OCR 신뢰도 임계(`DOCSTRUCT_RAPIDOCR_MIN_SCORE`)와 다릅니다.** 이 값을
+낮춰도 잡음이 늘지 않습니다 — 이미 신뢰도 검사를 통과한 조각 중 어느 셀에
+넣을지만 정하기 때문입니다.
+
+처리 경로에 `재판독 생략 — 텍스트 레이어를 그대로 씁니다` 로 남으므로
+어느 쪽이 어떻게 처리됐는지 확인할 수 있습니다.
 
 한국어 모델은 처음 실행할 때 자동으로 내려받습니다. 사내망에서
 `modelscope.cn` 이 막혀 있으면 미리 받아 두고 지정하세요.
@@ -406,7 +505,42 @@ python -m docstruct.converters.pdf.rapidocr_ko 문서.pdf 16
 |---|---|
 | `DOCSTRUCT_RAPIDOCR_MODEL_DIR` | 미리 받아 둔 모델 폴더 |
 | `DOCSTRUCT_RAPIDOCR_VERSION` | `v5`(기본) 또는 `v4` |
-| `DOCSTRUCT_RAPIDOCR_MIN_SCORE` | 낮은 신뢰도 조각 제거 (기본 0.5) |
+| `DOCSTRUCT_RAPIDOCR_MIN_SCORE` | 낮은 신뢰도 조각 제거 (기본 0.7) |
+| `DOCSTRUCT_OCR_KEEP_NOISE` | 잡음 조각을 그대로 두기 (기본은 제거) |
+
+실측 (2025 주택과 세금):
+
+| 쪽 성격 | 한글 비율 |
+|---|---|
+| 도표 위주 | 46.8% |
+| 개정 표 | 65.4% |
+| 텍스트 위주 | 70.6% |
+
+`v4` 는 `v5` 보다 나쁩니다 — 쉼표·마침표를 잃고 `C168zs운道lYR` 같은
+손상이 더 납니다. 특별한 이유가 없으면 기본값(`v5`)을 쓰세요.
+
+### 표 안 텍스트
+
+본문이 한국어로 읽혀도 **표 안은 docling 이 넣은 값**이 남습니다. 표 구조
+(행·열·병합)는 TableFormer 가 만든 것을 그대로 두고 텍스트만 갈아끼웁니다 —
+인식 언어가 틀린 것이지 구조가 틀린 것이 아니기 때문입니다.
+
+셀 좌표와 OCR 조각 좌표를 겹쳐 어느 셀에 속하는지 정합니다. 두 좌표계 모두
+원점이 TOPLEFT 라 배율만 나누면 맞습니다.
+
+    포인트 = 픽셀 / render_scale
+
+조각 넓이 중 셀과 겹치는 비율이 50% 를 넘으면 그 셀에 넣습니다. 어느 셀에도
+안 들어간 조각은 개수로 알립니다 — 표 밖 본문이거나 괘선 오인식입니다.
+
+### 잡음 조각 제거
+
+색상 블록이나 로고를 글자로 잘못 읽은 조각(`YoHIYL`, `OSUMMM`)은
+형태소 분석으로 걸러냅니다. 원본에 대응하는 글자가 없으므로 고칠
+대상이 아니라 지울 대상입니다.
+
+`kiwipiepy` 가 없으면 이 단계를 건너뜁니다 — 설치 여부가 동작을
+깨뜨리지 않습니다. 원문을 그대로 보려면 `DOCSTRUCT_OCR_KEEP_NOISE=true`.
 
 ### 글자 깨짐 진단
 
@@ -415,8 +549,27 @@ HWP 에서 내보낸 PDF 는 글머리표(□ ○ ※)의 폰트 매핑이 깨�
 진단만 제공합니다.
 
 ```bash
-python -m docstruct.converters.pdf.glyph_probe 문서.pdf 5
+python -m converters.pdf.glyph_probe 문서.pdf 5
 ```
+
+---
+
+## HWPX 처리
+
+HWPX(OOXML)는 zip + XML 이라 표준 파서로 읽습니다. `python-hwpx` 의
+markdown 내보내기는 쓰지 않습니다 — 같은 문서로 재어 보면 손실이 큽니다.
+
+| | 표 | 셀 보존 | 취소선 |
+|---|---|---|---|
+| XML 직접 파싱 (기본) | **212** | **100%** | 0 |
+| python-hwpx markdown | 94 | 93.8% | 4,456회 |
+
+변환 파일 자체에는 표 212개가 온전히 들어 있습니다. 손실은 파일이 아니라
+**내보내기 단계**에서 생깁니다. 취소선은 밑줄 스타일 값이 라이브러리 표에
+없어 생기며, pyhwp 의 `UnderlineStyle 15` 와 같은 뿌리입니다.
+
+XML 파싱이 실패하면 `python-hwpx` 로 물러납니다. 어느 경로로 읽었는지는
+`document.md` 의 처리 경로에 남습니다 (`hwpx-tree` 또는 `python-hwpx`).
 
 ---
 
@@ -526,36 +679,69 @@ docstruct.set_api_key("sk-...")     # 키가 있어야 동작합니다
 전환은 **연결 불가일 때만** 일어납니다. 인증 실패나 잘못된 응답은
 설정 문제이므로 그대로 알립니다.
 
-원인별 대처는 `INSTALL.md` 를 보세요.
+원인별 대처는 `docstruct --check` 가 안내합니다.
 
 ---
 
 ## Windows
 
-비 UTF-8 로케일(cp949)에서 PyTorch/Docling 초기화가 실패하는 문제가 있습니다.
-`docstruct` 가 자동으로 우회하지만, 영구 해결은 환경변수 하나입니다.
+PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 
-```cmd
-setx PYTHONUTF8 1
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.2"
 ```
 
-자세한 내용은 `WINDOWS.md` 를 보세요.
+### 한글이 깨져 보일 때
+
+산출물(`document.md` 등)은 항상 UTF-8 로 기록하므로 **파일은 멀쩡합니다.**
+콘솔이 cp949 라 표시만 깨집니다.
+
+```powershell
+chcp 65001
+```
+
+파일을 파이썬으로 읽을 때는 인코딩을 명시하세요 — 생략하면 cp949 로 읽어
+또 깨집니다.
+
+```powershell
+python -c "print(open(r'out\문서\document.md', encoding='utf-8').read()[:200])"
+```
+
+### `UnicodeDecodeError: 'cp949' codec ...`
+
+docling 이 UTF-8 템플릿을 인코딩 없이 열어 생깁니다. 인터프리터를 UTF-8
+모드로 돌리면 사라집니다.
+
+```powershell
+$env:PYTHONUTF8 = "1"
+```
+
+영구적으로는 **설정 → 시간 및 언어 → 언어 → 관리자 언어 설정 →
+시스템 로캘 변경 → "Beta: 세계 언어 지원을 위해 Unicode UTF-8 사용"** 을
+체크하고 재부팅합니다.
+
+## 라이선스
+
+의존성 대부분은 MIT · Apache-2.0 · BSD 입니다. **`pyhwp` 하나가
+AGPL-3.0-or-later** 이며, HWP 처리의 기본 경로에서 같은 프로세스로
+import 합니다.
+
+AGPL 13조는 네트워크로 서비스만 제공해도 소스 제공 의무를 규정합니다.
+backend API 로 서비스한다면 이 조항에 해당할 수 있으므로 **법무 검토가
+필요합니다.**
+
+대체 경로(HWPX XML 직접 파싱)는 `converters/hwpx/hwpxtree.py` 에 있으며,
+같은 문서에서 pyhwp 와 동등한 품질(셀 100%, 표 212/212)을 9배 빠르게
+냈습니다. 다만 HWP → HWPX 변환 수단 확보가 선행 과제입니다.
+
+이 문단은 사실 확인이며 법률 자문이 아닙니다.
 
 ---
 
-## 문서
+## 변경 이력
 
-| 파일 | 내용 |
-|------|------|
-| `API.md` | 공개 API 전체 참조 |
-| `CLI.md` | 명령행 사용법 |
-| `INSTALL.md` | 설치·설정·문제 해결 |
-| `BUGFIXES.md` | 원본 대비 수정한 버그 |
-| `docs/docstruct_정의서.xlsx` | 형식별 파이프라인·모듈·설정 정의서 |
-| `RESTRUCTURE.md` | 계층 구조 재편 검토 |
-| `GIT.md` | git 명령어 (공개/사내 저장소) |
-| `GITHUB.md` | GitHub 배포 |
-| `GITLAB.md` | 사내 GitLab 배포 |
-| `BUILD.md` | 빌드·배포 절차 |
-| `WINDOWS.md` | Windows 관련 |
-| `LICENSES.md` | 의존성 라이선스 조사 (pyhwp 는 AGPL — 검토 필요) |
+판별 근거와 실측치는 `BUGFIXES.md` 에 남습니다 — 무엇을 왜 고쳤는지,
+어떤 방법을 검토했다가 접었는지가 함께 적혀 있습니다. 배포물에는 포함하지
+않고 따로 전달합니다(2,800줄이 넘어 패키지를 무겁게 합니다).

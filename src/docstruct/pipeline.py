@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -34,7 +35,8 @@ SUPPORTED_SUFFIXES = (".hwp", ".hwpx", ".pdf")
 from docstruct.models import (  # noqa: F401  (하위호환 재노출)
     GPU_ACCELERATED, STAGE_ASSESS, STAGE_EXTRACT, STAGE_EXTRACT_MARKUP,
     STAGE_PICTURE_READ,
-    STAGE_FILL, STAGE_RENDER, stage_extract,
+    STAGE_FILL, STAGE_KOREAN_OCR, STAGE_RENDER, STAGE_TABLE_REBUILD,
+    stage_extract,
 )
 
 
@@ -104,20 +106,37 @@ def _render_page_images(
     out_dir: Path,
     *,
     scale: float = 2.0,
+    all_pages: bool = False,
+    only: set[int] | None = None,
 ) -> None:
-    """표가 있는 페이지를 PNG 로 렌더하고 경로를 기록한다.
+    """페이지를 PNG 로 렌더하고 경로를 기록한다.
 
     입력:
-        pdf_path  원본 PDF 경로
-        pages     PageContent 목록 (표가 있는 페이지만 렌더)
-        out_dir   저장 위치
-        scale     렌더 배율
+        pdf_path   원본 PDF 경로
+        pages      PageContent 목록
+        out_dir    저장 위치
+        scale      렌더 배율
+        all_pages  True 면 표 유무와 무관하게 렌더
+        only       주면 이 쪽 번호만 렌더 (표가 있는 쪽은 항상 포함)
     출력: 없음 (page.page_image_path 설정, trace 에 단계 기록)
     비고:
-        렌더 결과는 표 평가·재추출의 시각 근거로 쓰인다. pypdfium2 가 없거나
-        렌더에 실패하면 경고만 남기고 텍스트 기반으로 진행한다.
+        원래 용도는 **표 재추출의 시각 근거**라 표가 있는 페이지만 렌더했다.
+        한국어 OCR 로 본문을 다시 읽으려면 표 없는 페이지도 이미지가 있어야
+        하므로 `all_pages=True` 를 쓴다.
+
+        `only` 는 그중에서도 **다시 읽어야 할 쪽만** 렌더하기 위한 것이다.
+        텍스트 레이어가 온전한 쪽까지 렌더하면 155쪽 문서에서 50초쯤
+        헛돈다. 표가 있는 쪽은 재추출 근거가 필요하므로 목록에 없어도
+        렌더한다.
+
+        pypdfium2 가 없거나 렌더에 실패하면 경고만 남기고 텍스트 기반으로
+        진행한다.
     """
-    targets = [p.page_no for p in pages if p.tables and isinstance(p.page_no, int)]
+    targets = [
+        p.page_no for p in pages
+        if isinstance(p.page_no, int)
+        and (p.tables or (all_pages and (only is None or p.page_no in only)))
+    ]
     if not targets:
         return
 
@@ -150,6 +169,255 @@ def _render_page_images(
                 "이미지 없이 텍스트만으로 평가 — 정확도 하락",
                 status="warn",
             )
+
+
+#: 텍스트 레이어가 쓸 만하다고 볼 최소 한글 글자 수.
+#: 스캔본에도 브라우저 인쇄 머리말·URL 이 텍스트로 들어 있어 글자 수만으로는
+#: 갈리지 않는다. URL 을 걷어낸 뒤 한글만 세면 분포가 확실히 나뉜다.
+#:
+#:     스캔 PDF    모든 쪽 7자
+#:     텍스트 PDF  25% 지점 33자 · 중앙값 86자
+MIN_LAYER_HANGUL = 15
+
+#: 텍스트 레이어를 신뢰할 최소 한글 비율.
+#: 실측: 텍스트 PDF 중앙값 0.61, 스캔 PDF 0.17.
+MIN_LAYER_HANGUL_RATIO = 0.3
+
+#: 재판독 대상 판정을 끄는 스위치. 켜면 모든 쪽을 다시 읽는다.
+FORCE_REREAD_ENV = "DOCSTRUCT_KOREAN_OCR_FORCE"
+
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+
+def _has_usable_text_layer(text: str | None) -> bool:
+    """이 페이지의 텍스트 레이어를 그대로 써도 되는지.
+
+    입력: text — 그 페이지에서 이미 뽑아 둔 본문
+    출력: 쓸 만하면 True
+    비고:
+        **텍스트 PDF 를 OCR 로 덮으면 정확한 텍스트를 인식 결과로 바꾼다.**
+        스캔본에서 OCR 이 46~70% 였으니, 텍스트 레이어가 있는 쪽에 그것을
+        적용하면 손해가 크다. 실무에서는 스캔본과 텍스트 PDF 가 섞여
+        들어오므로 페이지마다 판단해야 한다.
+
+        글자 수만으로는 갈리지 않는다. 브라우저로 인쇄한 스캔본에는
+        머리말·URL 이 텍스트로 들어 있어 쪽당 97자가 잡혔다(한글은 17자).
+        한글 수와 비율을 함께 본다.
+    """
+    if not text:
+        return False
+    flat = re.sub(r"\s", "", re.sub(r"<[^>]+>|https?://\S+", "", text))
+    if not flat:
+        return False
+    hangul = len(_HANGUL_RE.findall(flat))
+    return (hangul >= MIN_LAYER_HANGUL
+            and hangul / len(flat) >= MIN_LAYER_HANGUL_RATIO)
+
+
+def _force_reread() -> bool:
+    """텍스트 레이어와 무관하게 모든 쪽을 다시 읽을지.
+
+    입력: 없음 (`DOCSTRUCT_KOREAN_OCR_FORCE`)
+    출력: 강제면 True
+    """
+    import os
+
+    return os.environ.get(FORCE_REREAD_ENV, "").strip().lower() in (
+        "1", "true", "on", "yes")
+
+
+def _pages_needing_ocr(pdf_path: Path, pages: list[PageContent]) -> set[int]:
+    """원본 PDF 에서 다시 읽어야 할 쪽 번호를 가려낸다.
+
+    입력: pdf_path — 원본 PDF, pages — 추출된 페이지 목록
+    출력: 재판독이 필요한 쪽 번호 집합
+    비고:
+        판정을 **렌더보다 먼저** 한다. 렌더한 뒤에 판정하면 텍스트 PDF 도
+        전 페이지를 렌더하고 나서 전부 건너뛰게 된다 — 155쪽 문서에서 50초쯤
+        헛돈다. 판정에 필요한 것은 원본의 텍스트 레이어이지 렌더 이미지가
+        아니다.
+
+        원본을 읽지 못하면 **모든 쪽을 대상으로 본다.** 판정을 못 했다는
+        이유로 스캔본을 건너뛰면 본문을 통째로 잃는다. 반대 방향의 실수는
+        시간만 더 쓴다.
+    """
+    numbers = {p.page_no for p in pages if isinstance(p.page_no, int)}
+    if _force_reread():
+        return numbers
+
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        return numbers
+
+    try:
+        document = pdfium.PdfDocument(str(pdf_path))
+    except Exception as exc:                     # noqa: BLE001 - 판정 실패는 치명적이지 않다
+        _log.warning("텍스트 레이어를 확인하지 못했습니다 (모든 쪽 재판독): %s", exc)
+        return numbers
+
+    needed: set[int] = set()
+    try:
+        for page_no in sorted(numbers):
+            index = page_no - 1
+            if not 0 <= index < len(document):
+                needed.add(page_no)
+                continue
+            try:
+                layer = document[index].get_textpage().get_text_range()
+            except Exception:                    # noqa: BLE001 - 그 쪽만 판정 실패
+                needed.add(page_no)
+                continue
+            if not _has_usable_text_layer(layer):
+                needed.add(page_no)
+    finally:
+        document.close()
+    return needed
+
+
+def _reread_with_korean_ocr(
+    pages: list[PageContent], targets: set[int] | None = None
+) -> int:
+    """페이지 이미지를 한국어 OCR 로 다시 읽어 본문을 바꾼다.
+
+    입력: pages — page_image_path 가 채워진 PageContent 목록
+    출력: 바뀐 페이지 수
+    비고:
+        docling 이 쓰는 rapidocr 기본 모델(PP-OCRv6 small)에는 한국어가 없어
+        한글 지면이 한자·가나로 나온다. 실제 문서에서 **한글 0%** 였다.
+        한국어 모델로 다시 읽으면 46~70% 가 된다.
+
+        **표 안 텍스트는 건드리지 않는다.** 표는 `<table N>` 자리표시자로
+        본문과 분리되어 있고, 셀 텍스트 교체는 좌표 매칭이 필요해 별도
+        단계에서 다룬다. 여기서는 표 밖 본문만 바꾼다.
+
+        원본을 잃지 않도록, 새로 읽은 결과가 비어 있으면 그 페이지는
+        그대로 둔다 — OCR 이 실패한 지면에서 있던 내용까지 지우면 안 된다.
+    """
+    from docstruct.converters.korean_text import normalize_pdf_text
+    from docstruct.converters.pdf.rapidocr_ko import read_page_text
+
+    changed = 0
+    for page in pages:
+        image = page.page_image_path
+        # 텍스트 레이어가 쓸 만한 쪽은 targets 에 없다. 스캔본과 텍스트 PDF 가
+        # 섞여 들어오므로 페이지마다 판단해야 한다.
+        if targets is not None and page.page_no not in targets:
+            page.trace.add("converters.pdf.rapidocr_ko", "재판독 생략",
+                           "텍스트 레이어를 그대로 씁니다")
+            continue
+        if not image or not Path(image).is_file():
+            continue
+        try:
+            text = read_page_text(image)
+        except Exception as exc:                 # noqa: BLE001 - 한 쪽 실패로 멈추지 않는다
+            _log.warning("%s쪽 한국어 OCR 실패: %s", page.page_no, exc)
+            page.trace.add("converters.pdf.rapidocr_ko", "한국어 OCR 실패",
+                           str(exc)[:120], status="warn")
+            continue
+        if not text.strip():
+            continue
+
+        placeholders = _TABLE_TAG_RE.findall(page.content or "")
+        body = normalize_pdf_text(text)
+        # 표 자리표시자는 그대로 살려 뒤 단계(표 판정·재추출)가 찾을 수 있게 한다.
+        page.content = ("\n\n".join([body, *placeholders]) if placeholders else body)
+        page.trace.add("converters.pdf.rapidocr_ko", "한국어 OCR 재판독",
+                       f"본문 {len(body)}자")
+        changed += 1
+    return changed
+
+
+#: 본문에 박힌 표 자리표시자 (`<table 3>` 등).
+_TABLE_TAG_RE = re.compile(r"<table \d+>")
+
+
+def _reread_tables_with_korean_ocr(
+    pages: list[PageContent], *, scale: float, targets: set[int] | None = None
+) -> int:
+    """표 셀 텍스트를 한국어 OCR 결과로 바꾼다.
+
+    입력: pages — page_image_path 가 채워진 PageContent 목록, scale — 렌더 배율
+    출력: 바뀐 표 수
+    비고:
+        본문은 `_reread_with_korean_ocr` 가 바꾸지만 표 안은 docling 이 넣은
+        값(중국어)이 남는다. 셀 bbox 와 OCR 조각 bbox 를 겹쳐 어느 셀에
+        속하는지 정하고, **행·열·병합은 그대로 둔 채 텍스트만** 바꾼다.
+
+        새 텍스트가 비면 원래 표를 남긴다 — OCR 이 못 읽은 표까지 지우면
+        있던 내용을 잃는다.
+    """
+    from docstruct.tables.docling import docling_table_to_markdown, replace_cell_texts
+
+    changed = 0
+    for page in pages:
+        image = page.page_image_path
+        if targets is not None and page.page_no not in targets:
+            continue
+        if not image or not page.tables or not Path(image).is_file():
+            continue
+        for table in page.tables:
+            item = table.source_item
+            if item is None:
+                continue
+            try:
+                stat = replace_cell_texts(item, image, scale=scale)
+            except Exception as exc:             # noqa: BLE001 - 한 표 실패로 멈추지 않는다
+                _log.warning("%s 셀 교체 실패: %s", table.id, exc)
+                continue
+            if not stat["changed"]:
+                continue
+            rebuilt = docling_table_to_markdown(item)
+            if not rebuilt.strip():
+                continue
+            table.markdown = rebuilt
+            changed += 1
+
+            # near_miss 와 empty_cells 를 나눠 기록한다. 표 밖 본문 조각까지
+            # 세면(outside) 수치가 커져 원인을 가린다 — 실제로 표 하나에
+            # 81개가 잡혀 매칭이 실패한 것처럼 보였다.
+            detail = f"{table.id} · 셀 {stat['changed']}개 교체"
+            if stat["empty_cells"]:
+                detail += f", 빈 셀 {stat['empty_cells']}"
+            if stat["near_miss"]:
+                detail += f", 표 안 미배정 {stat['near_miss']}"
+            page.trace.add("docstruct.tables.docling", "표 셀 한국어 재판독", detail)
+    return changed
+
+
+def _flag_broken_tables(pages: list[PageContent]) -> int:
+    """격자에 셀이 빠진 표를 표시한다.
+
+    입력: pages — TableInfo.source_item 이 채워진 페이지 목록
+    출력: 표시한 표 수
+    비고:
+        좌표 매칭은 **셀이 존재할 때만** 동작한다. 실제 문서에서 7행 2열
+        (14칸)로 렌더되는 표의 셀이 7개뿐이었고, 왼쪽 열이 아예 셀로 존재
+        하지 않았다. OCR 은 글자를 읽었는데 넣을 자리가 없었다.
+
+        고치지는 않고 표시만 한다 — 다운스트림이 그 표를 얼마나 믿을지
+        판단할 수 있어야 하고, VLM 재구성 대상을 고르는 근거도 된다.
+    """
+    from docstruct.tables.docling import structure_gap
+
+    flagged = 0
+    for page in pages:
+        for table in page.tables:
+            item = table.source_item
+            if item is None:
+                continue
+            gap = structure_gap(item)
+            if not gap["missing"]:
+                continue
+            table.structure_ratio = round(gap["ratio"], 3)
+            flagged += 1
+            page.trace.add(
+                "docstruct.tables.docling", "표 격자 결함",
+                f"{table.id} · {gap['declared']}칸 중 {gap['missing']}칸이 "
+                f"셀로 존재하지 않습니다 ({gap['ratio']:.0%})",
+                status="warn",
+            )
+    return flagged
 
 
 def build_document(
@@ -246,13 +514,50 @@ def build_document(
         failed_pages=failed_pages,
     )
 
-    if fmt == "pdf" and render_pages:
+    korean_ocr = bool(get_settings().korean_ocr)
+    ocr_targets: set[int] | None = None
+    if fmt == "pdf" and korean_ocr:
+        # 렌더보다 먼저 판정한다. 나중에 하면 텍스트 PDF 도 전 페이지를
+        # 렌더하고 나서 전부 건너뛴다.
+        ocr_targets = _pages_needing_ocr(resolved, pages)
+        if not ocr_targets:
+            _log.info("텍스트 레이어가 온전해 한국어 OCR 을 건너뜁니다")
+
+    if fmt == "pdf" and (render_pages or ocr_targets):
         # out_dir 이 없으면 임시 작업 폴더에 렌더한다. 여기서 건너뛰면
         # 재추출이 근거 이미지를 못 찾아 조용히 무력화된다.
+        #
+        # 한국어 OCR 로 다시 읽을 때는 표 없는 페이지도 필요하므로 전
+        # 페이지를 렌더한다 — 기본은 표가 있는 페이지만이다.
         pages_dir = (out_path / "pages") if out_path else (scratch / "pages")  # type: ignore[operator]
         _t = time.perf_counter()
-        _render_page_images(resolved, pages, pages_dir, scale=render_scale)
+        _render_page_images(resolved, pages, pages_dir, scale=render_scale,
+                            all_pages=bool(ocr_targets), only=ocr_targets)
         timings[STAGE_RENDER] = time.perf_counter() - _t
+
+    if fmt == "pdf" and ocr_targets:
+        _t = time.perf_counter()
+        changed = _reread_with_korean_ocr(pages, ocr_targets)
+        tables_changed = _reread_tables_with_korean_ocr(
+            pages, scale=render_scale, targets=ocr_targets)
+        timings[STAGE_KOREAN_OCR] = time.perf_counter() - _t
+        _log.info("한국어 OCR 재판독: 본문 %d쪽 · 표 %d개", changed, tables_changed)
+
+    if fmt == "pdf" and get_settings().flag_broken_tables:
+        # 좌표 매칭이 끝난 뒤에 잰다. 셀이 있는데도 안 채워진 것과 셀 자체가
+        # 없는 것은 다른 문제이고, 뒤엣것만 VLM 으로 고칠 수 있다.
+        broken = _flag_broken_tables(pages)
+        if broken:
+            _log.info("격자 결함이 있는 표 %d개", broken)
+
+    if fmt == "pdf" and get_settings().vlm_fix_tables:
+        from docstruct.tables.vlm_rebuild import rebuild_broken_tables
+
+        _t = time.perf_counter()
+        fixed = rebuild_broken_tables(pages, progress=progress)
+        timings[STAGE_TABLE_REBUILD] = time.perf_counter() - _t
+        if fixed:
+            _log.info("VLM 으로 다시 만든 표 %d개", fixed)
 
     if read_pictures and any(p.images for p in pages):
         from docstruct.media.vlm_read import read_picture_regions

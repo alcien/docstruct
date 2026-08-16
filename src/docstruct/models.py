@@ -61,14 +61,27 @@ class TableInfo:
     #: 그림에서 승격된 표라면 원본 ImageInfo.id. 그림도 함께 남기므로
     #: 같은 영역이 tables 와 images 양쪽에 등록된다 — 이 값으로 짝을 찾는다.
     source_image_id: str | None = None
+    #: 격자에서 셀이 빠진 비율 0~1. 표 구조 인식이 열·행을 놓친 표를
+    #: 가려내기 위한 값이며, 정상 표에서는 None 이다.
+    structure_ratio: float | None = None
+    #: 원본 Docling TableItem. 표 셀 텍스트를 나중에 갈아끼울 때 쓴다.
+    #: 직렬화 대상이 아니므로 to_dict 에는 넣지 않는다 — JSON 으로 바꿀 수
+    #: 없는 객체이고, 결과 파일에 들어갈 정보도 아니다.
+    source_item: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON 직렬화용 dict.
 
         입력: 없음
-        출력: 모든 필드를 담은 dict
+        출력: 직렬화 가능한 필드만 담은 dict
+        비고:
+            `source_item` 은 Docling 객체라 JSON 으로 바꿀 수 없고 결과
+            파일에 들어갈 정보도 아니다. `asdict()` 는 모든 필드를 담으므로
+            여기서 빼 준다 — 넣어 두면 to_json 이 통째로 실패한다.
         """
-        return asdict(self)
+        data = asdict(self)
+        data.pop("source_item", None)
+        return data
 
     @property
     def needs_fill(self) -> bool:
@@ -174,6 +187,8 @@ def source_label(source: str, ratio: float | None = None) -> str:
 STAGE_EXTRACT = "추출 (백엔드+레이아웃+TableFormer+OCR)"
 STAGE_EXTRACT_MARKUP = "추출 (HWP 파싱)"
 STAGE_RENDER = "페이지 렌더 (pypdfium2)"
+STAGE_KOREAN_OCR = "한국어 OCR 재판독"
+STAGE_TABLE_REBUILD = "표 재구성 (VLM)"
 STAGE_ASSESS = "표 평가 LLM"
 STAGE_FILL = "표 재추출 LLM"
 STAGE_PICTURE_READ = "그림 내용 읽기 VLM"

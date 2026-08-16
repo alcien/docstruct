@@ -713,6 +713,9 @@ class Settings:
     code_formula_enrichment: bool        # 수식·코드 VLM (무거움, 표 추출엔 불필요)
     generate_parsed_pages: bool          # 페이지 셀 보관 (OCR/텍스트레이어 측정용, 메모리↑)
     hwp_fill_html: bool                  # HWP 표 재추출 근거용 HTML 을 추가로 뽑을지 (느림)
+    korean_ocr: bool                     # 텍스트 레이어가 없는 쪽을 한국어 OCR 로 읽을지
+    flag_broken_tables: bool             # 격자에 셀이 빠진 표를 표시할지
+    vlm_fix_tables: bool                 # 그런 표를 VLM 으로 다시 만들지
 
     def describe(self) -> list[tuple[str, str, bool]]:
         """사람이 읽는 설정 요약을 만든다.
@@ -1050,6 +1053,9 @@ def _build_settings() -> Settings:
         # 동일하게 되지만 처리 경로가 "측정 안 함" 으로 표시됩니다.
         generate_parsed_pages=_get_bool("DOCLING_GENERATE_PARSED_PAGES", False),
         hwp_fill_html=_get_bool("DOCSTRUCT_HWP_FILL_HTML", False),
+        korean_ocr=_get_bool("DOCSTRUCT_KOREAN_OCR", True),
+        flag_broken_tables=_get_bool("DOCSTRUCT_FLAG_BROKEN_TABLES", True),
+        vlm_fix_tables=_get_bool("DOCSTRUCT_VLM_FIX_TABLES", False),
         llm=llm,
         llm_fallback=_build_fallback(),
         local_vlm=_build_local_vlm(),

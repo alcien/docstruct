@@ -9,9 +9,13 @@
 """
 from __future__ import annotations
 
+import logging
+
 from docstruct.converters.base import BaseConverter
 from docstruct.converters.deps import HWPX_AVAILABLE
 
+
+_log = logging.getLogger(__name__)
 
 class HwpxConverter(BaseConverter):
     """HWPX → text / markdown / html / xml (python-hwpx)."""
@@ -67,9 +71,24 @@ class HwpxConverter(BaseConverter):
         """markdown 으로 변환한다.
 
         입력: 없음
-        출력: markdown 문자열 (rich_markdown — 신·구 API 겸용)
+        출력: markdown 문자열
+        비고:
+            XML 을 직접 읽는다. python-hwpx 의 내보내기는 같은 문서에서
+            표 94개(원본 212), 셀 93.8% 였고 모든 텍스트에 취소선이
+            4,456회 씌워졌다. 파일 자체에는 표 212개가 온전히 들어 있어
+            손실은 내보내기 단계에서 생긴다.
+
+            실패하면 python-hwpx 로 물러난다 — 아무것도 못 내는 것보다 낫다.
         """
-        return rich_markdown(self._get_document())
+        from docstruct.converters.hwpx import hwpxtree
+
+        try:
+            return hwpxtree.to_markdown(self.path)
+        except Exception as exc:                 # noqa: BLE001 - 폴백이 있다
+            _log.warning(
+                "HWPX XML 직접 파싱 실패 — python-hwpx 로 물러납니다: %s", exc
+            )
+            return rich_markdown(self._get_document())
 
     def to_html(self) -> str:
         """HTML 로 변환한다.

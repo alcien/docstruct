@@ -119,6 +119,9 @@ def extract_pdf_pages(
                     placeholder=open_tag(table_counter),
                     markdown=md,
                     bbox=record.bbox,
+                    # 셀 텍스트를 나중에 갈아끼우려면 원본 객체가 필요하다.
+                    # markdown 문자열만 남기면 행·열 구조를 되살릴 수 없다.
+                    source_item=item,
                 )
             )
             record.outcome = "table"
