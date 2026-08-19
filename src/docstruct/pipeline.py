@@ -871,7 +871,19 @@ def _pipeline_settings(
             picture_description=(
                 settings.docling_picture.model if settings.docling_picture else None
             ),
+            # 아래 넷은 결과 해석에 필요하다. 빠져 있으면 어떤 설정으로 돌린
+            # 산출물인지 알 수 없어, 같은 결과를 두고 다른 판단을 하게 된다.
+            korean_ocr=settings.korean_ocr,
+            flag_broken_tables=settings.flag_broken_tables,
+            rebuild_grid=settings.rebuild_grid,
+            vlm_fix_tables=settings.vlm_fix_tables,
+            ocr_lang=settings.ocr_lang or None,
         )
+
+    if fmt in ("hwp", "hwpx"):
+        # HWP 도 마찬가지다. 재추출 근거 HTML 을 뽑았는지에 따라 결과가
+        # 크게 달라지는데, 기록이 없으면 나중에 알 수 없다.
+        info.update(hwp_fill_html=settings.hwp_fill_html)
 
     info.update(
         assess_tables=assess_tables,

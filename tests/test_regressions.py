@@ -4410,3 +4410,57 @@ def test_tables_with_merges_are_skipped():
     assert "_has_merges" in source
     assert "row_span" in source and "col_span" in source
     assert "격자 재구성 건너뜀" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.6 — 새 설정이 결과에 기록되지 않던 문제
+#
+# 배경: `korean_ocr`·`rebuild_grid`·`flag_broken_tables`·`vlm_fix_tables` 를
+#       만들면서 `_pipeline_settings` 에 넣지 않았다. document.json 의
+#       pipeline 에 그 키들이 없어, **어떤 설정으로 돌린 산출물인지 결과만
+#       봐서는 알 수 없었다.**
+#
+#       실제로 같은 결과 파일을 두고 rebuild_grid 가 켜졌는지 꺼졌는지
+#       판단하지 못해 잘못된 결론을 냈다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_pipeline_snapshot_records_pdf_options():
+    """PDF 실행 설정이 결과에 기록된다."""
+    from docstruct.pipeline import _pipeline_settings
+
+    info = _pipeline_settings("pdf", True, True, False)
+    for key in ("korean_ocr", "flag_broken_tables", "rebuild_grid",
+                "vlm_fix_tables", "ocr_backend", "force_full_page_ocr"):
+        assert key in info, f"pipeline 스냅샷에 {key} 가 없습니다"
+
+
+def test_pipeline_snapshot_records_hwp_options():
+    """HWP 실행 설정도 기록된다.
+
+    `hwp_fill_html` 여부에 따라 표 재추출 근거가 있고 없고가 갈리는데,
+    기록이 없으면 나중에 결과를 해석할 수 없다.
+    """
+    from docstruct.pipeline import _pipeline_settings
+
+    assert "hwp_fill_html" in _pipeline_settings("hwp", True, True, False)
+
+
+def test_new_options_are_not_forgotten_in_snapshot():
+    """동작을 바꾸는 설정은 모두 스냅샷에 남는다.
+
+    설정을 새로 만들 때 스냅샷 갱신을 잊으면, 그 설정으로 돌린 결과를
+    나중에 구분할 수 없다.
+    """
+    from docstruct.pipeline import _pipeline_settings
+
+    recorded = set(_pipeline_settings("pdf", True, True, False))
+    recorded |= set(_pipeline_settings("hwp", True, True, False))
+
+    #: 결과 해석에 필요한 설정들. 새로 만들면 여기에도 추가한다.
+    must_record = {
+        "korean_ocr", "flag_broken_tables", "rebuild_grid", "vlm_fix_tables",
+        "hwp_fill_html", "ocr_backend", "ocr_lang", "force_full_page_ocr",
+        "assess_tables", "fill_tables",
+    }
+    missing = sorted(must_record - recorded)
+    assert not missing, f"스냅샷에 빠진 설정: {missing}"
