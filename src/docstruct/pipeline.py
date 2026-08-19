@@ -431,6 +431,32 @@ def _flag_broken_tables(pages: list[PageContent]) -> int:
     return flagged
 
 
+def _flag_odd_tables(pages: list[PageContent]) -> int:
+    """같은 서식 표 중 열 수가 다른 것을 표시한다.
+
+    입력: pages — 표가 담긴 페이지 목록
+    출력: 표시한 표 수
+    비고:
+        표 하나만 보고는 구조가 깨졌는지 알기 어렵다. 빈 칸 비율을 써 봤으나
+        **정상 표를 82% 나 잡아** 쓸 수 없었다.
+
+        정부 문서는 같은 서식 표를 여러 쪽에 반복한다. 실제 문서에서 헤더가
+        같은 표 12개 중 11개가 8열이고 하나만 7열이었는데, 그 하나가 헤더 두
+        칸을 뭉친 표였다. 다수와 다르면 그것이 틀렸을 가능성이 높다.
+    """
+    from docstruct.tables.odd_tables import find_odd_tables
+
+    odd = find_odd_tables(pages)
+    for page, table, width, majority in odd:
+        table.structure_ratio = None       # 빈 칸 비율과 다른 지표다
+        table.odd_columns = (width, majority)
+        page.trace.add(
+            "docstruct.tables.odd_tables", "표 서식 불일치",
+            f"{table.id} · {width}열 — 같은 서식 표 다수는 {majority}열입니다",
+            status="warn")
+    return len(odd)
+
+
 def _rebuild_broken_grids(pages: list[PageContent], *, scale: float) -> int:
     """격자 결함이 표시된 표를 OCR 좌표로 다시 세운다.
 
@@ -646,6 +672,11 @@ def build_document(
         broken = _flag_broken_tables(pages)
         if broken:
             _log.info("격자 결함이 있는 표 %d개", broken)
+
+    if fmt == "pdf" and get_settings().flag_odd_tables:
+        odd = _flag_odd_tables(pages)
+        if odd:
+            _log.info("서식이 어긋난 표 %d개", odd)
 
     if fmt == "pdf" and get_settings().rebuild_grid:
         # VLM 보다 먼저 시도한다. 좌표 재구성은 결정적이고 비용이 없으며,

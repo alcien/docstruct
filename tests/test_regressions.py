@@ -4478,3 +4478,96 @@ def test_new_options_are_not_forgotten_in_snapshot():
     }
     missing = sorted(must_record - recorded)
     assert not missing, f"스냅샷에 빠진 설정: {missing}"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.8 — 같은 서식 표끼리 견주어 이상한 표 찾기
+#
+# 배경: 표 하나만 보고 구조가 깨졌는지 판정할 방법이 없었다. 빈 칸 비율을
+#       써 봤으나 정상 표를 82% 나 잡아 쓸 수 없었다(0.3.7 에서 정정).
+#
+#       정부 문서는 같은 서식 표를 여러 쪽에 반복한다. 실제 문서(행안부
+#       성과계획서 72-100쪽)에서 헤더가 같은 표 12개 중 **11개가 8열,
+#       하나만 7열**이었고, 그 하나가 헤더 두 칸을 뭉친 표였다.
+#
+#           정상  ... | 재정사업 평가명 | 성과평가 결과 | 비고 |   (8열)
+#           이상  ... | 재정사업 성과평가 평가명 결과 | 비고 |     (7열)
+#
+#       실측: 표 17개 중 정확히 그 하나만 검출. 오탐 0.
+# ────────────────────────────────────────────────────────────────────
+
+def _odd_page(page_no, tables):
+    """서식 비교 시험용 페이지."""
+    from docstruct.models import PageContent, PageTrace, TableInfo
+
+    return PageContent(
+        page_no=page_no, page_no_kind="pdf", content="",
+        tables=[TableInfo(id=tid, table_num=n, placeholder="", markdown=md)
+                for n, (tid, md) in enumerate(tables, 1)],
+        trace=PageTrace(extractor="docling", text_source="text_layer"))
+
+
+def _table_md(header):
+    """헤더만 있는 GFM 표."""
+    line = "| " + " | ".join(header) + " |"
+    rule = "|" + "|".join("---" for _ in header) + "|"
+    return f"{line}\n{rule}\n{line}"
+
+
+def test_odd_table_detected_by_column_count():
+    """같은 서식 표 중 열 수가 다른 것을 찾는다."""
+    from docstruct.tables.odd_tables import find_odd_tables
+
+    normal = ["", "회계 구분", "'25결산", "'26예산", "재정사업 평가명", "비고"]
+    merged = ["", "회계 구분", "'25결산", "'26예산", "재정사업 평가명 비고"]
+
+    pages = [_odd_page(n, [(f"table_{n}", _table_md(normal))]) for n in range(1, 5)]
+    pages.append(_odd_page(5, [("table_5", _table_md(merged))]))
+
+    odd = find_odd_tables(pages)
+    assert len(odd) == 1
+    _, table, width, majority = odd[0]
+    assert table.id == "table_5"
+    assert (width, majority) == (5, 6)
+
+
+def test_odd_table_needs_enough_samples():
+    """같은 서식 표가 셋 미만이면 판단하지 않는다.
+
+    둘뿐이면 어느 쪽이 옳은지 알 수 없다.
+    """
+    from docstruct.tables.odd_tables import find_odd_tables
+
+    normal = ["구분", "항목", "값"]
+    short = ["구분", "항목"]
+    pages = [_odd_page(1, [("table_1", _table_md(normal))]),
+             _odd_page(2, [("table_2", _table_md(short))])]
+    assert find_odd_tables(pages) == []
+
+
+def test_odd_table_ignores_different_formats():
+    """헤더가 다르면 다른 서식으로 보고 견주지 않는다."""
+    from docstruct.tables.odd_tables import find_odd_tables
+
+    pages = [
+        _odd_page(1, [("t1", _table_md(["성과지표명", "달성여부", "목표치"]))]),
+        _odd_page(2, [("t2", _table_md(["문제점 진단", "개선계획"]))]),
+        _odd_page(3, [("t3", _table_md(["구분", "예산", "결산", "증감"]))]),
+    ]
+    assert find_odd_tables(pages) == []
+
+
+def test_odd_table_needs_majority():
+    """반반이면 판단하지 않는다.
+
+    다수가 있어야 기준이 선다.
+    """
+    from docstruct.tables.odd_tables import find_odd_tables
+
+    wide = ["구분", "항목", "값", "비고"]
+    narrow = ["구분", "항목", "값"]
+    pages = [_odd_page(1, [("t1", _table_md(wide))]),
+             _odd_page(2, [("t2", _table_md(wide))]),
+             _odd_page(3, [("t3", _table_md(narrow))]),
+             _odd_page(4, [("t4", _table_md(narrow))])]
+    assert find_odd_tables(pages) == []

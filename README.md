@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.7"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.8"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.7"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.8"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.7"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.8"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -446,11 +446,31 @@ ds = docstruct.DocStruct("문서.pdf").run()
 셋 다 기본으로 꺼져 있습니다. 실측에서 도움이 되지 않았거나 오히려 해로웠기
 때문입니다.
 
-| 설정 | 하는 일 | 왜 꺼 두는가 |
+| 설정 | 기본 | 하는 일 |
 |---|---|---|
-| `flag_broken_tables` | 빈 칸 비율 표시 | 정상 표 17개 중 14개를 잡았습니다 |
-| `rebuild_grid` | 좌표로 격자 재구성 | 텍스트 PDF 에서 13회 시도해 13회 폐기 |
-| `vlm_fix_tables` | VLM 으로 표 재작성 | 대상 선정 기준이 아직 없습니다 |
+| `flag_odd_tables` | **켬** | 같은 서식 표 중 열 수가 다른 것을 표시 |
+| `flag_broken_tables` | 끔 | 빈 칸 비율 표시 (정상 표를 82% 잡음) |
+| `rebuild_grid` | 끔 | 좌표로 격자 재구성 (13회 시도 13회 폐기) |
+| `vlm_fix_tables` | 끔 | VLM 으로 표 재작성 |
+
+### 서식 불일치 검출
+
+정부 문서는 같은 서식 표를 여러 쪽에 반복합니다. 헤더가 같은 표들을 묶어
+열 수를 견주고, 다수와 다른 표를 표시합니다.
+
+```
+표 서식 불일치 · table_10 · 7열 — 같은 서식 표 다수는 8열입니다
+```
+
+실측(행안부 성과계획서 72-100쪽): 표 17개 중 헤더가 같은 12개를 묶어
+**7열짜리 하나만** 검출했습니다. 그 표는 헤더 두 칸이 하나로 뭉쳐 있었고,
+오탐은 없었습니다.
+
+    정상  ... | 재정사업 평가명 | 성과평가 결과 | 비고 |
+    이상  ... | 재정사업 성과평가 평가명 결과 | 비고 |
+
+같은 서식 표가 셋 이상 있어야 다수를 판단합니다. 한 번만 나오는 표는
+비교 대상이 없어 검사하지 못합니다.
 
 **빈 칸은 결함이 아닙니다.** docling 은 값이 없는 칸에 셀 객체를 만들지
 않으므로, 덮이지 않은 칸은 원본에서 비어 있던 자리입니다. 표 세 개를
@@ -682,7 +702,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.7"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.8"
 ```
 
 ### 한글이 깨져 보일 때

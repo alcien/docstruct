@@ -93,6 +93,7 @@ _ENV_KEYS: dict[str, str] = {
     "hwp_fill_html": "DOCSTRUCT_HWP_FILL_HTML",
     "korean_ocr": "DOCSTRUCT_KOREAN_OCR",
     "flag_broken_tables": "DOCSTRUCT_FLAG_BROKEN_TABLES",
+    "flag_odd_tables": "DOCSTRUCT_FLAG_ODD_TABLES",
     "rebuild_grid": "DOCSTRUCT_REBUILD_GRID",
     "vlm_fix_tables": "DOCSTRUCT_VLM_FIX_TABLES",
     "code_formula_enrichment": "DOCLING_CODE_FORMULA_ENRICHMENT",

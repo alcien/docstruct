@@ -64,6 +64,8 @@ class TableInfo:
     #: 격자에서 셀이 빠진 비율 0~1. 표 구조 인식이 열·행을 놓친 표를
     #: 가려내기 위한 값이며, 정상 표에서는 None 이다.
     structure_ratio: float | None = None
+    #: (이 표의 열 수, 같은 서식 표 다수의 열 수). 서식이 어긋난 표에만 있다.
+    odd_columns: tuple[int, int] | None = None
     #: 원본 Docling TableItem. 표 셀 텍스트를 나중에 갈아끼울 때 쓴다.
     #: 직렬화 대상이 아니므로 to_dict 에는 넣지 않는다 — JSON 으로 바꿀 수
     #: 없는 객체이고, 결과 파일에 들어갈 정보도 아니다.
