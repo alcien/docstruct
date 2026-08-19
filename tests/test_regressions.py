@@ -4237,3 +4237,176 @@ def test_mixed_language_document_keeps_text_layer():
 
     assert _has_usable_text_layer(
         "NASA 우주비행사 Michael Collins 는 Apollo 11 사령선 조종사였다.")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.4 — OCR 좌표로 표 격자 재구성
+#
+# 배경: 13행 2열 표가 **7행**으로 인식됐다. 가로 구분선이 연한 회색이라
+#       행 경계를 놓친 것이다. 왼쪽 열은 아예 셀로 생성되지 않았고, OCR 은
+#       `지방세법`·`종합부동산세법` 을 제대로 읽었는데 넣을 칸이 없었다.
+#
+#       셀이 없으면 좌표 매칭도 소용없다. 격자 자체를 다시 세운다.
+#
+#       이는 Split-Merge 계열(SEMv2·SEMv3)이 학습으로 하는 "분리선 예측" 을
+#       이미 가진 OCR 좌표로 직접 하는 것이다. 학습도 모델도 필요 없다.
+# ────────────────────────────────────────────────────────────────────
+
+def _grid_fragments(pairs, *, top=483.0, height=11.0, gap=14.5, header=None):
+    """2열 표를 좌표 조각으로 만든다."""
+    from docstruct.converters.pdf.cell_match import Box
+
+    fragments = []
+    if header:
+        fragments += [(Box(120, top - 15, 300, top - 4), header[0]),
+                      (Box(320, top - 15, 470, top - 4), header[1])]
+    y = top
+    for left, right in pairs:
+        fragments.append((Box(120, y, 300, y + height), left))
+        fragments.append((Box(320, y, 470, y + height), right))
+        y += gap
+    return fragments
+
+
+def test_grid_rebuild_recovers_all_rows():
+    """행 경계를 놓친 표를 좌표로 복원한다."""
+    from docstruct.tables.grid_rebuild import rebuild
+
+    pairs = [("지방세법", "지방법"), ("지방세법 시행령", "지방령"),
+             ("지방세특례제한법", "지특법"), ("종합부동산세법", "종부법"),
+             ("종합부동산세법 시행령", "종부령"), ("소득세법", "소득법"),
+             ("소득세법 시행령", "소득령"), ("조세특례제한법", "조특법"),
+             ("조세특례제한법 시행령", "조특령"), ("상속세 및 증여세법", "상증법"),
+             ("상속세 및 증여세법 시행령", "상증령"),
+             ("부동산거래 신고 등에 관한 법률", "부동산거래신고법"),
+             ("부동산거래 신고 등에 관한 법률 시행령", "부동산거래신고령")]
+    markdown = rebuild(_grid_fragments(pairs, header=("법령명", "표기 방식")))
+
+    rows = [ln for ln in markdown.splitlines()
+            if ln.startswith("|") and set(ln.strip()) - set("|-: ")]
+    assert len(rows) == 14           # 헤더 + 13행
+    assert "지방세법" in markdown
+    assert "부동산거래신고령" in markdown
+
+
+def test_grid_rebuild_adapts_to_row_spacing():
+    """행 간격이 좁아도 나눈다.
+
+    고정 임계를 쓰면 촘촘한 표가 통째로 한 행이 된다 — 실측에서 간격
+    0.5pt 짜리가 13행이 아니라 1행이 됐다.
+    """
+    from docstruct.tables.grid_rebuild import rebuild
+
+    pairs = [(f"항목{n}", f"값{n}") for n in range(13)]
+    for gap in (14.5, 12.0, 11.8):       # 간격 3.5 / 1.0 / 0.8 pt
+        markdown = rebuild(_grid_fragments(pairs, gap=gap))
+        rows = [ln for ln in markdown.splitlines()
+                if ln.startswith("|") and set(ln.strip()) - set("|-: ")]
+        assert len(rows) == 13, f"간격 {gap} 에서 {len(rows)}행"
+
+
+def test_grid_rebuild_needs_enough_fragments():
+    """조각이 적으면 격자를 세우지 않는다."""
+    from docstruct.converters.pdf.cell_match import Box
+    from docstruct.tables.grid_rebuild import rebuild
+
+    assert rebuild([]) == ""
+    assert rebuild([(Box(0, 0, 10, 10), "하나")]) == ""
+    # 한 줄뿐이면 표가 아니다
+    assert rebuild([(Box(0, 0, 10, 10), "가"), (Box(20, 0, 30, 10), "나")]) == ""
+
+
+def test_grid_rebuild_merges_multiline_cell():
+    """한 칸 안에서 줄이 나뉜 조각은 이어 붙인다.
+
+    줄바꿈을 넣으면 markdown 표가 깨진다.
+    """
+    from docstruct.converters.pdf.cell_match import Box
+    from docstruct.tables.grid_rebuild import rebuild
+
+    fragments = [
+        (Box(120, 100, 300, 111), "구분"), (Box(320, 100, 470, 111), "내용"),
+        (Box(120, 120, 300, 131), "항목"),
+        (Box(320, 120, 400, 131), "앞부분"), (Box(402, 120, 470, 131), "뒷부분"),
+    ]
+    markdown = rebuild(fragments)
+    assert "앞부분 뒷부분" in markdown
+    assert markdown.count("\n") < 6      # 줄바꿈이 셀에 들어가지 않았다
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.5 — 격자 재구성이 병합 셀을 망치지 않게
+#
+# 배경: 주 대상은 성과계획서(433쪽 텍스트 PDF)이고 스캔본은 부차적이다.
+#       그 문서는 병합 셀이 많아, 격자 재구성이 오히려 손해가 될 수 있다.
+#
+#       실측에서 두 가지 손상을 확인했다.
+#
+#       ① 가로 병합 헤더가 열 경계를 덮는다
+#          `예산 (A+B)` 한 칸이 `'26년`·`'27년` 두 열을 삼켜 4열 표가
+#          2열이 됐다. 넓은 조각을 열 경계 계산에서 빼 고쳤다.
+#
+#       ② 병합 자체를 표현할 수 없다
+#          좌표 격자에는 rowspan/colspan 이 없다. 두 행이 공유하던 값이
+#          한 행만의 것으로 읽히는데, 그 문제를 0.1.75 에서 `〃` 표기로
+#          고쳤다. 재구성이 그것을 되돌린다.
+#          → **병합이 있는 표는 아예 건드리지 않는다.**
+# ────────────────────────────────────────────────────────────────────
+
+def test_wide_header_does_not_swallow_columns():
+    """가로 병합 헤더가 아래 열 경계를 덮지 않는다."""
+    from docstruct.converters.pdf.cell_match import Box
+    from docstruct.tables.grid_rebuild import rebuild
+
+    fragments = [
+        (Box(100, 100, 160, 111), "구분"),
+        (Box(170, 100, 320, 111), "예산 (A+B)"),      # 2열을 덮는 병합 헤더
+        (Box(170, 115, 240, 126), "'26년"),
+        (Box(250, 115, 320, 126), "'27년"),
+        (Box(100, 130, 160, 141), "본부"),
+        (Box(170, 130, 240, 141), "100"),
+        (Box(250, 130, 320, 141), "120"),
+    ]
+    markdown = rebuild(fragments)
+    # '26년 과 '27년 이 서로 다른 칸에 있어야 한다
+    data = [ln for ln in markdown.splitlines()
+            if ln.startswith("|") and "'26년" in ln][0]
+    cells = [c.strip() for c in data.strip("|").split("|")]
+    assert "'26년" in cells
+    assert "'27년" in cells
+    assert "'26년 '27년" not in cells             # 한 칸에 뭉치면 안 된다
+
+
+def test_vertical_merge_still_rebuilds():
+    """세로 병합으로 빈 칸이 생긴 표는 그대로 복원된다."""
+    from docstruct.converters.pdf.cell_match import Box
+    from docstruct.tables.grid_rebuild import rebuild
+
+    fragments = [
+        (Box(100, 100, 160, 111), "구분"), (Box(170, 100, 240, 111), "항목"),
+        (Box(250, 100, 320, 111), "'26예산"),
+        (Box(100, 115, 160, 126), "프로그램"), (Box(170, 115, 240, 126), "가"),
+        (Box(250, 115, 320, 126), "100"),
+        (Box(170, 130, 240, 141), "나"), (Box(250, 130, 320, 141), "200"),
+    ]
+    markdown = rebuild(fragments)
+    rows = [ln for ln in markdown.splitlines()
+            if ln.startswith("|") and set(ln.strip()) - set("|-: ")]
+    assert len(rows) == 3
+    assert "프로그램" in markdown and "나" in markdown
+
+
+def test_tables_with_merges_are_skipped():
+    """병합 셀이 있는 표는 재구성 대상에서 뺀다.
+
+    좌표 격자는 병합을 표현하지 못해 값의 귀속이 바뀐다 — 0.1.75 에서
+    `〃` 표기로 고친 문제를 되돌리게 된다.
+    """
+    import inspect
+
+    from docstruct import pipeline
+
+    source = inspect.getsource(pipeline._rebuild_broken_grids)
+    assert "_has_merges" in source
+    assert "row_span" in source and "col_span" in source
+    assert "격자 재구성 건너뜀" in source

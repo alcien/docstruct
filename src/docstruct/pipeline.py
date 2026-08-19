@@ -35,7 +35,8 @@ SUPPORTED_SUFFIXES = (".hwp", ".hwpx", ".pdf")
 from docstruct.models import (  # noqa: F401  (하위호환 재노출)
     GPU_ACCELERATED, STAGE_ASSESS, STAGE_EXTRACT, STAGE_EXTRACT_MARKUP,
     STAGE_PICTURE_READ,
-    STAGE_FILL, STAGE_KOREAN_OCR, STAGE_RENDER, STAGE_TABLE_REBUILD,
+    STAGE_FILL, STAGE_GRID_REBUILD, STAGE_KOREAN_OCR, STAGE_RENDER,
+    STAGE_TABLE_REBUILD,
     stage_extract,
 )
 
@@ -424,6 +425,92 @@ def _flag_broken_tables(pages: list[PageContent]) -> int:
     return flagged
 
 
+def _rebuild_broken_grids(pages: list[PageContent], *, scale: float) -> int:
+    """격자 결함이 표시된 표를 OCR 좌표로 다시 세운다.
+
+    입력: pages — 결함이 표시된 PageContent 목록, scale — 렌더 배율
+    출력: 다시 세운 표 수
+    비고:
+        표 구조 인식이 행·열을 놓친 표는 좌표 매칭으로 고칠 수 없다 —
+        없는 칸에 값을 넣을 수는 없다. 조각 좌표를 y·x 축에 투영해 빈
+        구간으로 격자를 다시 만든다.
+
+        **원본보다 작아지면 되돌린다.** 격자 재구성은 병합을 복원하지
+        못하므로, 병합이 많은 표는 원본 구조가 더 나을 수 있다.
+    """
+    from docstruct.converters.pdf.cell_match import Box, box_of, from_pixels
+    from docstruct.converters.pdf.rapidocr_ko import read_image
+    from docstruct.tables.grid_rebuild import rebuild
+
+    def _cell_count(markdown: str) -> int:
+        """markdown 표의 내용 있는 칸 수."""
+        lines = [ln for ln in (markdown or "").splitlines()
+                 if ln.startswith("|") and set(ln.strip()) - set("|-: ")]
+        return sum(1 for ln in lines for c in ln.strip("|").split("|") if c.strip())
+
+    def _has_merges(table) -> bool:
+        """원본 표에 병합 셀이 있는지.
+
+        입력: table — TableInfo
+        출력: `row_span`·`col_span` 이 1보다 큰 셀이 있으면 True
+        비고:
+            **병합이 있으면 재구성하지 않는다.** 좌표 격자는 병합을
+            표현하지 못해 값의 귀속이 바뀔 수 있다 — 두 행이 공유하던
+            값이 한 행만의 것으로 읽힌다. 그 문제를 0.1.75 에서 `〃`
+            표기로 고쳤는데, 재구성이 그것을 되돌리게 된다.
+
+            성과계획서처럼 병합이 많은 문서가 주 대상이므로 보수적으로
+            간다. 병합 없는 표(괘선이 연해 행을 놓친 경우)만 고친다.
+        """
+        item = getattr(table, "source_item", None)
+        cells = getattr(getattr(item, "data", None), "table_cells", None) or []
+        return any(int(getattr(c, "row_span", 1) or 1) > 1
+                   or int(getattr(c, "col_span", 1) or 1) > 1 for c in cells)
+
+    changed = 0
+    for page in pages:
+        image = page.page_image_path
+        targets = [t for t in page.tables if t.structure_ratio and t.bbox]
+        if not image or not targets or not Path(image).is_file():
+            continue
+        try:
+            lines = read_image(image)
+        except Exception as exc:                 # noqa: BLE001 - 한 쪽 실패로 멈추지 않는다
+            _log.warning("%s쪽 격자 재구성용 OCR 실패: %s", page.page_no, exc)
+            continue
+        fragments = [(from_pixels(box_of(ln.box), scale), ln.text)
+                     for ln in lines if ln.box]
+
+        for table in targets:
+            if _has_merges(table):
+                page.trace.add(
+                    "docstruct.tables.grid_rebuild", "격자 재구성 건너뜀",
+                    f"{table.id} · 병합 셀이 있어 원본 구조를 지킵니다")
+                continue
+            area = Box(float(table.bbox["l"]), float(table.bbox["t"]),
+                       float(table.bbox["r"]), float(table.bbox["b"]))
+            inside = [(box, text) for box, text in fragments
+                      if box.overlap_ratio(area) >= 0.5]
+            rebuilt = rebuild(inside)
+            if not rebuilt:
+                continue
+            before, after = _cell_count(table.markdown), _cell_count(rebuilt)
+            if after <= before:
+                page.trace.add(
+                    "docstruct.tables.grid_rebuild", "격자 재구성 폐기",
+                    f"{table.id} · 칸 {before} → {after} 로 늘지 않아 원본을 유지합니다",
+                    status="warn")
+                continue
+            table.original_markdown = table.original_markdown or table.markdown
+            table.markdown = rebuilt
+            table.structure_ratio = None         # 결함이 해소됐다
+            changed += 1
+            page.trace.add(
+                "docstruct.tables.grid_rebuild", "격자 재구성",
+                f"{table.id} · 좌표로 다시 세움 (칸 {before} → {after})")
+    return changed
+
+
 def build_document(
     path: str | Path,
     *,
@@ -553,6 +640,15 @@ def build_document(
         broken = _flag_broken_tables(pages)
         if broken:
             _log.info("격자 결함이 있는 표 %d개", broken)
+
+    if fmt == "pdf" and get_settings().rebuild_grid:
+        # VLM 보다 먼저 시도한다. 좌표 재구성은 결정적이고 비용이 없으며,
+        # 성공하면 결함 표시가 지워져 VLM 대상에서 빠진다.
+        _t = time.perf_counter()
+        regrid = _rebuild_broken_grids(pages, scale=render_scale)
+        timings[STAGE_GRID_REBUILD] = time.perf_counter() - _t
+        if regrid:
+            _log.info("격자를 다시 세운 표 %d개", regrid)
 
     if fmt == "pdf" and get_settings().vlm_fix_tables:
         from docstruct.tables.vlm_rebuild import rebuild_broken_tables

@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.3"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.5"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.3"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.5"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.3"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.5"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -456,7 +456,20 @@ ds = docstruct.DocStruct("문서.pdf").run()
 | 설정 | 기본 | 하는 일 |
 |---|---|---|
 | `flag_broken_tables` | 켬 | 결함을 표시만 합니다 (`structure_ratio`) |
-| `vlm_fix_tables` | 끔 | 표시된 표를 VLM 으로 다시 만듭니다 |
+| `rebuild_grid` | 켬 | **OCR 좌표로 격자를 다시 세웁니다** |
+| `vlm_fix_tables` | 끔 | 그래도 남으면 VLM 으로 다시 만듭니다 |
+
+격자 재구성은 표 안 조각들의 세로·가로 위치를 투영해 빈 구간(분리선)을
+찾습니다. 학습도 모델도 필요 없고 결과가 결정적이라, 왜 그렇게 나뉘었는지
+좌표로 설명됩니다. 실측에서 13행 표가 7행으로 인식된 것을 14행(헤더 포함)
+으로 복원했고, 행 간격이 0.8pt 로 좁아도 나뉘었습니다.
+
+**병합 셀이 있는 표는 건드리지 않습니다.** 좌표 격자에는 `rowspan`·
+`colspan` 이 없어 두 행이 공유하던 값이 한 행만의 것으로 읽힙니다 —
+`〃` 표기로 고친 문제를 되돌리게 됩니다. 괘선이 연해 행을 놓친 표처럼
+병합이 없는 경우만 고칩니다.
+
+칸 수가 늘지 않아도 원본을 유지합니다.
 
 ```bash
 docstruct 문서.pdf -o out --set vlm_fix_tables=true
@@ -691,7 +704,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.3"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.5"
 ```
 
 ### 한글이 깨져 보일 때
