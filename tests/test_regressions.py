@@ -4038,14 +4038,19 @@ def test_structure_gap_alias_kept():
 
 
 def _rebuild_page(markdown, ratio, image):
-    """VLM 재구성 시험용 페이지."""
+    """VLM 재구성 시험용 페이지.
+
+    대상 선정은 `odd_columns`(서식 불일치)로 한다 — 빈 칸 비율은 정상 표를
+    82% 잡아 쓸 수 없다(0.3.7). ratio 를 주면 대상으로 삼는다는 뜻이다.
+    """
     from docstruct.models import PageContent, PageTrace, TableInfo
 
     return PageContent(
         page_no=1, page_no_kind="pdf", content="본문",
         page_image_path=str(image),
         tables=[TableInfo(id="table_1", table_num=1, placeholder="<table 1>",
-                          markdown=markdown, structure_ratio=ratio)],
+                          markdown=markdown,
+                          odd_columns=(7, 8) if ratio else None)],
         trace=PageTrace(extractor="docling", text_source="ocr"))
 
 
@@ -4057,6 +4062,7 @@ def test_vlm_rebuild_replaces_broken_table(tmp_path, monkeypatch):
     image = tmp_path / "p.png"
     image.write_bytes(b"x")
     monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "llm_api_config", lambda: {"model": "x"})
     monkeypatch.setattr(vlm_rebuild, "encode_image_file",
                         lambda _p: ("image/png", "AAAA"))
     monkeypatch.setattr(
@@ -4080,6 +4086,7 @@ def test_vlm_rebuild_discards_shorter_result(tmp_path, monkeypatch):
     image = tmp_path / "p.png"
     image.write_bytes(b"x")
     monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "llm_api_config", lambda: {"model": "x"})
     monkeypatch.setattr(vlm_rebuild, "encode_image_file",
                         lambda _p: ("image/png", "AAAA"))
     monkeypatch.setattr(vlm_rebuild, "invoke_llm",
@@ -4100,6 +4107,7 @@ def test_vlm_rebuild_rejects_non_table_answer(tmp_path, monkeypatch):
     image = tmp_path / "p.png"
     image.write_bytes(b"x")
     monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "llm_api_config", lambda: {"model": "x"})
     monkeypatch.setattr(vlm_rebuild, "encode_image_file",
                         lambda _p: ("image/png", "AAAA"))
 
@@ -4699,3 +4707,102 @@ def test_continuation_fields_serialized():
     assert data["continues_from"] == "table_6"
     assert data["inherited_header"] == ["회 계", "계 정"]
     json.dumps(data, ensure_ascii=False)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.11 — 서식 비교 오탐과 VLM 대상 선정
+#
+# 배경 ①: 헤더 앞 세 칸으로만 묶으니 **앞쪽이 빈 표들이 한 그룹**이 됐다.
+#         HWP 실측에서 23열 표와 5열 표가 같은 묶음으로 잡혀 오탐 5건.
+#
+#             table_15 · 23열 · ['', '', '', '', '임무 : 국민의 대의기', '']
+#             table_45 ·  6열 · ['', '', '', '', '(단위: 백만원, %)', '']
+#
+#         내용 있는 셀로 열쇠를 만들고, 열 수 차이가 크면 다른 표로 본다.
+#         결과: HWP 오탐 5 → 0, 행안부 사례는 그대로 검출.
+#
+# 배경 ②: `vlm_fix_tables` 가 빈 칸 비율로 대상을 골랐다. 그 지표는 정상
+#         표를 82% 잡으므로(0.3.7 에서 확인) 멀쩡한 표를 VLM 에 보내게 된다.
+#         서식이 어긋난 표(`odd_columns`)로 바꿨다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_odd_tables_ignores_blank_headers():
+    """앞쪽이 빈 헤더만으로 묶지 않는다.
+
+    병합 헤더의 좌상단이 비거나 `(단위: 백만원)` 같은 안내가 첫 행에 오는
+    표가 많다. 그것만으로 묶으면 전혀 다른 표가 한 그룹이 된다.
+    """
+    from docstruct.tables.odd_tables import find_odd_tables
+
+    def blank_header(n, width, label):
+        header = ["", "", "", "", label] + [""] * (width - 5)
+        return _odd_page(n, [(f"t{n}", _table_md(header))])
+
+    pages = [blank_header(1, 23, "임무 : 국민의 대의기관"),
+             blank_header(2, 6, "(단위: 백만원, %)"),
+             blank_header(3, 5, "다른 표")]
+    assert find_odd_tables(pages) == []
+
+
+def test_odd_tables_rejects_large_width_gap():
+    """열 수 차이가 크면 같은 표로 보지 않는다.
+
+    헤더 두 칸이 뭉치면 1~2열이 준다. 그보다 벌어지면 다른 표다.
+    """
+    from docstruct.tables.odd_tables import find_odd_tables
+
+    base = ["구분", "항목", "값", "비고"]
+    pages = [_odd_page(n, [(f"t{n}", _table_md(base))]) for n in (1, 2, 3)]
+    # 같은 열쇠인데 열이 배로 많은 표
+    pages.append(_odd_page(4, [("t4", _table_md(base + [f"추가{i}" for i in range(8)]))]))
+    assert find_odd_tables(pages) == []
+
+
+def test_odd_tables_still_detects_merged_header():
+    """헤더 뭉침은 여전히 검출한다 (회귀 확인).
+
+    실측 사례: 같은 서식 12개 중 하나만 7열이었고 헤더 두 칸이 뭉쳐 있었다.
+    """
+    from docstruct.tables.odd_tables import find_odd_tables
+
+    normal = ["", "회계 구분", "'25결산", "'26예산", "재정사업 평가명",
+              "성과평가 결과", "비고"]
+    merged = ["", "회계 구분", "'25결산", "'26예산",
+              "재정사업 성과평가 평가명 결과", "비고"]
+    pages = [_odd_page(n, [(f"t{n}", _table_md(normal))]) for n in range(1, 6)]
+    pages.append(_odd_page(6, [("t6", _table_md(merged))]))
+
+    odd = find_odd_tables(pages)
+    assert len(odd) == 1
+    assert odd[0][1].id == "t6"
+
+
+def test_vlm_targets_odd_columns_not_empty_ratio(tmp_path, monkeypatch):
+    """VLM 재구성이 서식 불일치 표만 고른다.
+
+    빈 칸 비율로 고르면 정상 표를 추측으로 바꾸게 된다.
+    """
+    import docstruct.infrastructure.llm.client as llm_client
+    from docstruct.models import PageContent, PageTrace, TableInfo
+    from docstruct.tables import vlm_rebuild
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(vlm_rebuild, "invoke_llm",
+                        lambda *a, **k: "| 구분 | 값 |\n|---|---|\n| 가 | 1 |")
+
+    def make(**kwargs):
+        return PageContent(
+            page_no=1, page_no_kind="pdf", content="본문",
+            page_image_path=str(image),
+            tables=[TableInfo(id="table_1", table_num=1, placeholder="",
+                              markdown="| 品 | 品 |\n|---|---|\n| a | b |", **kwargs)],
+            trace=PageTrace(extractor="docling", text_source="text_layer"))
+
+    assert vlm_rebuild.rebuild_broken_tables([make(odd_columns=(7, 8))]) == 1
+    assert vlm_rebuild.rebuild_broken_tables([make(structure_ratio=0.2)]) == 0
+    assert vlm_rebuild.rebuild_broken_tables([make()]) == 0

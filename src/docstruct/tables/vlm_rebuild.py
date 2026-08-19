@@ -17,16 +17,20 @@
 이런 표는 알고리즘으로 고칠 수 없다 — 없는 칸에 값을 넣을 수는 없다.
 지면을 보고 격자를 다시 세우는 수밖에 없다.
 
-대상 선정 주의
-------------
-**빈 칸 비율(`structure_ratio`)로 고르면 안 된다.** 그 값은 "값이 없는 칸"
-을 세는 것이지 구조 결함이 아니다 — 텍스트 PDF 에서 정상 표 17개 중 14개가
-그 표시를 받았다. 그것으로 대상을 고르면 멀쩡한 표를 VLM 에 보내 추측으로
-바꾸게 된다.
+대상 선정
+--------
+**서식이 어긋난 표(`odd_columns`)만 고른다.** 같은 서식 표 다수와 열 수가
+다른 표이며, 문서 안에서 서로 견주어 찾으므로 근거가 분명하다.
 
-지금은 `structure_ratio` 가 표시된 표를 대상으로 삼되, 그 표시 자체를 기본
-으로 끄고(`flag_broken_tables=false`) **필요할 때만 켜서** 쓴다. 격자 크기
-오류를 자동으로 판정하는 방법은 아직 없다.
+    table_10 · 7열 — 같은 서식 표 다수는 8열입니다
+
+빈 칸 비율(`structure_ratio`)은 쓰지 않는다. 그 값은 "값이 없는 칸" 을
+세는 것이지 구조 결함이 아니어서, 텍스트 PDF 에서 정상 표 17개 중 14개가
+그 표시를 받았다. 그것으로 고르면 멀쩡한 표를 추측으로 바꾸게 된다.
+
+**스캔본에는 대상이 잡히지 않는다.** 같은 서식 표가 셋 이상 있어야 비교가
+되는데 스캔 문서는 표 서식이 제각각이다. 스캔본의 격자 크기 오류
+(13행이 7행으로 인식)는 아직 자동 판정 방법이 없다.
 
 왜 전부에 쓰지 않는가
 ------------------
@@ -136,8 +140,8 @@ def rebuild_broken_tables(pages: list[PageContent], *, progress: bool = False) -
     입력: pages — 대상 페이지 목록 (제자리 갱신), progress — 진행 표시 여부
     출력: 다시 만든 표 수
     비고:
-        `TableInfo.structure_ratio` 가 표시된 표만 고른다. 그 값은 격자에서
-        셀이 빠진 비율이며, `flag_broken_tables` 단계가 채운다.
+        `TableInfo.odd_columns` 가 표시된 표만 고른다. 같은 서식 표 다수와
+        열 수가 다른 표이며, `flag_odd_tables` 단계가 채운다.
 
         **원본을 보관한다.** 다시 만든 표가 원본보다 짧으면 되돌린다 —
         VLM 이 표를 일부만 옮기는 일이 있고, 그때 원본을 잃으면 손해다.
@@ -147,7 +151,7 @@ def rebuild_broken_tables(pages: list[PageContent], *, progress: bool = False) -
         (page, table)
         for page in pages
         for table in page.tables
-        if table.structure_ratio and page.page_image_path
+        if table.odd_columns and page.page_image_path
     ]
     if not targets:
         return 0
@@ -177,8 +181,9 @@ def rebuild_broken_tables(pages: list[PageContent], *, progress: bool = False) -
         table.original_markdown = table.markdown
         table.markdown = markdown
         rebuilt += 1
+        width, majority = table.odd_columns
         page.trace.add(
             "docstruct.tables.vlm_rebuild", "표 재구성",
-            f"{table.id} · 격자 결함 {table.structure_ratio:.0%} → VLM 재작성",
+            f"{table.id} · {width}열 → 다수인 {majority}열에 맞춰 VLM 재작성",
         )
     return rebuilt

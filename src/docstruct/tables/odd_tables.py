@@ -64,22 +64,45 @@ def _header_cells(markdown: str) -> list[str]:
     return [cell.strip() for cell in lines[0].strip("|").split("|")]
 
 
+def _format_key(header: list[str]) -> tuple | None:
+    """서식이 같다고 볼 묶음 열쇠.
+
+    입력: header — 표의 첫 행 셀 목록
+    출력: 묶음 열쇠. 견줄 수 없으면 None
+    비고:
+        앞쪽 셀이 비어 있는 표가 많다(병합 헤더의 좌상단이 빈 칸이거나,
+        `(단위: 백만원)` 같은 안내가 첫 행에 오는 경우). 그것만으로 묶으면
+        **전혀 다른 표가 한 그룹이 된다** — HWP 실측에서 23열 표와 5열 표가
+        같은 묶음으로 잡혔다.
+
+        빈 칸을 빼고 **내용이 있는 셀**로 열쇠를 만든다. 내용 있는 셀이
+        둘 미만이면 견줄 근거가 없어 제외한다.
+    """
+    filled = [cell for cell in header if cell]
+    if len(filled) < 2:
+        return None
+    return tuple(filled[:HEADER_KEY_CELLS])
+
+
 def find_odd_tables(pages: list[PageContent]) -> list[tuple[PageContent, object, int, int]]:
     """서식이 같은 표 중 열 수가 다른 것을 찾는다.
 
     입력: pages — 표가 담긴 페이지 목록
     출력: (페이지, 표, 이 표의 열 수, 다수의 열 수) 목록
     비고:
-        헤더 앞 세 칸이 같으면 같은 서식으로 본다. 그 안에서 열 수의
-        최빈값을 구하고, 그와 다른 표를 돌려준다.
+        헤더의 **내용 있는 셀** 앞 세 개가 같으면 같은 서식으로 본다. 그
+        안에서 열 수의 최빈값을 구하고, 그와 다른 표를 돌려준다.
+
+        열 수 차이가 너무 크면 다른 표로 본다 — 같은 서식인데 열이 배로
+        늘어나지는 않는다.
     """
     groups: dict[tuple, list[tuple[PageContent, object, int]]] = defaultdict(list)
     for page in pages:
         for table in page.tables:
             header = _header_cells(table.markdown)
-            if not header:
+            key = _format_key(header) if header else None
+            if key is None:
                 continue
-            key = tuple(header[:HEADER_KEY_CELLS])
             groups[key].append((page, table, len(header)))
 
     odd: list[tuple[PageContent, object, int, int]] = []
@@ -93,6 +116,19 @@ def find_odd_tables(pages: list[PageContent]) -> list[tuple[PageContent, object,
             continue
         odd.extend(
             (page, table, width, majority)
-            for page, table, width in members if width != majority
+            for page, table, width in members
+            if width != majority and _plausible_gap(width, majority)
         )
     return odd
+
+
+def _plausible_gap(width: int, majority: int) -> bool:
+    """열 수 차이가 같은 표로 볼 만한 범위인지.
+
+    입력: width — 이 표의 열 수, majority — 다수의 열 수
+    출력: 같은 표의 오인식으로 볼 만하면 True
+    비고:
+        헤더 두 칸이 뭉치면 1~2열이 준다. 그보다 크게 벌어지면 애초에 다른
+        표다 — HWP 실측에서 5열 묶음에 23열 표가 끼었다.
+    """
+    return abs(width - majority) <= max(2, round(majority * 0.25))

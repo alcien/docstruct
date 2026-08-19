@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.10"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.11"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.10"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.11"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.10"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.11"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -451,7 +451,7 @@ ds = docstruct.DocStruct("문서.pdf").run()
 | `flag_odd_tables` | **켬** | 같은 서식 표 중 열 수가 다른 것을 표시 |
 | `flag_broken_tables` | 끔 | 빈 칸 비율 표시 (정상 표를 82% 잡음) |
 | `rebuild_grid` | 끔 | 좌표로 격자 재구성 (13회 시도 13회 폐기) |
-| `vlm_fix_tables` | 끔 | VLM 으로 표 재작성 |
+| `vlm_fix_tables` | 끔 | **서식이 어긋난 표**를 VLM 으로 재작성 |
 
 ### 쪽을 넘는 표
 
@@ -499,6 +499,15 @@ ds = docstruct.DocStruct("문서.pdf").run()
 
 같은 서식 표가 셋 이상 있어야 다수를 판단합니다. 한 번만 나오는 표는
 비교 대상이 없어 검사하지 못합니다.
+
+헤더의 **내용 있는 셀**로 묶습니다. 앞쪽이 빈 표가 많아(병합 헤더의 좌상단,
+`(단위: 백만원)` 같은 안내) 그것까지 세면 전혀 다른 표가 한 그룹이 됩니다.
+열 수 차이가 크면 다른 표로 봅니다.
+
+실측 오탐: HWP 162개 표에서 5건 → **0건**.
+
+`vlm_fix_tables=true` 로 켜면 이렇게 표시된 표만 VLM 으로 다시 만듭니다.
+스캔본은 표 서식이 제각각이라 대상이 잡히지 않습니다.
 
 **빈 칸은 결함이 아닙니다.** docling 은 값이 없는 칸에 셀 객체를 만들지
 않으므로, 덮이지 않은 칸은 원본에서 비어 있던 자리입니다. 표 세 개를
@@ -730,7 +739,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.10"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.11"
 ```
 
 ### 한글이 깨져 보일 때
