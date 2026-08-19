@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.8"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.10"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.8"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.10"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.8"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.10"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -453,6 +453,34 @@ ds = docstruct.DocStruct("문서.pdf").run()
 | `rebuild_grid` | 끔 | 좌표로 격자 재구성 (13회 시도 13회 폐기) |
 | `vlm_fix_tables` | 끔 | VLM 으로 표 재작성 |
 
+### 쪽을 넘는 표
+
+한 표가 여러 쪽에 걸치면 docling 은 쪽마다 별개 표로 봅니다. 첫 쪽에만
+헤더가 있으면 뒤쪽 값이 어느 열인지 알 수 없습니다.
+
+**관계만 표시하고 표는 건드리지 않습니다.**
+
+```json
+{
+  "id": "table_7",
+  "continues_from": "table_6",
+  "inherited_header": ["회 계", "계 정", "분 야", ...]
+}
+```
+
+헤더를 표에 끼워 넣으면 원본이 변형되고, 열 수가 쪽마다 달라(실측 13~17)
+앞에서부터 억지로 맞추게 됩니다. 관계만 기록하면 구조화 단계가 실제 값을
+보고 맞출 수 있습니다.
+
+헤더가 매 쪽 반복되는 표는 표시하지 않습니다 — 이미 쓸 수 있습니다.
+
+실측(행안부 성과계획서 별첨3, 27쪽): 21쪽에 걸친 표에서 **20개를 이어짐
+으로 표시**하고, 헤더 반복형 6개와 열 수가 다른 합계 표는 제외했습니다.
+
+끄려면 `mark_table_continuation=false` 입니다.
+
+---
+
 ### 서식 불일치 검출
 
 정부 문서는 같은 서식 표를 여러 쪽에 반복합니다. 헤더가 같은 표들을 묶어
@@ -702,7 +730,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.8"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.10"
 ```
 
 ### 한글이 깨져 보일 때

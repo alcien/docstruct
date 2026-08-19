@@ -4571,3 +4571,131 @@ def test_odd_table_needs_majority():
              _odd_page(3, [("t3", _table_md(narrow))]),
              _odd_page(4, [("t4", _table_md(narrow))])]
     assert find_odd_tables(pages) == []
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.9 — 쪽을 넘는 표에 헤더 물려주기
+#
+# 배경: docling 은 페이지 단위로 처리하므로 쪽을 넘는 표를 별개로 본다.
+#       행안부 성과계획서 별첨3 에서 한 표가 **21쪽에 걸쳐** 있었는데
+#       첫 쪽에만 헤더가 있었다.
+#
+#           6쪽  ['회 계', '계 정', '분 야', ...]        ← 헤더
+#           7쪽  ['11', '0', '010', '013', ...]          ← 데이터
+#           ...  26쪽까지 데이터만
+#
+#       7쪽 이후 `537` 이 '26예산인지 '27예산안인지 알 수 없었다.
+#
+#       **행은 합치지 않고 헤더만 붙인다.** 같은 표인데 쪽마다 열 수가
+#       13~17 로 달라(빈 열이 잘림) 합치면 값이 밀린다. 헤더만 붙여도 각
+#       쪽 표가 독립적으로 유효해진다.
+#
+#       실측: 27개 표 중 7~26쪽 20개에 헤더를 물려주고, 헤더가 매 쪽
+#       반복되는 표(1~6쪽)와 열 수가 다른 합계 표(27쪽)는 건드리지 않았다.
+# ────────────────────────────────────────────────────────────────────
+
+def _cont_page(page_no, rows):
+    """이어짐 시험용 페이지 (표 하나)."""
+    from docstruct.models import PageContent, PageTrace, TableInfo
+
+    body = ["| " + " | ".join(rows[0]) + " |",
+            "|" + "|".join("---" for _ in rows[0]) + "|"]
+    body += ["| " + " | ".join(r) + " |" for r in rows[1:]]
+    return PageContent(
+        page_no=page_no, page_no_kind="pdf", content="",
+        tables=[TableInfo(id=f"t{page_no}", table_num=page_no,
+                          placeholder="", markdown="\n".join(body))],
+        trace=PageTrace(extractor="docling", text_source="text_layer"))
+
+
+_CONT_HEADER = ["회계", "계정", "분야", "프로그램명", "'26예산"]
+
+
+def _cont_data(n):
+    """데이터 행."""
+    return ["11", "0", "010", f"사업{n}", str(1000 + n)]
+
+
+def test_continued_table_marked_without_editing():
+    """이어짐을 표시하되 markdown 은 건드리지 않는다.
+
+    헤더를 끼워 넣으면 원본이 변형되고, 열 수가 쪽마다 달라(실측 13~17)
+    앞에서부터 억지로 맞추게 된다. 그 정렬이 틀리면 되돌릴 수 없다.
+    """
+    from docstruct.tables.continued import mark_continuations
+
+    pages = [_cont_page(1, [_CONT_HEADER, _cont_data(1)]),
+             _cont_page(2, [_cont_data(2), _cont_data(3)]),
+             _cont_page(3, [_cont_data(4), _cont_data(5)])]
+    before = pages[1].tables[0].markdown
+
+    assert mark_continuations(pages) == 2
+    table = pages[1].tables[0]
+    assert table.continues_from == "t1"
+    assert table.inherited_header == _CONT_HEADER
+    assert table.markdown == before          # 원본 그대로
+
+
+def test_repeated_header_table_untouched():
+    """헤더가 매 쪽 반복되는 표는 건드리지 않는다.
+
+    이미 쓸 수 있으므로 손댈 이유가 없다.
+    """
+    from docstruct.tables.continued import mark_continuations
+
+    pages = [_cont_page(n, [_CONT_HEADER, _cont_data(n)]) for n in (1, 2, 3)]
+    assert mark_continuations(pages) == 0
+    assert all(t.continues_from is None for p in pages for t in p.tables)
+
+
+def test_continued_table_stops_at_page_gap():
+    """쪽이 끊기면 이어짐으로 보지 않는다."""
+    from docstruct.tables.continued import mark_continuations
+
+    pages = [_cont_page(1, [_CONT_HEADER, _cont_data(1)]),
+             _cont_page(5, [_cont_data(2), _cont_data(3)])]
+    assert mark_continuations(pages) == 0
+
+
+def test_continued_table_needs_similar_width():
+    """열 수가 크게 다르면 다른 표로 본다.
+
+    실측에서 마지막 합계 표(7열)가 이 조건으로 제외됐다.
+    """
+    from docstruct.tables.continued import mark_continuations
+
+    pages = [_cont_page(1, [_CONT_HEADER, _cont_data(1)]),
+             _cont_page(2, [["합계", "276"], ["a", "b"]])]
+    assert mark_continuations(pages) == 0
+
+
+def test_data_row_detection():
+    """헤더와 데이터를 내용으로 가른다.
+
+    docling 의 `column_header` 플래그는 쓸 수 없다 — 헤더가 없는 표에도
+    항상 참으로 표시된다(실측에서 세 표 모두 그랬다).
+    """
+    from docstruct.tables.continued import looks_like_data
+
+    assert not looks_like_data(_CONT_HEADER)
+    assert looks_like_data(_cont_data(1))
+    assert not looks_like_data(["", "", ""])
+    assert not looks_like_data(["성과지표명", "달성여부", "목표치"])
+
+
+def test_continuation_fields_serialized():
+    """이어짐 관계가 JSON 에 남는다.
+
+    구조화 단계가 이 정보로 표를 연결하므로 결과 파일에 있어야 한다.
+    """
+    import json
+
+    from docstruct.models import TableInfo
+
+    table = TableInfo(id="table_7", table_num=7, placeholder="<table 7>",
+                      markdown="| a |", continues_from="table_6",
+                      inherited_header=["회 계", "계 정"])
+    data = table.to_dict()
+    assert data["continues_from"] == "table_6"
+    assert data["inherited_header"] == ["회 계", "계 정"]
+    json.dumps(data, ensure_ascii=False)

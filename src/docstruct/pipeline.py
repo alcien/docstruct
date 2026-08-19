@@ -673,6 +673,13 @@ def build_document(
         if broken:
             _log.info("격자 결함이 있는 표 %d개", broken)
 
+    if fmt == "pdf" and get_settings().mark_table_continuation:
+        from docstruct.tables.continued import mark_continuations
+
+        got = mark_continuations(pages)
+        if got:
+            _log.info("이어짐으로 표시한 표 %d개", got)
+
     if fmt == "pdf" and get_settings().flag_odd_tables:
         odd = _flag_odd_tables(pages)
         if odd:
@@ -911,6 +918,8 @@ def _pipeline_settings(
             # 아래 넷은 결과 해석에 필요하다. 빠져 있으면 어떤 설정으로 돌린
             # 산출물인지 알 수 없어, 같은 결과를 두고 다른 판단을 하게 된다.
             korean_ocr=settings.korean_ocr,
+            flag_odd_tables=settings.flag_odd_tables,
+            mark_table_continuation=settings.mark_table_continuation,
             flag_broken_tables=settings.flag_broken_tables,
             rebuild_grid=settings.rebuild_grid,
             vlm_fix_tables=settings.vlm_fix_tables,
