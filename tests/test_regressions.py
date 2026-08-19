@@ -3991,39 +3991,50 @@ def _grid_table(rows, cols, cells):
         num_rows=rows, num_cols=cols, table_cells=cells))
 
 
-def test_structure_gap_detects_missing_column():
-    """열이 통째로 빠진 표를 잡아낸다."""
-    from docstruct.tables.docling import structure_gap
+def test_empty_cell_ratio_counts_uncovered_cells():
+    """셀 객체가 없는 칸의 비율을 센다.
 
-    # 7행 2열인데 오른쪽 열 셀만 있다 — 실제 문서에서 나온 형태
-    gap = structure_gap(_grid_table(7, 2, [_grid_cell(r, 1) for r in range(7)]))
-    assert gap["declared"] == 14
-    assert gap["covered"] == 7
-    assert gap["ratio"] == 0.5
+    **이것은 구조 결함이 아니라 빈 칸이다.** docling 은 값이 없는 칸에
+    TableCell 을 만들지 않으므로, 덮이지 않은 칸은 원본에서 비어 있던
+    자리다 — 표 세 개에서 `text` 가 빈 셀이 0개인 것을 확인했다.
+    """
+    from docstruct.tables.docling import empty_cell_ratio
+
+    stat = empty_cell_ratio(_grid_table(7, 2, [_grid_cell(r, 1) for r in range(7)]))
+    assert stat["declared"] == 14
+    assert stat["covered"] == 7
+    assert stat["ratio"] == 0.5
 
 
-def test_structure_gap_counts_merged_cells():
-    """병합은 결함이 아니다.
+def test_empty_cell_ratio_counts_merged_cells():
+    """병합 셀은 자기가 덮는 칸을 모두 채운 것으로 센다.
 
     `row_span`·`col_span` 이 큰 셀 하나가 여러 칸을 덮으므로, 셀 개수만
-    세면 정상 표도 부족해 보인다.
+    세면 정상 표도 비어 보인다.
     """
-    from docstruct.tables.docling import structure_gap
+    from docstruct.tables.docling import empty_cell_ratio
 
     merged = _grid_table(2, 2, [_grid_cell(0, 0, col_span=2),
                                 _grid_cell(1, 0), _grid_cell(1, 1)])
-    assert structure_gap(merged)["missing"] == 0
+    assert empty_cell_ratio(merged)["empty"] == 0
 
     normal = _grid_table(2, 2, [_grid_cell(0, 0), _grid_cell(0, 1),
                                 _grid_cell(1, 0), _grid_cell(1, 1)])
-    assert structure_gap(normal)["missing"] == 0
+    assert empty_cell_ratio(normal)["empty"] == 0
 
 
-def test_structure_gap_handles_empty_table():
+def test_empty_cell_ratio_handles_empty_table():
     """빈 표에도 예외를 내지 않는다."""
-    from docstruct.tables.docling import structure_gap
+    from docstruct.tables.docling import empty_cell_ratio
 
-    assert structure_gap(_grid_table(0, 0, []))["declared"] == 0
+    assert empty_cell_ratio(_grid_table(0, 0, []))["declared"] == 0
+
+
+def test_structure_gap_alias_kept():
+    """옛 이름도 남긴다 (0.3.1~0.3.6 에서 쓰던 이름)."""
+    from docstruct.tables.docling import empty_cell_ratio, structure_gap
+
+    assert structure_gap is empty_cell_ratio
 
 
 def _rebuild_page(markdown, ratio, image):
@@ -4126,8 +4137,11 @@ def test_table_flags_are_toggleable():
     from docstruct.core.config import get_settings
 
     settings = get_settings()
-    assert settings.flag_broken_tables is True     # 표시는 기본으로 켠다
-    assert settings.vlm_fix_tables is False        # VLM 은 명시해야 돈다
+    # 셋 다 기본으로 끈다. 빈 칸 표시는 정상 표를 82% 나 잡았고(오판),
+    # 격자 재구성은 텍스트 PDF 에서 13회 시도해 13회 모두 폐기됐다.
+    assert settings.flag_broken_tables is False
+    assert settings.rebuild_grid is False
+    assert settings.vlm_fix_tables is False
 
 
 # ────────────────────────────────────────────────────────────────────

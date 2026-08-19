@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.6"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.7"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.6"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.7"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.6"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.7"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -441,46 +441,24 @@ ds = docstruct.DocStruct("문서.pdf").run()
     | 品品品 | 昆品 |        | 구분   | 2025년     |
     | 早     | 全气 |   →    | 유튜브 | 13,391,527 |
 
-### 표 격자에 셀이 빠졌을 때
+### 표 진단 (기본 꺼짐)
 
-표 구조 인식이 열이나 행을 통째로 놓치는 일이 있습니다. 실제 문서에서
-7행 2열(14칸)로 렌더되는 표의 셀이 **7개뿐**이었고 왼쪽 열이 아예 셀로
-존재하지 않았습니다. OCR 이 글자를 읽었어도 넣을 자리가 없습니다.
+셋 다 기본으로 꺼져 있습니다. 실측에서 도움이 되지 않았거나 오히려 해로웠기
+때문입니다.
 
-```
-표 격자 결함 · table_1 · 14칸 중 7칸이 셀로 존재하지 않습니다 (50%)
-```
-
-좌표로는 고칠 수 없어(없는 칸에 값을 넣을 수 없습니다) 두 단계로 나눕니다.
-
-| 설정 | 기본 | 하는 일 |
+| 설정 | 하는 일 | 왜 꺼 두는가 |
 |---|---|---|
-| `flag_broken_tables` | 켬 | 결함을 표시만 합니다 (`structure_ratio`) |
-| `rebuild_grid` | 켬 | **OCR 좌표로 격자를 다시 세웁니다** |
-| `vlm_fix_tables` | 끔 | 그래도 남으면 VLM 으로 다시 만듭니다 |
+| `flag_broken_tables` | 빈 칸 비율 표시 | 정상 표 17개 중 14개를 잡았습니다 |
+| `rebuild_grid` | 좌표로 격자 재구성 | 텍스트 PDF 에서 13회 시도해 13회 폐기 |
+| `vlm_fix_tables` | VLM 으로 표 재작성 | 대상 선정 기준이 아직 없습니다 |
 
-격자 재구성은 표 안 조각들의 세로·가로 위치를 투영해 빈 구간(분리선)을
-찾습니다. 학습도 모델도 필요 없고 결과가 결정적이라, 왜 그렇게 나뉘었는지
-좌표로 설명됩니다. 실측에서 13행 표가 7행으로 인식된 것을 14행(헤더 포함)
-으로 복원했고, 행 간격이 0.8pt 로 좁아도 나뉘었습니다.
+**빈 칸은 결함이 아닙니다.** docling 은 값이 없는 칸에 셀 객체를 만들지
+않으므로, 덮이지 않은 칸은 원본에서 비어 있던 자리입니다. 표 세 개를
+확인하니 텍스트가 빈 셀이 하나도 없었습니다 — 셀이 있으면 반드시 값이
+있습니다.
 
-**병합 셀이 있는 표는 건드리지 않습니다.** 좌표 격자에는 `rowspan`·
-`colspan` 이 없어 두 행이 공유하던 값이 한 행만의 것으로 읽힙니다 —
-`〃` 표기로 고친 문제를 되돌리게 됩니다. 괘선이 연해 행을 놓친 표처럼
-병합이 없는 경우만 고칩니다.
-
-칸 수가 늘지 않아도 원본을 유지합니다.
-
-```bash
-docstruct 문서.pdf -o out --set vlm_fix_tables=true
-```
-
-**표시는 켜 두고 재구성은 필요할 때만** 켜는 구성입니다. VLM 은 못 읽은
-것을 지어내므로, 좌표 매칭이 성공한 표까지 다시 만들면 검증된 결과를
-추측으로 바꾸게 됩니다.
-
-재구성 결과가 원본보다 짧으면 되돌립니다 — VLM 이 표를 일부만 옮기는
-일이 있습니다. 원본은 `original_markdown` 에 남습니다.
+격자 크기 자체가 원본과 다른 경우(스캔본에서 13행 표가 7행으로 인식)는 이
+값으로 잡히지 않습니다. 자동 판정 방법은 아직 없습니다.
 
 ---
 
@@ -704,7 +682,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.6"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.7"
 ```
 
 ### 한글이 깨져 보일 때

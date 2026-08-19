@@ -135,30 +135,37 @@ def replace_cell_texts(item, page_image: str | Path, *, scale: float) -> dict:
     }
 
 
-def structure_gap(item) -> dict:
-    """표 격자에서 셀이 빠진 정도를 잰다.
+def empty_cell_ratio(item) -> dict:
+    """격자에서 셀 객체가 없는 칸의 비율을 잰다.
 
     입력: item — Docling TableItem
     출력: 진단 dict
         declared   선언된 격자 칸 수 (num_rows × num_cols)
         covered    셀이 실제로 덮는 칸 수 (병합 span 반영)
-        missing    덮이지 않은 칸 수
-        ratio      빠진 비율 0~1
+        empty      셀 객체가 없는 칸 수
+        ratio      그 비율 0~1
     비고:
-        표 구조 인식이 열을 통째로 놓치는 일이 있다. 실제 문서에서
-        7행 2열(14칸)로 렌더되는 표의 셀이 **7개뿐**이었고, 왼쪽 열이
-        아예 셀로 존재하지 않았다. 그 자리는 OCR 이 글자를 읽었어도
-        넣을 곳이 없어 비어 나온다.
+        **이것은 "구조 결함" 이 아니라 "빈 칸" 이다.** 처음에 결함으로
+        읽었다가 정정했다. docling 은 값이 없는 칸에 TableCell 객체를 만들지
+        않으므로, 덮이지 않은 칸은 원본에서 비어 있던 자리다.
 
-        병합을 반영해 센다 — `row_span`·`col_span` 이 큰 셀 하나가 여러
-        칸을 덮으므로, 셀 개수만 세면 정상 표도 부족해 보인다.
+        실측으로 확인했다 — 표 세 개에서 `text` 가 빈 셀이 **0개**였다.
+        즉 셀이 있으면 반드시 값이 있고, 값이 없으면 셀이 없다.
+
+            선언 29행 × 5열 = 145칸 · table_cells 143개 · 빈 text 0개
+
+        그 2칸은 렌더 결과에서도 빈칸으로 나온다. 정상이다.
+
+        **격자 크기 자체가 원본과 다른 경우는 이 값으로 잡히지 않는다.**
+        `num_rows` 안에서만 세기 때문이다. 스캔본에서 13행 표가 7행으로
+        인식된 사례가 그렇다 — 그때는 이 비율이 낮게 나온다.
     """
     data = getattr(item, "data", None)
     cells = list(getattr(data, "table_cells", None) or [])
     rows = int(getattr(data, "num_rows", 0) or 0)
     cols = int(getattr(data, "num_cols", 0) or 0)
     if rows <= 0 or cols <= 0 or not cells:
-        return {"declared": 0, "covered": 0, "missing": 0, "ratio": 0.0}
+        return {"declared": 0, "covered": 0, "empty": 0, "ratio": 0.0}
 
     filled = [[False] * cols for _ in range(rows)]
     for cell in cells:
@@ -170,13 +177,17 @@ def structure_gap(item) -> dict:
 
     declared = rows * cols
     covered = sum(1 for line in filled for value in line if value)
-    missing = declared - covered
+    empty = declared - covered
     return {
         "declared": declared,
         "covered": covered,
-        "missing": missing,
-        "ratio": missing / declared if declared else 0.0,
+        "empty": empty,
+        "ratio": empty / declared if declared else 0.0,
     }
+
+
+#: 옛 이름. 0.3.1~0.3.6 에서 "구조 결함" 으로 잘못 부르던 것이다.
+structure_gap = empty_cell_ratio
 
 
 def docling_table_to_markdown(item) -> str:

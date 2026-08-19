@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "docstruct"
-version = "0.3.6"
+version = "0.3.7"
 description = "HWP/HWPX/PDF 문서를 페이지 단위로 구조화해 JSON 으로 내보내는 라이브러리"
 readme = "README.md"
 requires-python = ">=3.10"

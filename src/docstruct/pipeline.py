@@ -391,19 +391,27 @@ def _reread_tables_with_korean_ocr(
 
 
 def _flag_broken_tables(pages: list[PageContent]) -> int:
-    """격자에 셀이 빠진 표를 표시한다.
+    """빈 칸이 많은 표를 표시한다.
 
     입력: pages — TableInfo.source_item 이 채워진 페이지 목록
     출력: 표시한 표 수
     비고:
-        좌표 매칭은 **셀이 존재할 때만** 동작한다. 실제 문서에서 7행 2열
-        (14칸)로 렌더되는 표의 셀이 7개뿐이었고, 왼쪽 열이 아예 셀로 존재
-        하지 않았다. OCR 은 글자를 읽었는데 넣을 자리가 없었다.
+        **처음에는 이것을 "격자 결함" 으로 읽었으나 오판이었다.** docling 은
+        값이 없는 칸에 TableCell 객체를 만들지 않으므로, 덮이지 않은 칸은
+        원본에서 비어 있던 자리다. 표 세 개를 확인하니 `text` 가 빈 셀이
+        **0개**였다 — 셀이 있으면 반드시 값이 있다.
 
-        고치지는 않고 표시만 한다 — 다운스트림이 그 표를 얼마나 믿을지
-        판단할 수 있어야 하고, VLM 재구성 대상을 고르는 근거도 된다.
+        텍스트 PDF 에서 표 17개 중 14개(82%)가 이 표시를 받았는데, 렌더
+        결과를 보면 모두 정상이었다. 값이 없는 칸이 있을 뿐이다.
+
+        그래서 기본으로 끈다. 빈 칸 비율 자체는 표를 훑을 때 참고가 되므로
+        기능은 남긴다.
+
+        **격자 크기가 원본과 다른 경우는 이것으로 못 잡는다.** `num_rows`
+        안에서만 세기 때문이다. 스캔본에서 13행 표가 7행으로 인식된 사례가
+        그렇고, 그때는 오히려 비율이 낮게 나온다.
     """
-    from docstruct.tables.docling import structure_gap
+    from docstruct.tables.docling import empty_cell_ratio
 
     flagged = 0
     for page in pages:
@@ -411,17 +419,15 @@ def _flag_broken_tables(pages: list[PageContent]) -> int:
             item = table.source_item
             if item is None:
                 continue
-            gap = structure_gap(item)
-            if not gap["missing"]:
+            stat = empty_cell_ratio(item)
+            if not stat["empty"]:
                 continue
-            table.structure_ratio = round(gap["ratio"], 3)
+            table.structure_ratio = round(stat["ratio"], 3)
             flagged += 1
             page.trace.add(
-                "docstruct.tables.docling", "표 격자 결함",
-                f"{table.id} · {gap['declared']}칸 중 {gap['missing']}칸이 "
-                f"셀로 존재하지 않습니다 ({gap['ratio']:.0%})",
-                status="warn",
-            )
+                "docstruct.tables.docling", "표 빈 칸",
+                f"{table.id} · {stat['declared']}칸 중 {stat['empty']}칸이 "
+                f"비어 있습니다 ({stat['ratio']:.0%})")
     return flagged
 
 
