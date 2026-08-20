@@ -389,7 +389,10 @@ class PdfConverter(BaseConverter):
         # 컨버터 생성 자체가 GPU 때문에 실패할 수 있다.
         # (docling 의 import 사슬이 CUDA 를 초기화하다 터지는 경우)
         try:
-            converter = get_document_converter()
+            # **경로를 넘겨야 스캔본 판정이 된다.** 넘기지 않으면
+            # `scanned_skip_docling_ocr` 이 켜져 있어도 무시된다 — 실측에서
+            # 설정을 켜고 돌렸는데 시간이 그대로였다.
+            converter = get_document_converter(str(self.path))
             result = converter.convert(self.path)
         except Exception as exc:
             _raise_if_model_download_failed(exc)

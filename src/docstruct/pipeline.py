@@ -976,6 +976,8 @@ def _pipeline_settings(
             flag_odd_tables=settings.flag_odd_tables,
             mark_table_continuation=settings.mark_table_continuation,
             read_charts=settings.read_charts,
+            detect_toc=settings.detect_toc,
+            scanned_skip_docling_ocr=settings.scanned_skip_docling_ocr,
             flag_broken_tables=settings.flag_broken_tables,
             rebuild_grid=settings.rebuild_grid,
             vlm_fix_tables=settings.vlm_fix_tables,

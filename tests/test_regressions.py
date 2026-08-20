@@ -7401,3 +7401,81 @@ def test_marker_length_limit_documented():
     from docstruct.experiments.cell_repair import MAX_MARKER_CHARS
 
     assert 0 < MAX_MARKER_CHARS <= 30
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.52 — 스캔본 판정에 경로가 안 넘어가던 문제
+#
+# 배경: `scanned_skip_docling_ocr=true` 로 돌렸는데 시간이 그대로였다
+#       (1,096초 → 1,143초).
+#
+#       `get_document_converter()` 를 **경로 없이** 부르는 곳이 있었다.
+#       그러면 스캔본 판정을 아예 하지 않아 설정이 무시된다.
+#
+#           converter = get_document_converter()          ← 주 경로
+#           get_document_converter(str(self.path))        ← 예외 처리 경로만
+#
+#       그리고 그 설정이 `pipeline` 기록에도 없어, 결과만 보고는 켰는지
+#       껐는지 알 수 없었다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_converter_receives_pdf_path():
+    """변환기를 부를 때 경로를 넘긴다.
+
+    넘기지 않으면 스캔본 판정을 못 해 설정이 무시된다.
+    """
+    import inspect
+
+    from docstruct.converters.pdf import converter
+
+    # 주석은 빼고 실제 호출만 본다
+    lines = [ln for ln in inspect.getsource(converter).splitlines()
+             if not ln.strip().startswith("#")]
+    assert "get_document_converter()" not in "\n".join(lines)
+
+
+def test_scanned_setting_recorded():
+    """설정이 결과에 기록된다.
+
+    없으면 켜고 돌렸는지 결과만 보고 알 수 없다.
+    """
+    import inspect
+
+    from docstruct import pipeline
+
+    source = inspect.getsource(pipeline._pipeline_settings)
+    assert "scanned_skip_docling_ocr" in source
+    assert "detect_toc" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.53 — 실험 실행 순서가 이름순이던 문제
+#
+# 배경: 0.3.51 로 돌렸는데 복원이 12표뿐이었다. 같은 데이터를 코드로 다시
+#       돌리면 25표가 나왔다.
+#
+#       실험이 **이름순**으로 돌고 있었다.
+#
+#           cell_repair → otsl_diff → two_way_match
+#
+#       `cell_repair` 는 행 분리에 `match_disagreements` 를 쓰는데, 그것을
+#       채우는 `two_way_match` 가 **나중에** 돌았다. 아직 비어 있으니 행
+#       분리를 통째로 건너뛴 것이다.
+#
+#       뒤엣것이 앞엣것의 결과를 읽으므로 **순서를 명시**한다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_experiment_run_order():
+    """결과를 읽는 실험이 나중에 돈다."""
+    from docstruct.experiments import all_experiments
+
+    keys = [e.key for e in all_experiments()]
+    assert keys.index("two_way_match") < keys.index("cell_repair")
+
+
+def test_unknown_experiment_goes_last():
+    """순서 목록에 없는 실험은 맨 뒤로."""
+    from docstruct.experiments.registry import _RUN_ORDER, _run_order
+
+    assert _run_order("nosuch")[0] == len(_RUN_ORDER)
+    assert _run_order("two_way_match")[0] == 0

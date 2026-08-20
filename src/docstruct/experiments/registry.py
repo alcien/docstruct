@@ -87,6 +87,22 @@ def register(experiment: Experiment) -> Experiment:
     return experiment
 
 
+#: 실행 순서. 뒤엣것이 앞엣것의 결과를 읽는다.
+#: 여기 없는 실험은 이름순으로 맨 뒤에 붙는다.
+_RUN_ORDER = ("two_way_match", "otsl_diff", "cell_repair")
+
+
+def _run_order(key: str) -> tuple[int, str]:
+    """실행 순서 열쇠.
+
+    입력: key — 실험 키
+    출력: (순번, 키). 목록에 없으면 맨 뒤
+    """
+    if key in _RUN_ORDER:
+        return (_RUN_ORDER.index(key), key)
+    return (len(_RUN_ORDER), key)
+
+
 def all_experiments() -> list[Experiment]:
     """등록된 실험 전부 (키 순).
 
@@ -94,7 +110,11 @@ def all_experiments() -> list[Experiment]:
     출력: Experiment 목록
     """
     _load_all()
-    return [_REGISTRY[k] for k in sorted(_REGISTRY)]
+    # **먼저 돌아야 하는 것을 앞에 둔다.** 이름순으로만 두었더니
+    # `cell_repair` 가 `two_way_match` 보다 먼저 돌아, 아직 채워지지 않은
+    # `match_disagreements` 를 읽고 행 분리를 건너뛰었다 — 25표가 12표로
+    # 줄었다.
+    return [_REGISTRY[k] for k in sorted(_REGISTRY, key=_run_order)]
 
 
 def enabled_experiments() -> list[Experiment]:
