@@ -646,7 +646,19 @@ def build_document(
         if not ocr_targets:
             _log.info("텍스트 레이어가 온전해 한국어 OCR 을 건너뜁니다")
 
-    if fmt == "pdf" and (render_pages or ocr_targets):
+    # 좌표를 쓰는 실험은 렌더 이미지가 있어야 돈다. 켜져 있으면 렌더를
+    # 함께 요구한다 — 그러지 않으면 조용히 0건이 나와 "왜 안 되지" 를
+    # 겪는다.
+    exp_needs_render = False
+    if fmt == "pdf":
+        from docstruct.experiments import enabled_experiments
+
+        exp_needs_render = any(
+            e.key in ("grid_refine", "two_way_match")
+            for e in enabled_experiments()
+        )
+
+    if fmt == "pdf" and (render_pages or ocr_targets or exp_needs_render):
         # out_dir 이 없으면 임시 작업 폴더에 렌더한다. 여기서 건너뛰면
         # 재추출이 근거 이미지를 못 찾아 조용히 무력화된다.
         #
@@ -655,7 +667,8 @@ def build_document(
         pages_dir = (out_path / "pages") if out_path else (scratch / "pages")  # type: ignore[operator]
         _t = time.perf_counter()
         _render_page_images(resolved, pages, pages_dir, scale=render_scale,
-                            all_pages=bool(ocr_targets), only=ocr_targets)
+                            all_pages=bool(ocr_targets) or exp_needs_render,
+                            only=None if exp_needs_render else ocr_targets)
         timings[STAGE_RENDER] = time.perf_counter() - _t
 
     if fmt == "pdf" and ocr_targets:

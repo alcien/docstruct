@@ -24,14 +24,19 @@ if [[ -z "$PDF" || ! -f "$PDF" ]]; then
   exit 1
 fi
 
-# 실험 키 목록. `docstruct.experiments.report` 와 같아야 한다.
-EXPERIMENTS=(
-  split_merge
-  grid_refine
-  two_way_match
-  grid_consensus
-  otsl_diff
+# 실험 키 목록을 코드에서 가져온다. 손으로 적으면 실험이 늘거나 폐기될 때
+# 어긋난다.
+mapfile -t EXPERIMENTS < <(
+  python3 -c "
+from docstruct.experiments import all_experiments
+for e in all_experiments():
+    print(e.key)
+" 2>/dev/null
 )
+if [[ ${#EXPERIMENTS[@]} -eq 0 ]]; then
+  echo "실험 목록을 읽지 못했습니다. docstruct 설치를 확인하세요." >&2
+  exit 1
+fi
 
 # 공통 설정. LLM 을 끄고 순수 파서 결과만 견준다 — LLM 이 끼면 어느 쪽이
 # 바꾼 것인지 구분되지 않는다.
@@ -69,15 +74,12 @@ run_one() {
   fi
 
   echo "── $name"
-  # 모든 실험을 끄고 시작한다. 이전 실행의 환경변수가 남으면 결과가 섞인다.
-  for e in "${EXPERIMENTS[@]}"; do
-    unset "DOCSTRUCT_EXP_$(echo "$e" | tr '[:lower:]' '[:upper:]')"
-  done
-  if [[ -n "$key" ]]; then
-    export "DOCSTRUCT_EXP_$(echo "$key" | tr '[:lower:]' '[:upper:]')=true"
-  fi
+  # `--exp` 로 켠다. 환경변수를 직접 다루지 않으므로 이전 실행이 남을
+  # 걱정이 없다.
+  local args=("${COMMON_ARGS[@]}")
+  [[ -n "$key" ]] && args+=(--exp "$key")
 
-  if ! docstruct "$PDF" -o "$dir" "${COMMON_ARGS[@]}" >"$OUT/$name.log" 2>&1; then
+  if ! docstruct "$PDF" -o "$dir" "${args[@]}" >"$OUT/$name.log" 2>&1; then
     echo "     실패 — $OUT/$name.log 를 보세요"
     return 1
   fi

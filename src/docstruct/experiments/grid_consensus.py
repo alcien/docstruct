@@ -86,6 +86,30 @@ def consensus_edges(groups: list[list[float]]) -> list[float]:
     return [statistics.median(col) for col in zip(*same)]
 
 
+def _header_key(table) -> tuple:
+    """이 표의 서식을 나타내는 열쇠.
+
+    입력: table — TableInfo
+    출력: 헤더 첫 낱말들로 만든 튜플
+    비고:
+        **열 개수만으로 묶으면 안 된다.** 서식이 달라도 열 수가 같으면 한
+        그룹이 되어, 서로 다른 표의 열 위치를 견주게 된다 — 실측(국세청
+        성과보고서)에서 `연도/목표/실적` 표와 `프로그램명/목표` 표가 함께
+        묶여 61개 중 24개(39%)가 어긋났다고 나왔다.
+
+        헤더 내용이 같아야 같은 서식이다.
+    """
+    rows = [
+        line for line in (getattr(table, "markdown", "") or "").splitlines()
+        if line.startswith("|") and set(line.strip()) - set("|-: ")
+    ]
+    if not rows:
+        return ()
+    cells = [c.strip().strip("*") for c in rows[0].strip("|").split("|")]
+    filled = [c for c in cells if c]
+    return tuple(filled[:3])
+
+
 def run(pages: list[PageContent], **_kwargs) -> int:
     """표준 격자와 어긋난 표를 표시한다.
 
@@ -99,7 +123,12 @@ def run(pages: list[PageContent], **_kwargs) -> int:
             edges = _column_edges(item) if item is not None else None
             if not edges:
                 continue
-            buckets[(len(edges),)].append((page, table, edges))
+            # 열 개수 **와 헤더 내용**으로 묶는다. 개수만 보면 서로 다른
+            # 표가 한 그룹이 된다.
+            key = _header_key(table)
+            if not key:
+                continue
+            buckets[(len(edges), key)].append((page, table, edges))
 
     tolerance = _tolerance()
     marked = 0

@@ -6758,3 +6758,135 @@ def test_experiments_not_in_settings():
     fields = {f.name for f in dataclasses.fields(Settings)}
     for exp in all_experiments():
         assert exp.key not in fields, f"{exp.key} 가 Settings 에 있습니다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.38 — 실험 ④ 가 서로 다른 표를 묶던 문제
+#
+# 배경: 국세청 성과보고서(79쪽, 표 61개)로 실험을 처음 돌렸다. ④(서식
+#       다수결)가 **24건(39%)** 을 잡았는데, 살펴보니 대부분 오탐이었다.
+#
+#           table_1  4행 7열  연도 / 목표 / 실적
+#           table_4  12행 3열 프로그램명 / 프로그램 목표
+#
+#       서식이 전혀 다른데 한 그룹으로 묶여 열 위치를 견주고 있었다.
+#       **열 개수만으로 묶었기 때문**이다.
+#
+#       헤더 내용을 함께 봐야 같은 서식이다. 고친 뒤 6묶음 31개로 좁혀졌다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_consensus_groups_by_header_not_only_width():
+    """열 개수가 같아도 헤더가 다르면 다른 서식이다."""
+    from docstruct.experiments.grid_consensus import _header_key
+    from docstruct.models import TableInfo
+
+    years = TableInfo(id="t1", table_num=1, placeholder="",
+                      markdown="| 연 도 | 2020 | 2021 |\n|---|---|---|\n"
+                               "| 목표 | - | 13,303 |")
+    program = TableInfo(id="t2", table_num=2, placeholder="",
+                        markdown="| 프로그램명 | 목표 | 지표 |\n|---|---|---|\n"
+                                 "| 전략목표 Ⅰ | | |")
+
+    assert _header_key(years) != _header_key(program)
+    assert _header_key(years)[0] == "연 도"
+
+
+def test_consensus_header_key_ignores_emphasis():
+    """굵게 표시(`**`)는 서식 판단에 영향을 주지 않는다."""
+    from docstruct.experiments.grid_consensus import _header_key
+    from docstruct.models import TableInfo
+
+    plain = TableInfo(id="t1", table_num=1, placeholder="",
+                      markdown="| 구분 | 값 |\n|---|---|\n| 가 | 1 |")
+    bold = TableInfo(id="t2", table_num=2, placeholder="",
+                     markdown="| **구분** | **값** |\n|---|---|\n| 가 | 1 |")
+    assert _header_key(plain) == _header_key(bold)
+
+
+def test_consensus_skips_tables_without_header():
+    """헤더를 읽을 수 없으면 견주지 않는다."""
+    from docstruct.experiments.grid_consensus import _header_key
+    from docstruct.models import TableInfo
+
+    empty = TableInfo(id="t1", table_num=1, placeholder="", markdown="")
+    assert _header_key(empty) == ()
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.39 — 실험 전수 검토에서 찾은 버그 둘
+#
+# 국세청 성과보고서 실행 결과로 실험 다섯을 다시 봤다.
+#
+# **① ② 가 숫자 쌍을 병합으로 봤다**
+#
+#       table_51 · 10곳 · [['회 계', '11'], ['11', '11'], ['계 정', '0']]
+#
+#   길이만 보고 판정해 회계 코드가 나열된 표에서 10곳씩 잡혔다. 숫자는
+#   원래 칸마다 따로 들어가는 값이지 갈린 낱말이 아니다.
+#
+# **② ①③ 이 렌더 없이는 돌 수 없는데 렌더를 요구하지 않았다**
+#
+#   `page_image_path` 가 없으면 조용히 0건을 낸다. 켜져 있으면 렌더를
+#   함께 요구하도록 고쳤다.
+#
+# ⑤(OTSL)는 정상이었다 — 61개 표에서 `C 4,085 · L 349 · U 289 · NL 541`
+# 로 병합이 제대로 표현됐다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_split_merge_ignores_number_pairs():
+    """숫자 쌍은 갈린 낱말이 아니다.
+
+    실측: 회계 코드 표에서 `['11', '11']` 이 10곳씩 잡혔다.
+    """
+    from docstruct.experiments.split_merge import find_split_merges
+    from tests.table_fixtures import make_cell, make_table
+
+    item = make_table(1, 3, [
+        make_cell(0, 0, "11", box=(100, 100, 115, 112)),
+        make_cell(0, 1, "11", box=(117, 100, 132, 112)),
+        make_cell(0, 2, "0", box=(140, 100, 160, 112)),
+    ])
+    assert find_split_merges(item) == []
+
+
+def test_split_merge_still_catches_hangul():
+    """한글이 갈린 것은 그대로 잡는다 (회귀 확인)."""
+    from docstruct.experiments.split_merge import find_split_merges
+    from tests.table_fixtures import make_cell, make_table
+
+    item = make_table(1, 3, [
+        make_cell(0, 0, "구", box=(100, 100, 115, 112)),
+        make_cell(0, 1, "분", box=(117, 100, 132, 112)),
+        make_cell(0, 2, "지적사항", box=(140, 100, 220, 112)),
+    ])
+    assert [h["texts"] for h in find_split_merges(item)] == [["구", "분"]]
+
+
+def test_coordinate_experiments_request_render():
+    """좌표를 쓰는 실험이 켜지면 렌더를 요구한다.
+
+    렌더 이미지가 없으면 조용히 0건이 나와 원인을 알기 어렵다.
+    """
+    import inspect
+
+    from docstruct import pipeline
+
+    source = inspect.getsource(pipeline.build_document)
+    assert "exp_needs_render" in source
+    assert "grid_refine" in source and "two_way_match" in source
+
+
+def test_otsl_expresses_merge_tokens():
+    """OTSL 이 병합을 토큰으로 낸다 (회귀 확인).
+
+    실측(국세청 성과보고서 61개 표): C 4,085 · L 349 · U 289 · NL 541.
+    """
+    from docstruct.experiments.otsl_diff import to_otsl
+
+    merged = to_otsl([{"row": 0, "col": 0, "rowspan": 1, "colspan": 3},
+                      {"row": 1, "col": 0, "rowspan": 2, "colspan": 1},
+                      {"row": 1, "col": 1, "rowspan": 1, "colspan": 1},
+                      {"row": 1, "col": 2, "rowspan": 1, "colspan": 1},
+                      {"row": 2, "col": 1, "rowspan": 1, "colspan": 1},
+                      {"row": 2, "col": 2, "rowspan": 1, "colspan": 1}], 3, 3)
+    assert "L" in merged and "U" in merged

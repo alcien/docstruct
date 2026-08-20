@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from docstruct.experiments.registry import Experiment, register
 from docstruct.models import PageContent
@@ -48,6 +49,10 @@ ROW_TOLERANCE = 3.0
 #: 맞닿았다고 볼 가로 간격 (포인트). 글자 폭보다 좁아야 한다.
 GAP_LIMIT_ENV = "DOCSTRUCT_EXP_SPLIT_GAP"
 DEFAULT_GAP_LIMIT = 6.0
+
+#: 한글이 든 셀만 본다. 숫자 쌍(`11` / `11`)은 갈린 낱말이 아니라 원래
+#: 칸마다 따로 있는 값이다.
+_HANGUL_RE = re.compile(r"[가-힣]")
 
 #: 한 낱말이 갈린 것으로 볼 최대 글자 수. `구` / `분` 처럼 짧아야 한다.
 SHORT_ENV = "DOCSTRUCT_EXP_SPLIT_MAXLEN"
@@ -112,7 +117,13 @@ def find_split_merges(item) -> list[dict]:
             b = (getattr(right, "text", "") or "").strip()
             if not a or not b:
                 continue
-            # 한 낱말이 갈린 모습 — 양쪽 다 아주 짧다
+            # 한 낱말이 갈린 모습 — 양쪽 다 아주 짧고 **한글**이다.
+            #
+            # 길이만 보면 숫자 쌍(`11` / `11`)이 걸린다. 실측(국세청
+            # 성과보고서)에서 회계 코드가 나열된 표에서 10곳씩 잡혔다.
+            # 숫자는 원래 칸마다 따로 들어가는 값이지 갈린 낱말이 아니다.
+            if not (_HANGUL_RE.search(a) and _HANGUL_RE.search(b)):
+                continue
             if len(a) <= max_len and len(b) <= max_len:
                 found.append({
                     "row": row,
