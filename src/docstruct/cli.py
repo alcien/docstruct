@@ -111,6 +111,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="PDF 페이지 PNG 렌더 생략 (표 평가 정확도 하락)",
     )
     render.add_argument(
+        "--render",
+        action="store_true",
+        help="표가 없는 쪽까지 전부 렌더 (기본은 표가 있는 쪽만)",
+    )
+    render.add_argument(
         "--scale", type=float, default=2.0, help="페이지 렌더 배율 (기본: 2.0)"
     )
 
@@ -200,6 +205,7 @@ def _process(src: Path, out_root: Path, args) -> None:
         fill_tables=use_llm and not args.no_fill,
         fill_all=args.fill_all,
         render_pages=not args.no_render,
+        render_all=args.render,
         out_dir=out_dir,
         render_scale=args.scale,
         progress=getattr(args, "progress", False),

@@ -6862,18 +6862,18 @@ def test_split_merge_still_catches_hangul():
     assert [h["texts"] for h in find_split_merges(item)] == [["구", "분"]]
 
 
-def test_coordinate_experiments_request_render():
-    """좌표를 쓰는 실험이 켜지면 렌더를 요구한다.
+def test_coordinate_experiments_need_no_render():
+    """좌표 실험이 렌더를 요구하지 않는다.
 
-    렌더 이미지가 없으면 조용히 0건이 나와 원인을 알기 어렵다.
+    0.3.41 에서 텍스트 좌표를 직접 읽도록 바꿨다 — 렌더는 스캔본 OCR
+    에만 필요하다.
     """
     import inspect
 
     from docstruct import pipeline
 
     source = inspect.getsource(pipeline.build_document)
-    assert "exp_needs_render" in source
-    assert "grid_refine" in source and "two_way_match" in source
+    assert "exp_needs_render" not in source
 
 
 def test_otsl_expresses_merge_tokens():
@@ -6890,3 +6890,69 @@ def test_otsl_expresses_merge_tokens():
                       {"row": 2, "col": 1, "rowspan": 1, "colspan": 1},
                       {"row": 2, "col": 2, "rowspan": 1, "colspan": 1}], 3, 3)
     assert "L" in merged and "U" in merged
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.41 — ①③ 이 렌더 없이 돌게
+#
+# 배경: ①③ 이 OCR 조각 좌표를 써서 렌더 이미지를 요구했다. 그런데
+#       **텍스트 PDF 는 글자가 좌표로 들어 있다.** 그것을 렌더한 뒤 OCR 로
+#       다시 읽는 것은
+#
+#           · 79쪽 문서에서 전 페이지 렌더가 필요하고
+#           · OCR 오차가 더해지며
+#           · 원본보다 정확할 수 없다
+#
+#       `converters/pdf/text_runs.py` 로 글자 좌표를 직접 읽는다. 스캔본은
+#       텍스트 레이어가 없어 빈 목록이 나오고, 그때는 실험이 건너뛴다.
+#
+#       그리고 `--render` 를 더했다 — 표가 없는 쪽까지 렌더할 때 쓴다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_text_runs_read_without_render(tmp_path):
+    """렌더 없이 글자 좌표를 읽는다."""
+    pytest.importorskip("pypdfium2")
+    import pypdfium2 as pdfium
+
+    from docstruct.converters.pdf.text_runs import read_text_runs
+
+    blank = tmp_path / "empty.pdf"
+    document = pdfium.PdfDocument.new()
+    document.new_page(200, 300)
+    document.save(str(blank))
+    document.close()
+
+    # 글자가 없으면 빈 목록 — 스캔본이 이 경우다
+    assert read_text_runs(blank, 1) == []
+
+
+def test_text_runs_coordinates_are_topleft():
+    """좌표가 TOPLEFT 다.
+
+    표 bbox 와 같은 기준이라 바로 견줄 수 있다.
+    """
+    from docstruct.converters.pdf.text_runs import TextRun
+
+    run = TextRun(text="가", left=10, top=20, right=30, bottom=40)
+    assert run.top < run.bottom          # 아래로 갈수록 커진다
+
+
+def test_coordinate_experiments_use_text_runs():
+    """①③ 이 텍스트 좌표를 쓴다."""
+    import inspect
+
+    from docstruct.experiments import grid_refine, two_way_match
+
+    for module in (grid_refine, two_way_match):
+        source = inspect.getsource(module.run)
+        assert "read_text_runs" in source
+        assert "read_image" not in source        # OCR 을 쓰지 않는다
+
+
+def test_render_all_option_exists():
+    """`--render` 로 전 페이지를 렌더할 수 있다."""
+    import inspect
+
+    from docstruct.pipeline import build_document
+
+    assert "render_all" in inspect.signature(build_document).parameters

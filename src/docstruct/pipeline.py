@@ -552,6 +552,7 @@ def build_document(
     fill_all: bool = False,
     read_pictures: bool = True,
     render_pages: bool = True,
+    render_all: bool = False,
     out_dir: str | Path | None = None,
     render_scale: float = 2.0,
     source_filename: str | None = None,
@@ -568,6 +569,7 @@ def build_document(
         read_pictures 텍스트 레이어가 없는 그림을 VLM 으로 읽을지
                       (캡처 이미지로 붙인 표·조직도 복원)
         render_pages  페이지 PNG 렌더 여부 (PDF 만 해당)
+        render_all    표가 없는 쪽까지 전부 렌더할지
         render_scale  렌더 배율
         progress      단계별 진행 막대 표시 여부
     출력:
@@ -646,19 +648,7 @@ def build_document(
         if not ocr_targets:
             _log.info("텍스트 레이어가 온전해 한국어 OCR 을 건너뜁니다")
 
-    # 좌표를 쓰는 실험은 렌더 이미지가 있어야 돈다. 켜져 있으면 렌더를
-    # 함께 요구한다 — 그러지 않으면 조용히 0건이 나와 "왜 안 되지" 를
-    # 겪는다.
-    exp_needs_render = False
-    if fmt == "pdf":
-        from docstruct.experiments import enabled_experiments
-
-        exp_needs_render = any(
-            e.key in ("grid_refine", "two_way_match")
-            for e in enabled_experiments()
-        )
-
-    if fmt == "pdf" and (render_pages or ocr_targets or exp_needs_render):
+    if fmt == "pdf" and (render_pages or ocr_targets):
         # out_dir 이 없으면 임시 작업 폴더에 렌더한다. 여기서 건너뛰면
         # 재추출이 근거 이미지를 못 찾아 조용히 무력화된다.
         #
@@ -667,8 +657,8 @@ def build_document(
         pages_dir = (out_path / "pages") if out_path else (scratch / "pages")  # type: ignore[operator]
         _t = time.perf_counter()
         _render_page_images(resolved, pages, pages_dir, scale=render_scale,
-                            all_pages=bool(ocr_targets) or exp_needs_render,
-                            only=None if exp_needs_render else ocr_targets)
+                            all_pages=bool(ocr_targets) or render_all,
+                            only=None if render_all else ocr_targets)
         timings[STAGE_RENDER] = time.perf_counter() - _t
 
     if fmt == "pdf" and ocr_targets:
@@ -722,7 +712,8 @@ def build_document(
         if fmt not in experiment.formats or experiment.run is None:
             continue
         try:
-            hits = experiment.run(pages, scale=render_scale)
+            hits = experiment.run(pages, scale=render_scale,
+                                  pdf_path=resolved)
         except Exception as exc:                 # noqa: BLE001
             _log.warning("실험 %s 실패: %s", experiment.key, exc)
             continue

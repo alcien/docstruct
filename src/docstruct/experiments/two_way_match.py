@@ -70,23 +70,20 @@ def run(pages: list[PageContent], *, scale: float = 2.0, **_kwargs) -> int:
     입력: pages — 페이지 목록, scale — 렌더 배율
     출력: 표시한 표 수
     """
-    from pathlib import Path
+    from docstruct.converters.pdf.cell_match import Box
+    from docstruct.converters.pdf.text_runs import read_text_runs
 
-    from docstruct.converters.pdf.cell_match import Box, box_of, from_pixels
-    from docstruct.converters.pdf.rapidocr_ko import read_image
-
+    source = _kwargs.get("pdf_path")
     marked = 0
     for page in pages:
-        image = page.page_image_path
-        if not image or not page.tables or not Path(image).is_file():
+        if not page.tables or not isinstance(page.page_no, int):
             continue
-        try:
-            lines = read_image(image)
-        except Exception as exc:                 # noqa: BLE001
-            _log.warning("%s쪽 조각을 읽지 못했습니다: %s", page.page_no, exc)
+        # PDF 텍스트 좌표를 직접 읽는다 — 렌더·OCR 이 필요 없다.
+        runs = read_text_runs(source, page.page_no) if source else []
+        if not runs:
             continue
-        fragments = [(from_pixels(box_of(ln.box), scale), ln.text)
-                     for ln in lines if ln.box]
+        fragments = [(Box(r.left, r.top, r.right, r.bottom), r.text)
+                     for r in runs]
 
         for table in page.tables:
             item = getattr(table, "source_item", None)

@@ -77,24 +77,19 @@ def run(pages: list[PageContent], *, scale: float = 2.0, **_kwargs) -> int:
         **격자를 바꾸지 않는다.** 얼마나 어긋났는지만 기록한다 — 실제 조정은
         검증 뒤에 붙인다.
     """
-    from pathlib import Path
+    from docstruct.converters.pdf.text_runs import read_text_runs
 
-    from docstruct.converters.pdf.cell_match import box_of, from_pixels
-    from docstruct.converters.pdf.rapidocr_ko import read_image
-
+    source = _kwargs.get("pdf_path")
     marked = 0
     for page in pages:
-        image = page.page_image_path
-        if not image or not page.tables or not Path(image).is_file():
+        if not page.tables or not isinstance(page.page_no, int):
             continue
-        try:
-            lines = read_image(image)
-        except Exception as exc:                 # noqa: BLE001
-            _log.warning("%s쪽 조각을 읽지 못했습니다: %s", page.page_no, exc)
+        # **PDF 텍스트 좌표를 직접 읽는다.** 렌더 + OCR 을 거치면 79쪽
+        # 전체를 그려야 하고 오차만 더해진다 — 원본보다 정확할 수 없다.
+        runs = read_text_runs(source, page.page_no) if source else []
+        if not runs:
             continue
-        observed = sorted(
-            {round(from_pixels(box_of(ln.box), scale).left, 1) for ln in lines if ln.box}
-        )
+        observed = sorted({round(r.left, 1) for r in runs})
 
         for table in page.tables:
             item = getattr(table, "source_item", None)
