@@ -5635,8 +5635,8 @@ def test_experiments_registered():
     from docstruct.experiments import all_experiments
 
     keys = {e.key for e in all_experiments()}
-    assert keys == {"split_merge", "grid_refine", "two_way_match",
-                    "grid_consensus", "otsl_diff"}
+    # ①②④ 는 0.3.48 에서 폐기했다 — 검출이 없거나 오탐이었다.
+    assert keys == {"two_way_match", "otsl_diff", "cell_repair"}
 
 
 def test_experiments_off_by_default():
@@ -5653,8 +5653,8 @@ def test_experiment_toggle(monkeypatch):
     """환경변수로 켜고 끌 수 있다."""
     from docstruct.experiments import enabled_experiments
 
-    monkeypatch.setenv("DOCSTRUCT_EXP_SPLIT_MERGE", "true")
-    assert [e.key for e in enabled_experiments()] == ["split_merge"]
+    monkeypatch.setenv("DOCSTRUCT_EXP_TWO_WAY_MATCH", "true")
+    assert [e.key for e in enabled_experiments()] == ["two_way_match"]
 
 
 def test_experiments_document_themselves():
@@ -5675,54 +5675,6 @@ def _split_cell(row, col, text, box, *, col_span=1):
     from tests.table_fixtures import make_cell
 
     return make_cell(row, col, text, col_span=col_span, box=box)
-
-
-def test_split_merge_detects_broken_header():
-    """세로 병합이 좌우로 갈린 모습을 잡는다.
-
-    실측: `구분` → `구` / `분` 으로 쪼개져 양쪽 열에 붙었다.
-    """
-    from docstruct.experiments.split_merge import find_split_merges
-    from tests.table_fixtures import make_table
-
-    item = make_table(1, 3, [_split_cell(0, 0, "구", (100, 100, 115, 112)),
-                             _split_cell(0, 1, "분", (117, 100, 132, 112)),
-                             _split_cell(0, 2, "총 계 (A+B)", (140, 100, 220, 112))])
-
-    found = find_split_merges(item)
-    assert len(found) == 1
-    assert found[0]["texts"] == ["구", "분"]
-
-
-def test_split_merge_ignores_normal_table():
-    """정상 표에서는 아무것도 잡지 않는다."""
-    from docstruct.experiments.split_merge import find_split_merges
-    from tests.table_fixtures import make_table
-
-    item = make_table(1, 2, [_split_cell(0, 0, "구분", (100, 100, 140, 112)),
-                             _split_cell(0, 1, "총계", (150, 100, 200, 112))])
-    assert find_split_merges(item) == []
-
-
-def test_grid_refine_nudges_only_nearby():
-    """경계를 한도 안에서만 옮긴다.
-
-    멀리 있는 관측값은 다른 열의 경계다.
-    """
-    from docstruct.experiments.grid_refine import refine_edges
-
-    assert refine_edges([100, 150, 200], [98, 152, 199]) == [98, 152, 199]
-    assert refine_edges([100, 150], [98, 300]) == [98, 150]
-
-
-def test_grid_consensus_finds_standard():
-    """같은 서식 표들의 중앙값으로 표준 격자를 만든다."""
-    from docstruct.experiments.grid_consensus import consensus_edges
-
-    standard = consensus_edges([[100, 150, 200], [101, 149, 201],
-                                [100, 151, 199], [130, 150, 200]])
-    assert abs(standard[0] - 100.5) < 1
-    assert abs(standard[1] - 150) < 1
 
 
 def test_two_way_match_flags_crowding():
@@ -6008,8 +5960,7 @@ def test_table_fields_documented_for_bridge():
         "assessed",
         "inherited_header", "odd_columns", "structure_ratio",
         # 실험 (docstruct.experiments)
-        "split_merge_hints", "match_disagreements", "edge_drift",
-        "consensus_drift", "otsl",
+        "match_disagreements", "otsl", "cell_repairs",
     }
     actual = set(TableInfo(id="t", table_num=1, placeholder="",
                            markdown="| a |").to_dict())
@@ -6288,12 +6239,9 @@ def test_experiment_fields_in_table_output():
     from docstruct.models import TableInfo
 
     table = TableInfo(id="t1", table_num=1, placeholder="", markdown="| a |",
-                      split_merge_hints=[{"row": 0, "texts": ["구", "분"]}],
-                      match_disagreements=3, edge_drift=2.5,
-                      consensus_drift=1.2, otsl="C L NL")
+                      match_disagreements=3, otsl="C L NL")
     data = table.to_dict()
-    for key in ("split_merge_hints", "match_disagreements", "edge_drift",
-                "consensus_drift", "otsl"):
+    for key in ("match_disagreements", "otsl"):
         assert key in data, f"{key} 가 빠졌습니다"
     json.dumps(data, ensure_ascii=False)
 
@@ -6721,12 +6669,12 @@ def test_exp_flag_sets_env(monkeypatch):
     from docstruct.cli import _enable_experiments
     from docstruct.experiments import enabled_experiments
 
-    for name in ("DOCSTRUCT_EXP_SPLIT_MERGE", "DOCSTRUCT_EXP_OTSL_DIFF"):
+    for name in ("DOCSTRUCT_EXP_TWO_WAY_MATCH", "DOCSTRUCT_EXP_OTSL_DIFF"):
         monkeypatch.delenv(name, raising=False)
 
-    assert _enable_experiments("split_merge,otsl_diff") == [
-        "split_merge", "otsl_diff"]
-    assert {e.key for e in enabled_experiments()} == {"split_merge", "otsl_diff"}
+    assert _enable_experiments("two_way_match,otsl_diff") == [
+        "two_way_match", "otsl_diff"]
+    assert {e.key for e in enabled_experiments()} == {"two_way_match", "otsl_diff"}
 
 
 def test_exp_flag_rejects_unknown_key(capsys, monkeypatch):
@@ -6743,7 +6691,7 @@ def test_exp_list_prints_catalog(capsys):
 
     assert _enable_experiments("list") is None
     out = capsys.readouterr().out
-    assert "split_merge" in out and "grid_consensus" in out
+    assert "two_way_match" in out and "otsl_diff" in out
 
 
 def test_experiments_not_in_settings():
@@ -6776,43 +6724,6 @@ def test_experiments_not_in_settings():
 #       헤더 내용을 함께 봐야 같은 서식이다. 고친 뒤 6묶음 31개로 좁혀졌다.
 # ────────────────────────────────────────────────────────────────────
 
-def test_consensus_groups_by_header_not_only_width():
-    """열 개수가 같아도 헤더가 다르면 다른 서식이다."""
-    from docstruct.experiments.grid_consensus import _header_key
-    from docstruct.models import TableInfo
-
-    years = TableInfo(id="t1", table_num=1, placeholder="",
-                      markdown="| 연 도 | 2020 | 2021 |\n|---|---|---|\n"
-                               "| 목표 | - | 13,303 |")
-    program = TableInfo(id="t2", table_num=2, placeholder="",
-                        markdown="| 프로그램명 | 목표 | 지표 |\n|---|---|---|\n"
-                                 "| 전략목표 Ⅰ | | |")
-
-    assert _header_key(years) != _header_key(program)
-    assert _header_key(years)[0] == "연 도"
-
-
-def test_consensus_header_key_ignores_emphasis():
-    """굵게 표시(`**`)는 서식 판단에 영향을 주지 않는다."""
-    from docstruct.experiments.grid_consensus import _header_key
-    from docstruct.models import TableInfo
-
-    plain = TableInfo(id="t1", table_num=1, placeholder="",
-                      markdown="| 구분 | 값 |\n|---|---|\n| 가 | 1 |")
-    bold = TableInfo(id="t2", table_num=2, placeholder="",
-                     markdown="| **구분** | **값** |\n|---|---|\n| 가 | 1 |")
-    assert _header_key(plain) == _header_key(bold)
-
-
-def test_consensus_skips_tables_without_header():
-    """헤더를 읽을 수 없으면 견주지 않는다."""
-    from docstruct.experiments.grid_consensus import _header_key
-    from docstruct.models import TableInfo
-
-    empty = TableInfo(id="t1", table_num=1, placeholder="", markdown="")
-    assert _header_key(empty) == ()
-
-
 # ────────────────────────────────────────────────────────────────────
 # 0.3.39 — 실험 전수 검토에서 찾은 버그 둘
 #
@@ -6833,35 +6744,6 @@ def test_consensus_skips_tables_without_header():
 # ⑤(OTSL)는 정상이었다 — 61개 표에서 `C 4,085 · L 349 · U 289 · NL 541`
 # 로 병합이 제대로 표현됐다.
 # ────────────────────────────────────────────────────────────────────
-
-def test_split_merge_ignores_number_pairs():
-    """숫자 쌍은 갈린 낱말이 아니다.
-
-    실측: 회계 코드 표에서 `['11', '11']` 이 10곳씩 잡혔다.
-    """
-    from docstruct.experiments.split_merge import find_split_merges
-    from tests.table_fixtures import make_cell, make_table
-
-    item = make_table(1, 3, [
-        make_cell(0, 0, "11", box=(100, 100, 115, 112)),
-        make_cell(0, 1, "11", box=(117, 100, 132, 112)),
-        make_cell(0, 2, "0", box=(140, 100, 160, 112)),
-    ])
-    assert find_split_merges(item) == []
-
-
-def test_split_merge_still_catches_hangul():
-    """한글이 갈린 것은 그대로 잡는다 (회귀 확인)."""
-    from docstruct.experiments.split_merge import find_split_merges
-    from tests.table_fixtures import make_cell, make_table
-
-    item = make_table(1, 3, [
-        make_cell(0, 0, "구", box=(100, 100, 115, 112)),
-        make_cell(0, 1, "분", box=(117, 100, 132, 112)),
-        make_cell(0, 2, "지적사항", box=(140, 100, 220, 112)),
-    ])
-    assert [h["texts"] for h in find_split_merges(item)] == [["구", "분"]]
-
 
 def test_coordinate_experiments_need_no_render():
     """좌표 실험이 렌더를 요구하지 않는다.
@@ -6942,12 +6824,11 @@ def test_coordinate_experiments_use_text_runs():
     """①③ 이 텍스트 좌표를 쓴다."""
     import inspect
 
-    from docstruct.experiments import grid_refine, two_way_match
+    from docstruct.experiments import two_way_match
 
-    for module in (grid_refine, two_way_match):
-        source = inspect.getsource(module.run)
-        assert "read_text_runs" in source
-        assert "read_image" not in source        # OCR 을 쓰지 않는다
+    source = inspect.getsource(two_way_match.run)
+    assert "read_text_runs" in source
+    assert "read_image" not in source            # OCR 을 쓰지 않는다
 
 
 def test_render_all_option_exists():
@@ -6976,14 +6857,6 @@ def test_render_all_option_exists():
 #            정상인데 그것을 불일치로 셌다. **셀 경계를 걸치는** 낱말만
 #            봐야 "텍스트가 옆 칸으로 갔다" 는 신호가 된다.
 # ────────────────────────────────────────────────────────────────────
-
-def test_grid_refine_ignores_cell_padding():
-    """셀 안쪽 여백을 어긋남으로 보지 않는다."""
-    from docstruct.experiments.grid_refine import MIN_MEANINGFUL_DRIFT
-
-    # 실측에서 정상 표들이 0.9~4.0pt 였다
-    assert MIN_MEANINGFUL_DRIFT >= 4.0
-
 
 def test_two_way_match_counts_straddling_only():
     """셀 하나에 담기는 낱말은 세지 않는다.
@@ -7030,28 +6903,6 @@ def test_two_way_match_flags_real_straddle():
 #       비율 기준을 넣으니 110 → 13건. 남은 것은 전부 108pt(열 폭의 1.6배)로,
 #       한 열이 밀린 모양이다.
 # ────────────────────────────────────────────────────────────────────
-
-def test_consensus_uses_relative_drift():
-    """어긋남을 표 폭에 견준다.
-
-    고정 pt 로 재면 넓은 표가 불리하다.
-    """
-    import inspect
-
-    from docstruct.experiments import grid_consensus
-
-    source = inspect.getsource(grid_consensus.run)
-    assert "MIN_DRIFT_RATIO" in source
-    assert "column" in source
-
-
-def test_consensus_drift_ratio_documented():
-    """열 폭 대비 기준이 있다."""
-    from docstruct.experiments.grid_consensus import MIN_DRIFT_RATIO
-
-    # 열 하나를 통째로 밀어낼 정도라야 한다
-    assert MIN_DRIFT_RATIO >= 1.0
-
 
 # ────────────────────────────────────────────────────────────────────
 # 0.3.44 — 표 유형 판단
@@ -7301,3 +7152,252 @@ def test_openai_fallback_url_defined():
 
     assert "openai.com" in _BUILTIN_DEFAULTS["DOCLING_TABLE_API_FALLBACK_URL"]
     assert _BUILTIN_DEFAULTS["DOCLING_TABLE_API_FALLBACK_MODEL"]
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.49 — 한 칸에 뭉친 값 되돌리기 (실험 ⑦)
+#
+# 배경: ③(two_way_match)이 짚은 35건을 뜯어보니 셋으로 갈렸다.
+#
+#       글자 사이 공백  18건  `적 및 목표치 구분` — **원본 조판, 손상 아님**
+#       코드+글자 뭉침  12건  `50771 ①자원봉사 만족도(점)`
+#       숫자 갈림        4건  `1,150,0 00`
+#
+#       실제 손상은 16건(5%)이고, 그중 코드 뭉침은 **규칙으로 되돌릴 수
+#       있다** — 다섯 자리 숫자와 `①` 로 시작하는 이름은 원래 다른 칸이다.
+#
+#       처음에 열 수 다수결로 잡으려 했으나 **틀렸다.** 표 전체가 일관되게
+#       뭉쳐 있어 무엇이 정상인지 알 수 없었다. 칸 안의 모양으로 판단하되,
+#       **같은 열의 여러 칸이 같은 모양일 때만** 가른다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_cell_repair_splits_code_and_name():
+    """사업코드와 지표명이 붙은 열을 가른다."""
+    from docstruct.experiments.cell_repair import repair_table
+
+    table = "\n".join([
+        "| 사업 | 지표 | 가중치 |",
+        "|---|---|---|",
+        "| 자원봉사 | 50771 ①자원봉사 만족도(점) | 1.0 |",
+        "| 민간단체 | 42364 ①공익활동 지원사업 비율(%) | 1.0 |",
+        "| 새마을 | 51024 ②교육 수료생 성취도(%) | 0.3 |",
+        "| 새마을 | 51025 ③시범마을 적용도(%) | 0.3 |",
+    ])
+    fixed, count = repair_table(table)
+    assert count >= 4
+    assert "| 50771 | ①자원봉사 만족도(점) |" in fixed
+
+
+def test_cell_repair_needs_repeated_pattern():
+    """한 칸만 그런 모양이면 손대지 않는다.
+
+    원래 그런 값일 수 있다.
+    """
+    from docstruct.experiments.cell_repair import repair_table
+
+    table = "\n".join([
+        "| 사업 | 내용 |",
+        "|---|---|",
+        "| 가 | 50771 ①지표 |",
+        "| 나 | 정상 내용입니다 |",
+        "| 다 | 다른 내용 |",
+        "| 라 | 또 다른 내용 |",
+    ])
+    _, count = repair_table(table)
+    assert count == 0
+
+
+def test_cell_repair_leaves_spaced_text():
+    """글자 사이가 벌어진 것은 손대지 않는다.
+
+    `적 및 목표치 구분` 은 좁은 칸에 맞춘 조판이지 손상이 아니다.
+    실측 35건 중 18건이 그 경우였다.
+    """
+    from docstruct.experiments.cell_repair import repair_table
+
+    table = "\n".join([
+        "| 구 분 | 적 및 목표치 구분 |",
+        "|---|---|",
+        "| 가 | 목 표 |",
+        "| 나 | 실 적 |",
+        "| 다 | 목 표 |",
+        "| 라 | 실 적 |",
+    ])
+    _, count = repair_table(table)
+    assert count == 0
+
+
+def test_cell_repair_keeps_separator_valid():
+    """구분선도 함께 늘려 markdown 이 깨지지 않게 한다."""
+    from docstruct.experiments.cell_repair import repair_table
+
+    table = "\n".join([
+        "| 사업 | 지표 |",
+        "|---|---|",
+        "| 가 | 50771 ①지표 하나 |",
+        "| 나 | 42364 ②지표 둘 |",
+        "| 다 | 51024 ③지표 셋 |",
+        "| 라 | 51025 ④지표 넷 |",
+    ])
+    fixed, _ = repair_table(table)
+    rows = [r for r in fixed.splitlines() if r.startswith("|")]
+    widths = {len(r.strip("|").split("|")) for r in rows}
+    assert len(widths) == 1                  # 모든 행이 같은 열 수
+
+
+def test_cell_repair_amount_split_detected():
+    """갈린 금액을 알아본다.
+
+    `1,150,0 00` 은 붙였을 때 세 자리 규칙에 맞으므로 한 값이었다.
+    """
+    from docstruct.experiments.cell_repair import split_candidates
+
+    assert ("1,150,000", "") in split_candidates("1,150,0 00")
+    assert not any(h == "1463" for h, _ in split_candidates("14, 63"))
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.50 — 갈린 숫자 붙이기
+#
+# 배경: ③ 이 짚은 것 중 **금액이 갈린 것**이 있었다. 수치가 틀리면 그 표는
+#       쓸 수 없으므로 가장 중요한 유형이다.
+#
+#           | 999,969 | 1,150,0 00 | 1,150,00 0 |
+#                       ↑ 한 값이 갈림
+#
+#       **자릿수로 검증한다.** 붙였을 때 세 자리 규칙에 맞거나 쉼표 없는
+#       정수가 되면 원래 한 값이었다.
+#
+#           '1,150,0 00' → '1,150,000'   ✓
+#           '4199 0'     → '41990'       ✓
+#           '14, 63'     → None          두 값인지 한 값인지 모름
+#
+#       마지막 경우는 **여기서 판단하지 않는다.** 열 의미를 아는 구조화
+#       단계가 정할 문제다.
+#
+#       실측(행안부 320표): 6표 → 12표 · 37행으로 늘었다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_join_split_number_by_digit_rule():
+    """자릿수로 갈린 숫자를 알아본다."""
+    from docstruct.experiments.cell_repair import join_split_number
+
+    assert join_split_number("1,150,0 00") == "1,150,000"
+    assert join_split_number("1,000,0 00") == "1,000,000"
+    assert join_split_number("4199 0") == "41990"
+
+
+def test_join_split_number_refuses_ambiguous():
+    """붙일 근거가 없으면 손대지 않는다.
+
+    `14, 63` 은 두 값인지 한 값이 갈린 것인지 알 수 없다.
+    """
+    from docstruct.experiments.cell_repair import join_split_number
+
+    assert join_split_number("14, 63") is None
+    assert join_split_number("정상 값") is None
+    assert join_split_number("1,234") is None       # 갈리지 않았다
+
+
+def test_cell_repair_joins_amounts_in_short_table():
+    """행이 적은 예산표에서도 금액을 붙인다.
+
+    열을 늘리지 않으므로 위험이 작다 — 실측에서 3행짜리 예산표가 다수였다.
+    """
+    from docstruct.experiments.cell_repair import repair_table
+
+    table = "\n".join([
+        "| 사업 | 회계 | '25결산 | '26예산 |",
+        "|---|---|---|---|",
+        "| 지역경제 | 특별회계 | 999,969 | 1,150,0 00 |",
+        "| 상품권 | 특별회계 | 999,969 | 1,150,0 00 |",
+    ])
+    fixed, count = repair_table(table)
+    assert count == 2
+    assert "1,150,000" in fixed
+    assert "1,150,0 00" not in fixed
+
+
+def test_cell_repair_needs_numeric_column():
+    """수치 열이 아니면 붙이지 않는다.
+
+    같은 열의 다른 칸이 온전한 숫자여야 그 열이 수치 열이라는 근거가 된다.
+    """
+    from docstruct.experiments.cell_repair import _number_column, _rows_of
+
+    table = "\n".join([
+        "| 사업 | 설명 |",
+        "| 가 | 어떤 설명 1,150,0 00 원 |",
+        "| 나 | 다른 설명입니다 |",
+        "| 다 | 또 다른 설명 |",
+    ])
+    assert _number_column(_rows_of(table)) == []
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.51 — 두 행이 뭉친 것 되돌리기 (③ 을 근거로)
+#
+# 배경: 성과지표 표에서 `목표` 와 `실적` 이 각각 한 행인데, 파서가 한 행으로
+#       합쳐 놓는 일이 있다.
+#
+#           | 1.0 목표 실적 | 100 100 | 100 100 |
+#                  ↑ 두 행이 뭉침    ↑ 목표값 실적값
+#
+#       **수치가 뒤섞이므로 그 표는 쓸 수 없다.** 가장 중요한 유형이다.
+#
+#       표식(`목표`/`실적`)만으로는 근거가 약했다 — 서술문에 둘이 함께
+#       나오는 일이 흔해 26표가 잘못 걸렸다.
+#
+#           * 목표달성률=(시도 목표달성 지표 수의 합 / …)
+#
+#       둘을 더했다.
+#         · 표식 칸이 20자 이내여야 한다 (서술문 제외)
+#         · **③ 이 짚은 표에서만** 행을 가른다
+#
+#       실측(행안부 320표): 45표 → 22표 · 49행.
+# ────────────────────────────────────────────────────────────────────
+
+def test_split_merged_row_uses_markers():
+    """`목표`/`실적` 표식으로 두 행을 되돌린다."""
+    from docstruct.experiments.cell_repair import split_merged_row
+
+    row = "| 지방자주재원확충 | ①지방세 개편(점) | 1.0 목표 실적 | 100 100 | 100 100 |"
+    head, tail = split_merged_row(row)
+    assert "목표" in head and "실적" in tail
+    assert head.count("100") == 2 and tail.count("100") == 2
+
+
+def test_split_merged_row_ignores_prose():
+    """서술문은 되돌리지 않는다.
+
+    `목표달성률=(시도 목표달성 지표 수의 합 …` 같은 설명이 26표나 걸렸다.
+    """
+    from docstruct.experiments.cell_repair import split_merged_row
+
+    row = ("| 가 | * 목표달성률=(시도 목표달성 지표 수의 합 / "
+           "시도 정량지표 수의 합) X 100, 실적은 별도 |")
+    assert split_merged_row(row) is None
+
+
+def test_row_merge_needs_two_way_match():
+    """행 분리는 ③ 이 짚은 표에서만 한다.
+
+    표식만으로는 근거가 약하다.
+    """
+    from docstruct.experiments.cell_repair import repair_table
+
+    table = "\n".join([
+        "| 사업 | 지표 | 구분 | '25 | '26 |",
+        "|---|---|---|---|---|",
+        "| 가 | ①지표 | 1.0 목표 실적 | 100 100 | 100 100 |",
+        "| 나 | ②지표 | 1.0 목표 실적 | 200 200 | 200 200 |",
+    ])
+    assert repair_table(table)[1] == 0                    # 기본은 안 함
+    assert repair_table(table, row_merge=True)[1] > 0     # ③ 이 짚으면 한다
+
+
+def test_marker_length_limit_documented():
+    """표식 칸 길이 제한이 있다."""
+    from docstruct.experiments.cell_repair import MAX_MARKER_CHARS
+
+    assert 0 < MAX_MARKER_CHARS <= 30

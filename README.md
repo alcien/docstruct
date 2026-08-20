@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.47"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.51"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.47"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.51"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.47"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.51"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -1011,7 +1011,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.47"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.51"
 ```
 
 ### 한글이 깨져 보일 때
@@ -1067,15 +1067,20 @@ backend API 로 서비스한다면 이 조항에 해당할 수 있으므로 **�
 기본은 모두 꺼져 있습니다.
 
 ```bash
-docstruct --exp list                              # 무엇이 있는지
-docstruct 문서.pdf -o out --exp split_merge       # 하나 켜기
-docstruct 문서.pdf -o out --exp split_merge,otsl_diff
+docstruct --exp list                                # 무엇이 있는지
+docstruct 문서.pdf -o out --exp two_way_match       # 하나 켜기
+docstruct 문서.pdf -o out --exp two_way_match,otsl_diff
 ```
+
+`two_way_match` 는 **값이 옆 칸으로 넘어간 자리**를 짚습니다. 두 문서에서
+검출률 10~11% 로 일관됐습니다.
+
+    | 24결산 | 1,292 | 1,142 | 1,243 1,796 |   ← 두 값이 한 칸에
 
 서버에서는 환경변수를 씁니다.
 
 ```
-DOCSTRUCT_EXP_SPLIT_MERGE=true
+DOCSTRUCT_EXP_TWO_WAY_MATCH=true
 DOCSTRUCT_EXP_OTSL_DIFF=true
 ```
 

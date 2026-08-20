@@ -104,6 +104,8 @@ register(Experiment(
     origin="OTSL (IBM, ICDAR 2023) — 다섯 토큰 구조 표현",
     formats=("pdf", "hwp", "hwpx"),
     status="proposed",
-    note="진단용. 구조를 고치지 않는다. 좌표가 필요 없어 전 형식에 통한다.",
+    note="진단용 — 검출이 아니라 기록이다. 지금은 쓰이지 않으나, "
+         "VLM 재작성 전후 구조를 견줄 때 쓸 예정이라 남겨 둔다. "
+         "좌표가 필요 없어 전 형식에 통한다.",
     run=run,
 ))

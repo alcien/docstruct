@@ -88,11 +88,15 @@ class TableInfo:
     fill_diff: dict | None = None
     #: ── 실험 단계 표시 (docstruct.experiments) ──────────────────
     #: 검증이 끝나지 않은 기법이 남기는 값이다. 폐기할 때 이 묶음을 지운다.
-    split_merge_hints: list[dict] | None = None   # 병합 놓침 후보
-    match_disagreements: int | None = None        # 양방향 매칭 불일치 수
-    edge_drift: float | None = None               # 열 경계 어긋난 정도(pt)
-    consensus_drift: float | None = None          # 표준 격자와의 차이(pt)
-    otsl: str | None = None                       # OTSL 구조 문자열
+    #: 셀과 낱말 배정이 양방향에서 어긋난 곳의 수. 값이 옆 칸으로 넘어간
+    #: 신호다 — 두 문서에서 검출률 10~11% 로 일관됐다.
+    match_disagreements: int | None = None
+    #: 뭉친 값을 되돌린 행 수. 표 내용이 바뀌었다는 뜻이므로
+    #: `original_markdown` 과 견줄 수 있어야 한다.
+    cell_repairs: int | None = None
+    #: 표 구조를 OTSL 다섯 토큰으로 적은 것. 지금은 기록만 하며, VLM
+    #: 재작성 전후를 견줄 때 쓸 예정이다.
+    otsl: str | None = None
     #: ────────────────────────────────────────────────────────────
     #: 이 표가 이어지는 앞 표의 id. 쪽을 넘는 표에만 있다.
     continues_from: str | None = None
