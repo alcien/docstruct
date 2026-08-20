@@ -719,6 +719,7 @@ class Settings:
     mark_table_continuation: bool        # 쪽을 넘는 표에 이어짐 관계를 표시할지
     read_charts: bool                    # 그래프를 VLM 으로 읽을지 (기본 끔)
     detect_toc: bool                     # 목차를 규칙으로 찾을지
+    scanned_skip_docling_ocr: bool       # 스캔본에서 docling OCR 을 끌지
     rebuild_grid: bool                   # 그런 표의 격자를 OCR 좌표로 다시 세울지 (기본 끔)
     vlm_fix_tables: bool                 # 그런 표를 VLM 으로 다시 만들지
 
@@ -1026,6 +1027,18 @@ def _build_settings() -> Settings:
     table_key = _get("DOCLING_TABLE_API_KEY") or _key_for(table_url, openai_key) or (
         picture_key if _same_host(table_url, picture_url) else ""
     )
+
+    # 주소가 하나도 없는데 **OpenAI 키만 있으면** OpenAI 를 주 엔드포인트로
+    # 쓴다. `--ask-key` 로 키만 넣고 돌리는 경우가 그렇다.
+    #
+    # 이것이 없으면 키를 넣어도 LLM 이 미설정으로 남아, 표 평가가 조용히
+    # 건너뛰고 모든 표가 기본값 `sufficient` 로 채워진다 — 정상처럼 보여
+    # 알아차리기 어렵다.
+    if not table_url and openai_key:
+        table_url = _get("DOCLING_TABLE_API_FALLBACK_URL")
+        table_model = table_model or _get("DOCLING_TABLE_API_FALLBACK_MODEL")
+        table_key = openai_key
+
     llm = _make_endpoint(
         table_url, table_model, table_timeout, None,
         label="DOCLING_TABLE_API", api_key=table_key,
@@ -1064,6 +1077,8 @@ def _build_settings() -> Settings:
         mark_table_continuation=_get_bool("DOCSTRUCT_MARK_TABLE_CONTINUATION", True),
         read_charts=_get_bool("DOCSTRUCT_READ_CHARTS", False),
         detect_toc=_get_bool("DOCSTRUCT_DETECT_TOC", True),
+        scanned_skip_docling_ocr=_get_bool(
+            "DOCSTRUCT_SCANNED_SKIP_DOCLING_OCR", False),
         rebuild_grid=_get_bool("DOCSTRUCT_REBUILD_GRID", False),
         vlm_fix_tables=_get_bool("DOCSTRUCT_VLM_FIX_TABLES", False),
         llm=llm,

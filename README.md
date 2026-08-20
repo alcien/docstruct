@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.44"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.47"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.44"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.47"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.44"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.47"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -305,6 +305,27 @@ LLM 없이 규칙으로 합니다.
 전체를 봅니다.
 
 끄려면 `detect_toc=false` 입니다.
+
+---
+
+## 스캔본 속도
+
+스캔 PDF 는 같은 지면을 두 번 읽습니다.
+
+    docling 내장 OCR   쪽당 2.9초  → 중국어 모델이라 결과를 버립니다
+    한국어 재판독      쪽당 1.7초  → 실제로 쓰는 결과
+
+앞의 것을 건너뛸 수 있습니다.
+
+```bash
+docstruct 스캔본.pdf -o out --set scanned_skip_docling_ocr=true
+```
+
+**스캔본으로 판정될 때만** 적용됩니다. 표 격자는 TableFormer 가 이미지
+레이아웃으로 잡으므로 OCR 없이도 나오고, 셀 텍스트는 재판독 조각이
+채웁니다.
+
+기본은 꺼져 있습니다 — 표 내용에 영향이 있는지 문서마다 확인이 필요합니다.
 
 ---
 
@@ -990,7 +1011,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.44"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.47"
 ```
 
 ### 한글이 깨져 보일 때

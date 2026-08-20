@@ -355,7 +355,8 @@ class PdfConverter(BaseConverter):
 
             rebuild_settings()
             reset_document_converter()
-            return get_document_converter().convert(self.path)
+            # 경로를 넘겨야 스캔본 판정이 된다.
+            return get_document_converter(str(self.path)).convert(self.path)
         finally:
             if saved is None:
                 os.environ.pop("DOCLING_DEVICE", None)

@@ -6005,6 +6005,7 @@ def test_table_fields_documented_for_bridge():
         "original_markdown", "group_image_ids", "source_image_id",
         # 0.3.12+
         "cells", "source", "fill_diff", "continues_from", "table_kind",
+        "assessed",
         "inherited_header", "odd_columns", "structure_ratio",
         # 실험 (docstruct.experiments)
         "split_merge_hints", "match_disagreements", "edge_drift",
@@ -7122,3 +7123,181 @@ def test_table_kind_serialized():
                       table_kind="org")
     assert table.to_dict()["table_kind"] == "org"
     json.dumps(table.to_dict(), ensure_ascii=False)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.45 — 스캔본에서 docling OCR 을 건너뛸 수 있게
+#
+# 배경: 스캔 PDF(주택과세금 377쪽)가 **29분** 걸렸다. 내역을 보니 같은
+#       지면을 두 번 읽고 있었다.
+#
+#           추출 (docling 내장 OCR)  1,096초 · 쪽당 2.9초  ← 중국어 모델, 버림
+#           한국어 재판독              627초 · 쪽당 1.7초  ← 실제로 쓰는 결과
+#
+#       표 격자는 TableFormer 가 이미지 레이아웃으로 잡으므로 OCR 없이도
+#       나온다. 셀 텍스트는 `cell_match` 가 재판독 조각으로 채운다.
+#
+#       스캔본 판정에서 걸림돌이 하나 있었다 — 본문은 이미지인데 **머리말·
+#       바닥글만 텍스트**로 있어 쪽당 97자가 나왔다.
+#
+#           '26. 5. 11. 오후 5:44 2025 주택과세금
+#           https://www.nts.go.kr/...index.html  6/380
+#
+#       URL·날짜·쪽표시를 빼고 세야 한다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_scanned_detection_ignores_boilerplate():
+    """머리말·바닥글은 텍스트 레이어로 세지 않는다."""
+    from docstruct.converters.pdf.scanned import _BOILERPLATE_RE, _WHITESPACE_RE
+
+    header = ("26. 5. 11. 오후 5:44 2025 주택과세금\n"
+              "https://www.nts.go.kr/upload/nts/ebook/index.html 6/380")
+    body = _WHITESPACE_RE.sub("", _BOILERPLATE_RE.sub("", header))
+    assert len(body) < 40                    # 장식을 빼면 거의 남지 않는다
+
+
+def test_scanned_detection_threshold():
+    """본문이 있는 쪽과 구분되는 문턱이다."""
+    from docstruct.converters.pdf.scanned import (
+        MIN_CHARS_PER_PAGE, MIN_EMPTY_RATIO,
+    )
+
+    # 실측: 장식만 있는 쪽이 97자였다
+    assert MIN_CHARS_PER_PAGE > 97
+    assert 0 < MIN_EMPTY_RATIO <= 1
+
+
+def test_scanned_detection_fails_safe(tmp_path):
+    """판단하지 못하면 스캔본으로 보지 않는다.
+
+    스캔본이 아닌데 그렇게 보면 docling OCR 을 꺼서 표 내용을 잃는다.
+    """
+    from docstruct.converters.pdf.scanned import looks_scanned
+
+    missing = tmp_path / "nosuch.pdf"
+    assert looks_scanned(missing) is False
+
+
+def test_skip_docling_ocr_is_opt_in():
+    """이 기능은 기본으로 꺼져 있다."""
+    from docstruct.core.config import get_settings
+
+    assert get_settings().scanned_skip_docling_ocr is False
+
+
+def test_converter_cache_splits_by_ocr_mode():
+    """OCR 을 켠 것과 끈 것이 따로 캐시된다.
+
+    하나만 캐시하면 두 번째 문서가 첫 번째 설정을 쓴다.
+    """
+    import inspect
+
+    from docstruct.converters.pdf import docling_backend
+
+    source = inspect.getsource(docling_backend._build_document_converter)
+    assert "skip_ocr" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.46 — LLM 평가를 건너뛴 것이 정상처럼 보이던 문제
+#
+# 배경: `--ask-key` 로 키를 넣고 돌렸는데 유형이 하나도 안 나왔다. 확인하니
+#       **LLM 평가 자체가 돌지 않았다.**
+#
+#           quality       sufficient 321 (전부)
+#           llm_title     0
+#           table_kind    0
+#
+#       결과만 보면 "표 321개가 전부 정상" 으로 보인다. 실제로는 판정조차
+#       하지 않은 것이다.
+#
+#       `reason` 에 `미판정 — LLM 없이 기본값으로 표시` 가 있었으나, 로그는
+#       `debug` 라 보이지 않았고 검증 도구도 그것을 보지 않았다.
+#
+#       세 가지를 고쳤다.
+#         · 로그를 warning 으로
+#         · `assessed` 필드로 판정 여부를 명시
+#         · 검증 도구가 미판정을 먼저 알림
+# ────────────────────────────────────────────────────────────────────
+
+def test_unassessed_tables_are_marked():
+    """판정하지 못한 표를 구분할 수 있다.
+
+    없으면 "LLM 이 정상으로 본 표" 와 "판정조차 못 한 표" 가 똑같이 보인다.
+    """
+    from docstruct.models import TableInfo
+    from docstruct.tables.assess import _mark_default
+
+    table = TableInfo(id="t1", table_num=1, placeholder="", markdown="| a |")
+    _mark_default(table, unassessed=True)
+
+    assert table.quality == "sufficient"       # 기본값이지만
+    assert table.assessed is False             # 판정한 것은 아니다
+    assert "미판정" in (table.reason or "")
+
+
+def test_assessed_flag_set_on_real_judgement():
+    """실제로 판정하면 표시가 남는다."""
+    from docstruct.models import TableInfo
+    from docstruct.tables.assess import _apply_assessment
+
+    tables = [TableInfo(id="table_1", table_num=1, placeholder="",
+                        markdown="| a |")]
+    _apply_assessment(tables, [{"id": "table_1", "table_kind": "budget",
+                                "content_type": "table", "title": "예산"}])
+    assert tables[0].assessed is True
+
+
+def test_missing_llm_logs_warning():
+    """LLM 미설정을 경고로 남긴다.
+
+    debug 로 두었더니 사용자가 키를 넣고도 평가가 건너뛴 것을 몰랐다.
+    """
+    import inspect
+
+    from docstruct.tables import assess
+
+    source = inspect.getsource(assess)
+    assert "표 평가를 건너뜁니다" in source
+    assert '_log.warning(\n            "LLM 이 설정되지 않아' in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.47 — `--ask-key` 만으로는 LLM 이 안 잡히던 문제
+#
+# 배경: `--ask-key` 로 OpenAI 키를 넣고 돌렸는데 표 평가가 건너뛰었다.
+#
+#       `OPENAI_API_KEY` 는 **연결 실패 시 폴백**으로만 쓰였다. 주소
+#       (`DOCLING_TABLE_API_URL`)가 없으면 주 엔드포인트가 안 잡히고,
+#       평가가 조용히 건너뛰어 모든 표가 기본값 `sufficient` 가 된다.
+#
+#       사내 서버를 쓰는 환경에는 `site_defaults.py` 에 주소가 있어 문제가
+#       드러나지 않았다 — 그 파일이 없는 환경에서만 나타났다.
+#
+#       주소가 없고 키만 있으면 OpenAI 를 주 엔드포인트로 쓴다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_openai_key_alone_configures_llm():
+    """주소 없이 OpenAI 키만 있어도 LLM 이 잡힌다.
+
+    `--ask-key` 로 키만 넣고 돌리는 경우다. 이것이 없으면 평가가 조용히
+    건너뛰고 모든 표가 기본값 `sufficient` 로 채워진다.
+
+    **환경을 격리할 수 없어 코드로 확인한다** — `.env` 와 `site_defaults.py`
+    가 실제 환경변수로 올라와 있어 monkeypatch 로 지울 수 없다.
+    """
+    import inspect
+
+    from docstruct.core import config
+
+    source = inspect.getsource(config._build_settings)
+    assert "if not table_url and openai_key:" in source
+    assert "DOCLING_TABLE_API_FALLBACK_URL" in source
+
+
+def test_openai_fallback_url_defined():
+    """OpenAI 주소·모델이 내장 기본값에 있다."""
+    from docstruct.core.config import _BUILTIN_DEFAULTS
+
+    assert "openai.com" in _BUILTIN_DEFAULTS["DOCLING_TABLE_API_FALLBACK_URL"]
+    assert _BUILTIN_DEFAULTS["DOCLING_TABLE_API_FALLBACK_MODEL"]

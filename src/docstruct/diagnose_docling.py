@@ -52,7 +52,7 @@ def main() -> None:
     from docstruct.converters.pdf.docling_backend import get_document_converter
 
     print(f"변환 중: {pdf_path} ...")
-    result = get_document_converter().convert(pdf_path)
+    result = get_document_converter(str(pdf_path)).convert(pdf_path)
 
     print(f"\n=== result: {type(result)!r} ===")
     print(f"공개 속성: {[a for a in dir(result) if not a.startswith('_')]}")

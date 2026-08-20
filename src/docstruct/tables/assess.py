@@ -251,6 +251,7 @@ def _apply_assessment(
         if isinstance(group_raw, list) and group_raw:
             group_ids = [str(g) for g in group_raw if g]
 
+        table.assessed = True
         table.llm_title = (info.get("title") or "").strip() or None
         table.content_type = content_type
         table.group_image_ids = group_ids
@@ -358,7 +359,13 @@ def assess_page_tables(
         cfg = llm_api_config()
     if cfg is None and not llm_available():
         # 엔드포인트도 로컬 VLM 도 없으면 판정을 건너뛴다.
-        _log.debug("LLM 미설정 — 표 평가 스킵")
+        #
+        # **경고로 남긴다.** debug 로 두었더니 사용자가 `--ask-key` 로 키를
+        # 넣고도 평가가 건너뛴 것을 몰랐다 — 표 321개가 전부 기본값
+        # `sufficient` 로 채워져 정상처럼 보였다.
+        _log.warning(
+            "LLM 이 설정되지 않아 표 평가를 건너뜁니다 — "
+            "품질·유형 판정 없이 기본값으로 둡니다 (`docstruct --check` 로 확인)")
         for table in page.tables:
             _mark_default(table, unassessed=True)
         return

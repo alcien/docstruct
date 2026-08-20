@@ -254,7 +254,7 @@ def _pipeline_options_class(threaded: bool):
         return PdfPipelineOptions, None
 
 
-def build_pdf_pipeline_options():
+def build_pdf_pipeline_options(*, skip_ocr: bool = False):
     """PDF 파이프라인 옵션을 만든다.
 
     입력: 없음 (core.config 의 설정을 읽음)
@@ -272,8 +272,16 @@ def build_pdf_pipeline_options():
         _log.info("가속 설정: device=%s threads=%s",
                   effective, settings.num_threads or "(기본)")
 
-    # OCR을 쓸건지
-    pipeline_options.do_ocr = True
+    # OCR을 쓸건지.
+    #
+    # 스캔본에서는 끌 수 있다 — 한국어 재판독이 어차피 도는데 docling 내장
+    # OCR 은 중국어 모델이라 결과를 버린다. 같은 지면을 두 번 읽는 셈이다.
+    #
+    # 표 격자는 TableFormer 가 이미지 레이아웃으로 잡으므로 OCR 없이도
+    # 나온다. 셀 텍스트는 `cell_match` 가 재판독 조각으로 채운다.
+    pipeline_options.do_ocr = not skip_ocr
+    if skip_ocr:
+        _log.info("스캔본이므로 docling OCR 을 건너뜁니다 — 한국어 재판독이 대신합니다")
     # OCR 옵션 설정
     pipeline_options.ocr_options = _ocr_options()
 
@@ -381,18 +389,30 @@ def _hide_gpu_if_unusable() -> None:
 _CONVERTER_LOCK = threading.Lock()
 
 
-def get_document_converter() -> "DocumentConverter":
+def get_document_converter(pdf_path: str | None = None) -> "DocumentConverter":
     """설정이 반영된 DocumentConverter 를 얻는다 (캐시·스레드 안전).
 
-    입력: 없음 (core.config 의 설정을 읽음)
-    출력: DocumentConverter (캐시됨)
+    입력: pdf_path — 처리할 PDF (스캔본 판정에만 씀). 없으면 판정하지 않음
+    출력: DocumentConverter (설정 조합별로 캐시됨)
+    비고:
+        **스캔본이면 docling OCR 을 끌 수 있다.** 스캔본은 한국어 재판독이
+        어차피 도는데, docling 내장 OCR 은 중국어 모델이라 결과를 버린다.
+        실측(주택과세금 377쪽): 추출 1,096초 + 재판독 627초 = 29분.
+
+        `scanned_skip_docling_ocr` 이 켜져 있을 때만 판정한다 — 켜지 않으면
+        경로를 읽지도 않는다.
     """
+    skip_ocr = False
+    if pdf_path and get_settings().scanned_skip_docling_ocr:
+        from docstruct.converters.pdf.scanned import looks_scanned
+
+        skip_ocr = looks_scanned(pdf_path)
     with _CONVERTER_LOCK:
-        return _build_document_converter()
+        return _build_document_converter(skip_ocr)
 
 
-@lru_cache(maxsize=1)
-def _build_document_converter() -> "DocumentConverter":
+@lru_cache(maxsize=2)
+def _build_document_converter(skip_ocr: bool = False) -> "DocumentConverter":
     """DocumentConverter 를 실제로 만든다 (락 안에서만 호출).
 
     입력: 없음
@@ -414,7 +434,7 @@ def _build_document_converter() -> "DocumentConverter":
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
     settings = get_settings()
-    pipeline_options = build_pdf_pipeline_options()
+    pipeline_options = build_pdf_pipeline_options(skip_ocr=skip_ocr)
 
     # 그림 설명 옵션 설정
     picture_opts = _picture_description_options()

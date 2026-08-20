@@ -91,9 +91,23 @@ def check(path: Path, show_wrong: bool = False) -> int:
 
     # ── ① 판단이 돌았는가 ────────────────────────────────────────
     judged = [t for t in tables if t.get("table_kind")]
+    # 평가 자체가 돌았는지 먼저 본다. LLM 이 없으면 모든 표가 기본값
+    # `sufficient` 로 채워져 **정상처럼 보인다** — 결과만 보고는 구분되지
+    # 않으므로 `reason` 과 `assessed` 를 확인한다.
+    unassessed = [t for t in tables
+                  if not t.get("assessed")
+                  and "미판정" in (t.get("reason") or "")]
     print("① 판단 실행")
     print(f"   table_kind 채워짐  {len(judged)}/{len(tables)} "
           f"({len(judged) / len(tables):.0%})")
+    if unassessed:
+        print(f"   미판정             {len(unassessed)}/{len(tables)}")
+        print("\n   → **LLM 평가가 돌지 않았습니다.**")
+        print("      표가 전부 `sufficient` 로 보이지만 판정한 것이 아닙니다.")
+        print("      키가 실제로 먹었는지 확인하세요:")
+        print("         docstruct --check")
+        print("      `--ask-key` 로 넣어도 엔드포인트(llm_url)가 없으면 건너뜁니다.")
+        return 1
     if not judged:
         print("\n   → 판단이 돌지 않았습니다. LLM 평가를 켜고 다시 돌리세요.")
         print("      (`--no-llm` 이면 유형이 나오지 않습니다)")

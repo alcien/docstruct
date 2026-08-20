@@ -70,6 +70,9 @@ class TableInfo:
     #: 못하는 병합 정보를 담는다 — 구조화 단계가 병합 셀 값을 하위 행에
     #: 전파할 수 있게 하기 위함이다.
     cells: list[dict] | None = None
+    #: 평가를 실제로 돌렸는가. False 면 `quality` 는 기본값일 뿐이다.
+    #: LLM 미설정으로 건너뛰면 전부 `sufficient` 가 되어 정상처럼 보인다.
+    assessed: bool = False
     #: 이 표가 무엇인가 — budget | indicator | program | org | review |
     #: cover | other. 유형마다 다루는 방법이 달라야 한다. 특히 `org`(조직도)
     #: 는 markdown 으로 표현할 수 없어 빈 칸이 많은 것이 정상이다.
