@@ -66,6 +66,27 @@ class TableInfo:
     structure_ratio: float | None = None
     #: (이 표의 열 수, 같은 서식 표 다수의 열 수). 서식이 어긋난 표에만 있다.
     odd_columns: tuple[int, int] | None = None
+    #: 셀 격자 (row, col, rowspan, colspan, text). markdown 이 표현하지
+    #: 못하는 병합 정보를 담는다 — 구조화 단계가 병합 셀 값을 하위 행에
+    #: 전파할 수 있게 하기 위함이다.
+    cells: list[dict] | None = None
+    #: 이 표가 어떻게 만들어졌는지. 결과만 보고 출처를 알 수 있어야 한다.
+    #:   parser  파서가 뽑은 그대로
+    #:   llm     LLM 이 다시 만듦 (fill)
+    #:   vlm     VLM 이 지면을 보고 다시 씀 (vlm_fix_tables)
+    source: str = "parser"
+    #: 재추출에서 원본 대비 무엇이 빠졌는지. LLM 이 다시 만든 표에만 있다.
+    #: **맞고 틀림을 판정하지 않는다** — 표는 대조할 기준이 없어 글자가
+    #: 바뀌었는지 알 수 없다. 빠짐만 세어 보여 주고 판단은 쓰는 쪽에 맡긴다.
+    fill_diff: dict | None = None
+    #: ── 실험 단계 표시 (docstruct.experiments) ──────────────────
+    #: 검증이 끝나지 않은 기법이 남기는 값이다. 폐기할 때 이 묶음을 지운다.
+    split_merge_hints: list[dict] | None = None   # 병합 놓침 후보
+    match_disagreements: int | None = None        # 양방향 매칭 불일치 수
+    edge_drift: float | None = None               # 열 경계 어긋난 정도(pt)
+    consensus_drift: float | None = None          # 표준 격자와의 차이(pt)
+    otsl: str | None = None                       # OTSL 구조 문자열
+    #: ────────────────────────────────────────────────────────────
     #: 이 표가 이어지는 앞 표의 id. 쪽을 넘는 표에만 있다.
     continues_from: str | None = None
     #: 그 앞 표의 헤더 행. 구조화 단계가 되짚지 않아도 되도록 담아 둔다.
@@ -141,6 +162,12 @@ class ImageInfo:
     #: 표로 만들면 의미가 망가지므로 본문 텍스트로 뽑는다.
     region_kind: str | None = None
     region_kind_reason: str | None = None
+    #: 이 설명이 어떻게 만들어졌는지 (`parser` | `vlm`).
+    source: str = "parser"
+    #: 그래프에서 읽은 값 중 본문에서 확인된 비율 0~1.
+    #: None 이면 대조하지 않았다는 뜻이며, 낮다고 값이 틀린 것은 아니다 —
+    #: **확인하지 못했다**는 뜻이다.
+    chart_verified: float | None = None
     #: VLM 이 그림에서 읽어낸 내용 (캡처 이미지 표·도표 복원).
     #: description 은 한 문장 캡션이고, 이것은 내용 자체다.
     vlm_markdown: str | None = None
@@ -459,6 +486,11 @@ class PageDocument:
     #: 예외가 아니라 로그로만 남는 부분 실패라 명시적으로 들고 다닙니다.
     failed_pages: list[int] = field(default_factory=list)
     #: 이 실행에 적용된 파이프라인 설정 (백엔드·OCR·LLM 등)
+    #: 규칙으로 찾은 목차 [{title, page, source_page}].
+    #: `page` 는 문서에 인쇄된 쪽번호라 PDF 쪽과 다를 수 있다.
+    toc: list[dict] = field(default_factory=list)
+    #: 인쇄 쪽번호와 PDF 쪽번호의 차이 (PDF − 인쇄).
+    toc_offset: int | None = None
     pipeline: dict[str, Any] = field(default_factory=dict)
     #: 단계별 소요 시간(초). 어디에 시간이 쓰였는지 판단하는 근거.
     timings: dict[str, float] = field(default_factory=dict)
@@ -492,6 +524,8 @@ class PageDocument:
             "source_format": self.source_format,
             "page_count": len(self.pages),
             "failed_pages": self.failed_pages,
+            "toc": self.toc,
+            "toc_offset": self.toc_offset,
             "pipeline": self.pipeline,
             "timings": self.timings,
             "pages": [p.to_dict() for p in self.pages],

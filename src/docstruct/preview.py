@@ -34,6 +34,30 @@ _QUALITY_COLOR = {
 }
 
 
+#: 표·그림을 무엇이 만들었는지 나타내는 색.
+_SOURCE_COLOR = {"parser": "#64748b", "llm": "#d97706", "vlm": "#7c3aed"}
+_SOURCE_LABEL = {"parser": "파서", "llm": "LLM", "vlm": "VLM"}
+
+
+def _source_badge(source: str, diff: dict | None = None) -> str:
+    """무엇이 만들었는지 배지로 낸다.
+
+    입력: source — parser | llm | vlm, diff — 빠짐 정보(있으면 함께 표시)
+    출력: HTML 조각
+    비고:
+        **모델이 만든 것을 눈에 띄게 한다.** 결과만 보고 출처를 알 수 없으면
+        어디까지 믿을지 정할 수 없다. 값이 빠진 표는 그 수를 덧붙인다.
+    """
+    label = _SOURCE_LABEL.get(source, source)
+    badge = _badge(label, _SOURCE_COLOR.get(source, "#94a3b8"))
+    if not diff:
+        return badge
+    lost = (diff.get("numbers_lost") or 0) + (diff.get("amounts_lost") or 0)
+    if lost:
+        badge += f' <span style="color:#dc2626;font-size:11px;">-{lost}</span>'
+    return badge
+
+
 def _badge(text: str, color: str) -> str:
     """상태 배지 HTML 조각.
 
@@ -120,6 +144,10 @@ def summary_html(doc: PageDocument) -> str:
     for t in tables:
         by_type[t.content_type or "미평가"] = by_type.get(t.content_type or "미평가", 0) + 1
     filled = sum(1 for t in tables if t.was_filled)
+    by_llm = sum(1 for t in tables if t.source == "llm")
+    by_vlm = sum(1 for t in tables if t.source == "vlm")
+    charts = [i for _, i in doc.all_images() if i.region_kind == "chart"]
+    charts_read = sum(1 for i in charts if i.source == "vlm")
     empty = [str(p.page_no) for p in doc.pages if not (p.content or "").strip()]
 
     rows = [
@@ -134,7 +162,11 @@ def summary_html(doc: PageDocument) -> str:
                 for k, v in sorted(by_type.items())
             ),
         ),
-        ("표 재추출", f"{filled}개"),
+        ("표 재추출", f"{filled}개"
+         + (f" (LLM {by_llm}, VLM {by_vlm})" if by_llm or by_vlm else "")),
+        *([("그래프", f"{len(charts)}개"
+            + (f" (VLM 으로 읽음 {charts_read})" if charts_read
+               else " · 값은 그림 안에 있습니다"))] if charts else []),
         ("이미지", f"{len(images)}개"),
     ]
     if empty:
@@ -171,7 +203,7 @@ def table_overview_html(doc: PageDocument) -> str:
         '<tr style="background:#f1f5f9;">'
         + "".join(
             f'<th style="padding:6px 10px;text-align:left;font-size:12px;">{h}</th>'
-            for h in ("ID", "페이지", "판정", "품질", "재추출", "제목", "근거")
+            for h in ("ID", "페이지", "판정", "품질", "출처", "제목", "근거")
         )
         + "</tr>"
     )
@@ -185,7 +217,7 @@ def table_overview_html(doc: PageDocument) -> str:
             str(page.page_no),
             _badge(ctype, _TYPE_COLOR.get(ctype, "#94a3b8")) if ctype != "-" else "-",
             _badge(quality, _QUALITY_COLOR.get(quality, "#94a3b8")) if quality != "-" else "-",
-            "✅" if t.was_filled else "—",
+            _source_badge(t.source, t.fill_diff),
             html.escape(t.llm_title or "-"),
             html.escape((t.reason or "-")[:60]),
         ]

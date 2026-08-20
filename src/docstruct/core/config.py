@@ -717,6 +717,8 @@ class Settings:
     flag_broken_tables: bool             # 빈 칸이 있는 표를 표시할지 (기본 끔)
     flag_odd_tables: bool                # 같은 서식 중 열 수가 다른 표를 표시할지
     mark_table_continuation: bool        # 쪽을 넘는 표에 이어짐 관계를 표시할지
+    read_charts: bool                    # 그래프를 VLM 으로 읽을지 (기본 끔)
+    detect_toc: bool                     # 목차를 규칙으로 찾을지
     rebuild_grid: bool                   # 그런 표의 격자를 OCR 좌표로 다시 세울지 (기본 끔)
     vlm_fix_tables: bool                 # 그런 표를 VLM 으로 다시 만들지
 
@@ -1060,6 +1062,8 @@ def _build_settings() -> Settings:
         flag_broken_tables=_get_bool("DOCSTRUCT_FLAG_BROKEN_TABLES", False),
         flag_odd_tables=_get_bool("DOCSTRUCT_FLAG_ODD_TABLES", True),
         mark_table_continuation=_get_bool("DOCSTRUCT_MARK_TABLE_CONTINUATION", True),
+        read_charts=_get_bool("DOCSTRUCT_READ_CHARTS", False),
+        detect_toc=_get_bool("DOCSTRUCT_DETECT_TOC", True),
         rebuild_grid=_get_bool("DOCSTRUCT_REBUILD_GRID", False),
         vlm_fix_tables=_get_bool("DOCSTRUCT_VLM_FIX_TABLES", False),
         llm=llm,

@@ -380,7 +380,6 @@ def test_region_text_passed_to_fill():
 
 def test_real_pdf_picture_regions_are_table_candidates():
     """실제 개정세법 PDF 에서 그림으로 분류된 영역이 후보로 잡힌다."""
-    import pathlib
 
     pytest.importorskip("pypdfium2")
     import pypdfium2 as pdfium
@@ -3008,7 +3007,12 @@ def test_no_hardcoded_tmp_paths():
 
 
 def test_compare_uses_portable_temp_dir():
-    """진단 도구가 OS 임시 폴더를 쓴다."""
+    """진단 도구가 OS 임시 폴더를 쓴다.
+
+    **소스를 검사하는 이유**: 이 함수는 PDF 를 렌더해야 실행되는데, Windows
+    에서만 나는 문제라 CI 에서 재현할 수 없다. 실수가 코드에 다시 들어오는
+    것을 막는 것이 목적이다.
+    """
     import inspect
 
     from docstruct.converters.pdf.rapidocr_ko import compare
@@ -3409,17 +3413,18 @@ def test_korean_ocr_records_failure(tmp_path, monkeypatch):
     assert any("실패" in step.action for step in pages[0].trace.steps)
 
 
-def test_render_all_pages_flag():
-    """all_pages=True 면 표가 없는 페이지도 렌더 대상이 된다."""
+def test_render_page_images_accepts_targets():
+    """렌더 대상을 좁힐 수 있다.
+
+    텍스트 레이어가 온전한 쪽까지 렌더하면 155쪽 문서에서 50초쯤 헛돈다.
+    """
     import inspect
 
     from docstruct import pipeline
 
-    source = inspect.getsource(pipeline._render_page_images)
-    assert "all_pages" in source
-    # 재판독 대상만 렌더할 수 있어야 한다 — 텍스트 레이어가 온전한 쪽까지
-    # 렌더하면 155쪽 문서에서 50초쯤 헛돈다.
-    assert "only" in source
+    params = inspect.signature(pipeline._render_page_images).parameters
+    assert "all_pages" in params
+    assert "only" in params
 
 
 def test_korean_ocr_option_exists():
@@ -3443,29 +3448,48 @@ def test_korean_ocr_option_exists():
 # ────────────────────────────────────────────────────────────────────
 
 def test_hwpx_extractor_uses_xml_parser():
-    """추출기가 XML 직접 파싱을 먼저 쓴다."""
-    import inspect
+    """추출기가 XML 직접 파싱 결과를 낸다.
 
-    from docstruct.extractors import hwpx
+    python-hwpx 내보내기는 같은 문서에서 표 94개·셀 93.8%·취소선 4,456회
+    였다. XML 직접 파싱은 표 212개·셀 100%·취소선 0 이다.
+    """
+    from pathlib import Path as _Path
 
-    source = inspect.getsource(hwpx.extract_hwpx_pages)
-    assert "hwpxtree" in source
-    # 폴백이 남아 있어야 한다 — 새 파서가 죽어도 문서를 잃지 않는다
-    assert "_fallback_markdown" in source
+    sample = _Path("notebooks/samples/sample.hwpx")
+    if not sample.is_file():
+        pytest.skip("sample.hwpx 없음")
+
+    from docstruct.extractors.hwpx import extract_hwpx_pages
+
+    page = extract_hwpx_pages(str(sample))[0]
+    assert page.trace.extractor == "hwpx-tree"     # 폴백이 아니다
+    assert "~~" not in (page.content or "")        # 취소선 오염 없음
 
 
-def test_hwpx_converter_uses_xml_parser():
-    """/convert 경로도 같은 파서를 쓴다.
+def test_hwpx_converter_matches_extractor():
+    """/convert 경로와 파이프라인이 같은 결과를 낸다.
 
     한쪽만 바꾸면 API 와 파이프라인 결과가 어긋난다.
     """
-    import inspect
+    from pathlib import Path as _Path
+
+    sample = _Path("notebooks/samples/sample.hwpx")
+    if not sample.is_file():
+        pytest.skip("sample.hwpx 없음")
+
+    import re
 
     from docstruct.converters.hwpx.converter import HwpxConverter
+    from docstruct.extractors.hwpx import extract_hwpx_pages
 
-    source = inspect.getsource(HwpxConverter.to_markdown)
-    assert "hwpxtree" in source
-    assert "rich_markdown" in source           # 폴백
+    api = HwpxConverter(str(sample)).to_markdown()
+    page = extract_hwpx_pages(str(sample))[0]
+
+    def table_count(text):
+        return len(re.findall(r"(?:^\|.*\|$\n?)+", text, re.M))
+
+    # 파이프라인은 표를 자리표시자로 빼므로 개수로 견준다
+    assert table_count(api) == len(page.tables)
 
 
 def test_hwpx_falls_back_when_xml_parser_fails(monkeypatch, tmp_path):
@@ -3520,45 +3544,32 @@ def test_hwpx_trace_names_the_parser():
 # ────────────────────────────────────────────────────────────────────
 
 def _fake_cell(row, col, text, box, *, header=False):
-    """Docling TableCell 을 흉내낸 객체."""
-    from types import SimpleNamespace
+    """표 셀 하나 — 실제 docling 스키마로 만든다."""
+    from tests.table_fixtures import make_cell
 
-    left, top, right, bottom = box
-    return SimpleNamespace(
-        start_row_offset_idx=row, end_row_offset_idx=row + 1,
-        start_col_offset_idx=col, end_col_offset_idx=col + 1,
-        row_span=1, col_span=1, column_header=header, text=text,
-        bbox=SimpleNamespace(l=left, t=top, r=right, b=bottom),
-    )
+    return make_cell(row, col, text, header=header, box=box)
 
 
 def _fake_table():
     """2×2 표 (텍스트가 중국어로 잘못 인식된 상태)."""
-    from types import SimpleNamespace
+    from tests.table_fixtures import make_table
 
-    return SimpleNamespace(data=SimpleNamespace(
-        num_rows=2, num_cols=2,
-        table_cells=[
-            _fake_cell(0, 0, "品品品", (100, 100, 200, 120), header=True),
-            _fake_cell(0, 1, "昆品", (200, 100, 300, 120), header=True),
-            _fake_cell(1, 0, "早", (100, 120, 200, 140)),
-            _fake_cell(1, 1, "全气", (200, 120, 300, 140)),
-        ]))
+    return make_table(2, 2, [
+        _fake_cell(0, 0, "品品品", (100, 100, 200, 120), header=True),
+        _fake_cell(0, 1, "昆品", (200, 100, 300, 120), header=True),
+        _fake_cell(1, 0, "早", (100, 120, 200, 140)),
+        _fake_cell(1, 1, "全气", (200, 120, 300, 140)),
+    ])
 
 
 def _fake_lines():
     """OCR 조각 (렌더 이미지 픽셀 좌표, scale=2)."""
-    from types import SimpleNamespace
+    from tests.table_fixtures import make_ocr_line
 
-    def line(text, left, top, right, bottom):
-        return SimpleNamespace(text=text, score=0.9,
-                               box=[(left, top), (right, top),
-                                    (right, bottom), (left, bottom)])
-
-    return [line("구분", 210, 210, 390, 235),
-            line("2025년", 410, 210, 590, 235),
-            line("유튜브", 210, 250, 390, 275),
-            line("13,391,527", 410, 250, 590, 275)]
+    return [make_ocr_line("구분", 210, 210, 390, 235),
+            make_ocr_line("2025년", 410, 210, 590, 235),
+            make_ocr_line("유튜브", 210, 250, 390, 275),
+            make_ocr_line("13,391,527", 410, 250, 590, 275)]
 
 
 def test_cell_texts_replaced_structure_kept(tmp_path, monkeypatch):
@@ -3647,26 +3658,17 @@ def test_table_info_source_item_not_serialized():
 
 def _one_row_table(*boxes):
     """한 행짜리 표 (셀 텍스트는 전부 중국어)."""
-    from types import SimpleNamespace
+    from tests.table_fixtures import make_cell, make_table
 
-    cells = []
-    for col, (left, top, right, bottom) in enumerate(boxes):
-        cells.append(SimpleNamespace(
-            start_row_offset_idx=0, end_row_offset_idx=1,
-            start_col_offset_idx=col, end_col_offset_idx=col + 1,
-            row_span=1, col_span=1, column_header=False, text="品",
-            bbox=SimpleNamespace(l=left, t=top, r=right, b=bottom)))
-    return SimpleNamespace(data=SimpleNamespace(
-        num_rows=1, num_cols=len(boxes), table_cells=cells))
+    cells = [make_cell(0, col, "品", box=box) for col, box in enumerate(boxes)]
+    return make_table(1, len(boxes), cells)
 
 
 def _point_line(text, left, top, right, bottom):
     """포인트 좌표로 주는 OCR 조각 (scale=1 로 쓴다)."""
-    from types import SimpleNamespace
+    from tests.table_fixtures import make_ocr_line
 
-    return SimpleNamespace(text=text, score=0.9,
-                           box=[(left, top), (right, top),
-                                (right, bottom), (left, bottom)])
+    return make_ocr_line(text, left, top, right, bottom)
 
 
 def test_near_miss_flags_threshold_problem(tmp_path, monkeypatch):
@@ -3973,22 +3975,17 @@ def test_render_targets_narrow_to_ocr_pages():
 # ────────────────────────────────────────────────────────────────────
 
 def _grid_cell(row, col, *, row_span=1, col_span=1):
-    """구조 검사용 셀."""
-    from types import SimpleNamespace
+    """구조 검사용 셀 — 실제 docling 스키마로 만든다."""
+    from tests.table_fixtures import make_cell
 
-    return SimpleNamespace(
-        start_row_offset_idx=row, end_row_offset_idx=row + row_span,
-        start_col_offset_idx=col, end_col_offset_idx=col + col_span,
-        row_span=row_span, col_span=col_span,
-        column_header=False, text="x", bbox=None)
+    return make_cell(row, col, "x", row_span=row_span, col_span=col_span)
 
 
 def _grid_table(rows, cols, cells):
     """구조 검사용 TableItem."""
-    from types import SimpleNamespace
+    from tests.table_fixtures import make_table
 
-    return SimpleNamespace(data=SimpleNamespace(
-        num_rows=rows, num_cols=cols, table_cells=cells))
+    return make_table(rows, cols, cells)
 
 
 def test_empty_cell_ratio_counts_uncovered_cells():
@@ -4418,20 +4415,37 @@ def test_vertical_merge_still_rebuilds():
     assert "프로그램" in markdown and "나" in markdown
 
 
-def test_tables_with_merges_are_skipped():
+def test_tables_with_merges_are_skipped(tmp_path, monkeypatch):
     """병합 셀이 있는 표는 재구성 대상에서 뺀다.
 
     좌표 격자는 병합을 표현하지 못해 값의 귀속이 바뀐다 — 0.1.75 에서
     `〃` 표기로 고친 문제를 되돌리게 된다.
     """
-    import inspect
-
     from docstruct import pipeline
+    from docstruct.models import PageContent, PageTrace, TableInfo
+    from tests.table_fixtures import make_cell, make_table
 
-    source = inspect.getsource(pipeline._rebuild_broken_grids)
-    assert "_has_merges" in source
-    assert "row_span" in source and "col_span" in source
-    assert "격자 재구성 건너뜀" in source
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+
+    merged = make_table(2, 1, [make_cell(0, 0, "값", row_span=2,
+                                         box=(100, 100, 200, 120))])
+    table = TableInfo(id="table_1", table_num=1, placeholder="",
+                      markdown="| a |", structure_ratio=0.5,
+                      bbox={"l": 90, "t": 90, "r": 210, "b": 130},
+                      source_item=merged)
+    page = PageContent(page_no=1, page_no_kind="pdf", content="",
+                       page_image_path=str(image), tables=[table],
+                       trace=PageTrace(extractor="docling", text_source="ocr"))
+
+    # 재구성이 돌면 안 된다 — OCR 을 부르지 않는지로 확인한다
+    called = []
+    monkeypatch.setattr("docstruct.converters.pdf.rapidocr_ko.read_image",
+                        lambda p: called.append(p) or [])
+
+    assert pipeline._rebuild_broken_grids([page], scale=2.0) == 0
+    assert table.markdown == "| a |"                  # 원본 그대로
+    assert any("건너뜀" in step.action for step in page.trace.steps)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -4806,3 +4820,1883 @@ def test_vlm_targets_odd_columns_not_empty_ratio(tmp_path, monkeypatch):
     assert vlm_rebuild.rebuild_broken_tables([make(odd_columns=(7, 8))]) == 1
     assert vlm_rebuild.rebuild_broken_tables([make(structure_ratio=0.2)]) == 0
     assert vlm_rebuild.rebuild_broken_tables([make()]) == 0
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.12 — 병합 정보를 JSON 으로 함께 내보내기
+#
+# 배경: markdown 은 병합을 표현하지 못한다. `colSpan="3"` 인 셀도 한 칸에만
+#       값이 들어가고 나머지는 빈 칸이 된다 — 실측 문서에서 병합 표기(`〃`)
+#       가 1,165회 나왔는데, 그 자리의 span 값은 markdown 에서 사라진다.
+#
+#       HWPX 는 XML 에 병합이 명시돼 있어(`cellSpan`, `cellAddr`) 추측할
+#       필요가 없다. 실측: 병합 셀 968개.
+#
+#           <tc><cellAddr colAddr="2" rowAddr="0"/>
+#               <cellSpan colSpan="1" rowSpan="2"/></tc>
+#
+#       그 값을 내보내면 구조화 단계가 **병합 셀 값을 하위 행에 전파**할 수
+#       있다 — 표 조각을 RAG 청크로 잘라도 레이블이 붙어 있게 하는 표준
+#       대응이다.
+# ────────────────────────────────────────────────────────────────────
+
+def _span_cell(row, col, text, *, row_span=1, col_span=1):
+    """격자 시험용 셀 — 실제 docling 스키마로 만든다."""
+    from tests.table_fixtures import make_cell
+
+    return make_cell(row, col, text, row_span=row_span, col_span=col_span)
+
+
+def test_cell_grid_keeps_spans():
+    """셀 격자가 병합 정보를 담는다."""
+    from docstruct.tables.docling import cell_grid
+    from tests.table_fixtures import make_table
+
+    item = make_table(2, 3, [_span_cell(0, 0, "구분", row_span=2),
+                             _span_cell(0, 1, "예산", col_span=2),
+                             _span_cell(1, 1, "'26"), _span_cell(1, 2, "'27")])
+
+    grid = cell_grid(item)
+    assert len(grid) == 4
+    first = grid[0]
+    assert (first["row"], first["col"]) == (0, 0)
+    assert (first["rowspan"], first["colspan"]) == (2, 1)   # 세로 병합
+    assert grid[1]["colspan"] == 2                          # 가로 병합
+
+
+def test_cell_grid_shape_matches_hwpx():
+    """PDF 와 HWPX 격자가 같은 형태다.
+
+    형식마다 다르면 쓰는 쪽이 분기해야 한다.
+    """
+    from docstruct.tables.docling import cell_grid
+    from tests.table_fixtures import make_table
+
+    item = make_table(1, 1, [_span_cell(0, 0, "값")])
+    assert sorted(cell_grid(item)[0]) == ["col", "colspan", "row", "rowspan", "text"]
+
+
+def test_table_cells_serialized():
+    """격자가 JSON 에 남는다."""
+    import json
+
+    from docstruct.models import TableInfo
+
+    table = TableInfo(id="table_1", table_num=1, placeholder="<table 1>",
+                      markdown="| a |",
+                      cells=[{"row": 0, "col": 0, "rowspan": 2,
+                              "colspan": 1, "text": "구분"}])
+    data = table.to_dict()
+    assert data["cells"][0]["rowspan"] == 2
+    json.dumps(data, ensure_ascii=False)
+
+
+def test_hwpx_grid_reads_merges():
+    """HWPX 파서가 XML 의 병합 속성을 읽는다."""
+    from pathlib import Path as _Path
+
+    sample = _Path("notebooks/samples/sample.hwpx")
+    if not sample.is_file():
+        pytest.skip("sample.hwpx 없음")
+
+    from docstruct.converters.hwpx.hwpxtree import table_grids
+
+    grids = table_grids(str(sample))
+    assert grids                                   # 표가 하나는 있다
+    for grid in grids:
+        for cell in grid:
+            assert cell["rowspan"] >= 1 and cell["colspan"] >= 1
+            assert sorted(cell) == ["col", "colspan", "row", "rowspan", "text"]
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.13 — 그래프 영역을 표시
+#
+# 배경: 원그래프·막대그래프는 값이 **그림 안에** 있어 텍스트로 옮겨지지
+#       않는다. 행안부 성과계획서 43쪽의 3D 원그래프가 그랬다.
+#
+#           텍스트 레이어: <전년도 대비 전략목표별 재원배분 변화>  ← 제목뿐
+#           차트 레이블:   0개
+#
+#       `전략목표 Ⅰ 20.7%` 같은 수치가 전부 그림 안에 있는데, 판정이
+#       `글자 0자 — 사진·로고로 둡니다` 로 빠져 **무엇을 놓쳤는지도 남지
+#       않았다.**
+#
+#       433쪽 전체를 훑어 실제 그래프는 43쪽 2개뿐이고 모두 벡터임을
+#       확인했다(스캔 이미지 0쪽). 화질 개선은 필요 없다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_chart_region_kind_exists():
+    """그래프 갈래가 있다."""
+    from docstruct.converters.pdf.region_kind import RegionKind
+
+    assert RegionKind.CHART.value == "chart"
+
+
+def test_chart_verdict_serialized():
+    """판정과 사유가 JSON 에 남는다.
+
+    표시하지 않으면 무엇을 놓쳤는지 알 수 없다.
+    """
+    import json
+
+    from docstruct.models import ImageInfo
+
+    info = ImageInfo(id="image_1", placeholder="<!-- image_1 -->",
+                     region_kind="chart",
+                     region_kind_reason="그림이 영역의 100% · 글자 0자")
+    data = info.to_dict()
+    assert data["region_kind"] == "chart"
+    assert "100%" in data["region_kind_reason"]
+    json.dumps(data, ensure_ascii=False)
+
+
+def test_drawing_cover_uses_get_bounds():
+    """위치를 `get_bounds` 로 읽는다.
+
+    텍스트 객체에는 `get_pos` 가 없어, 그것을 쓰면 도형이 0개로 세어진다.
+    실제로 그 실수로 원그래프를 놓쳤다.
+
+    **소스를 검사하는 이유**: 잘못 써도 예외가 나지 않고 조용히 0 을
+    돌려준다. 결과만 보고는 구분되지 않아 호출 자체를 확인한다.
+    """
+    import inspect
+
+    from docstruct.converters.pdf import region_kind
+
+    source = inspect.getsource(region_kind._drawing_cover)
+    assert "get_bounds" in source
+    # 실제 호출이 get_bounds 여야 한다 (docstring 의 언급은 제외)
+    calls = [ln for ln in source.splitlines()
+             if "obj.get_" in ln or "= obj." in ln]
+    assert calls and all("get_bounds" in ln for ln in calls)
+
+
+def test_chart_verdict_from_drawing_cover(tmp_path):
+    """그림이 영역을 덮으면 그래프로 판정한다."""
+    pytest.importorskip("pypdfium2")
+    import pypdfium2 as pdfium
+
+    from docstruct.converters.pdf.region_kind import RegionKind, classify_region
+
+    # 글자가 없는 빈 PDF — 스캔 그림과 같은 조건
+    blank = tmp_path / "blank.pdf"
+    document = pdfium.PdfDocument.new()
+    document.new_page(200, 300)
+    document.save(str(blank))
+    document.close()
+
+    verdict = classify_region(blank, 1, {"l": 0, "t": 0, "r": 200, "b": 300})
+    # 그림도 글자도 없으면 사진으로 둔다 (그래프가 아님)
+    assert verdict.kind is RegionKind.IMAGE
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.14 — 표 재추출 가드레일
+#
+# 배경: LLM 재추출(`tables/fill.py`)이 결과를 **비어 있지 않으면 그대로**
+#       반영하고 있었다. LLM 은 못 읽은 것을 지어내고 있던 값을 빠뜨리기도
+#       하는데, 그것을 거르는 단계가 없었다.
+#
+#       실측(성과계획서 41건 재추출)에서 10건에 숫자 차이가 있었다. 파보니
+#       대부분은 정리였다.
+#
+#           {"fields": {}} 49625   ← 필드 잔재 (원본 데이터 아님)
+#           국회운영위 원회운영지 원 54004  ← HWP 문단 ID
+#
+#       그래서 이 둘을 빼고 센다. 그러지 않으면 정상 정리를 손실로 오판해
+#       15/41 을 폐기했다.
+#
+#       글자 수로 견주는 것도 틀렸다 — markdown 표는 열 폭을 맞추느라 빈
+#       칸에 공백을 채워, 7,601자 원본이 1,545자로 "짧아진" 것처럼 보였다.
+#       공백을 뺀 내용으로 견준다.
+#
+#       최종: 실데이터 41건 전부 수용, 오탐 0.
+# ────────────────────────────────────────────────────────────────────
+
+def test_fill_guard_accepts_normal_rebuild():
+    """정상 재추출을 막지 않는다."""
+    from docstruct.tables.fill import fill_is_safe
+
+    original = "| a | 12345 | 67890 | 11111 | 22222 | 33333 |"
+    rebuilt = "| 구분 | 12345 | 67890 | 11111 | 22222 | 33333 |\n|---|---|"
+    ok, _ = fill_is_safe(original, rebuilt)
+    assert ok
+
+
+def test_fill_guard_rejects_lost_values():
+    """값이 크게 빠지면 되돌린다."""
+    from docstruct.tables.fill import fill_is_safe
+
+    original = "| 구분 | 12345 | 67890 | 11111 | 22222 | 33333 | 44444 |"
+    ok, why = fill_is_safe(original, "| 구분 | 12345 |\n|---|---|\n| a | b |")
+    assert not ok
+    assert "줄어듦" in why or "소실" in why
+
+
+def test_fill_guard_ignores_field_junk():
+    """필드 잔재 속 숫자는 손실로 세지 않는다.
+
+    `{"fields": {}} 49625` 의 49625 는 원본 데이터가 아니다. LLM 이
+    걸러내는 것이 옳다.
+    """
+    from docstruct.tables.fill import number_loss
+
+    original = '| {"fields": {"n": 98765}} | 705 | 1,234 |'
+    lost, _ = number_loss(original, "| 구분 | 705 | 1,234 |")
+    assert lost == 0
+
+
+def test_fill_guard_ignores_paragraph_ids():
+    """글자 뒤에 붙은 다섯 자리 문단 ID 도 빼고 센다.
+
+    `국회운영위 원회운영지 원 54004` 의 54004 는 표 값이 아니라 HWP 문단
+    번호다. 이것을 세면 정상 정리가 손실로 잡힌다.
+    """
+    from docstruct.tables.fill import number_loss
+
+    # 실측: `의원외교활 동  | 49625 ①한일친선협회...` — 앞 셀 글자 뒤에 붙는다
+    original = "| 의원외교활 동 | 49625 ①한일친선협회 | 1,234 |"
+    lost, _ = number_loss(original, "| 의원외교활동 | ①한일친선협회 | 1,234 |")
+    assert lost == 0
+
+
+def test_fill_guard_compares_content_not_length():
+    """공백을 뺀 내용으로 견준다.
+
+    markdown 표는 열 폭을 맞추느라 빈 칸에 공백을 채운다. 글자 수로 재면
+    정리된 결과가 짧아진 것처럼 보인다 — 실측에서 7,601자가 1,545자가 됐는데
+    내용은 그대로였다.
+    """
+    from docstruct.tables.fill import fill_is_safe
+
+    padded = ("| 구분        |    값     |\n"
+              "|-------------|-----------|\n"
+              "| 국회운영    |   12345   |")
+    tight = "| 구분 | 값 |\n|---|---|\n| 국회운영 | 12345 |"
+    ok, _ = fill_is_safe(padded, tight)
+    assert ok
+
+
+def test_fill_guard_rejects_non_table():
+    """표 형태가 아닌 응답을 거부한다."""
+    from docstruct.tables.fill import fill_is_safe
+
+    assert not fill_is_safe("| a | 12345 |", "이 표는 읽을 수 없습니다")[0]
+    assert not fill_is_safe("| a | 12345 |", "")[0]
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.15 — 값이 "바뀐" 경우까지 잡는 가드레일
+#
+# 배경: 0.3.14 는 **빠짐**만 봤다. 사용자가 지적했다 — 글자가 잘못 읽혔는지는
+#       보지 않는다고. 맞는 지적이다.
+#
+#       실측(성과계획서 41건)에서 실제로 값이 바뀐 사례가 있었다.
+#
+#           table_31  의정지원(103) → 국회활동관련단체지원(1034)
+#           table_45  없던 308 이 생김
+#
+#       집합으로 비교하면 "하나 사라지고 하나 생김" 이라 상쇄돼 보인다.
+#       개수를 함께 세어 **새로 생긴 값**을 잡아야 한다.
+#
+#       다만 쉼표가 든 금액은 41건 모두 정확히 보존됐다 — 어긋난 것은
+#       사업코드·번호뿐이었다. 그래서 금액만은 정확히 맞아야 한다고 본다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_amount_mismatch_detects_invented_values():
+    """원본에 없던 금액이 나오면 잡는다.
+
+    재추출은 옮겨 적는 작업이므로, 없던 값이 나오면 지어낸 것이다.
+    """
+    from docstruct.tables.fill import amount_mismatch
+
+    total, gone, made = amount_mismatch("| 1,234 | 5,678 |", "| 1,234 | 9,999 |")
+    assert (total, gone, made) == (2, 1, 1)
+
+
+def test_amount_mismatch_ignores_reordering():
+    """자리만 바뀐 것은 어긋남이 아니다."""
+    from docstruct.tables.fill import amount_mismatch
+
+    _, gone, made = amount_mismatch("| 1,234 | 5,678 |", "| 5,678 | 1,234 |")
+    assert (gone, made) == (0, 0)
+
+
+def test_fill_guard_rejects_changed_amount():
+    """금액이 바뀐 재추출을 되돌린다."""
+    from docstruct.tables.fill import fill_is_safe
+
+    original = "| 사업 | 1,234 | 5,678 | 9,012 |\n| 계 | 15,924 |"
+    # 5,678 이 6,678 로 바뀌었다
+    rebuilt = "| 사업 | 1,234 | 6,678 | 9,012 |\n|---|---|\n| 계 | 15,924 |"
+    ok, why = fill_is_safe(original, rebuilt)
+    assert not ok
+    assert "금액" in why
+
+
+def test_fill_guard_keeps_correct_amounts():
+    """금액이 그대로면 서식이 바뀌어도 받아들인다."""
+    from docstruct.tables.fill import fill_is_safe
+
+    original = "| 사업     | 1,234 | 5,678 |\n| 계 | 6,912 |"
+    rebuilt = "| 사업 | 1,234 | 5,678 |\n|---|---|---|\n| 계 | 6,912 |"
+    ok, _ = fill_is_safe(original, rebuilt)
+    assert ok
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.16 — 그래프 읽기와 본문 대조
+#
+# 배경: 0.3.13 은 그래프를 **표시만** 했다. 값은 그림 안에 남았다.
+#
+#       표는 원본 markdown 과 견줄 수 있지만 그래프는 대조할 원본이 없다.
+#       그래서 값을 내되 **본문과 대조해 신뢰도를 함께** 표시한다 —
+#       공공문서는 그래프 옆에 같은 값을 표나 문장으로 두는 일이 많다.
+#
+#       다만 본문이 정확하다는 전제가 필요하다. 스캔본처럼 본문 자체가 OCR
+#       결과라면 근거가 약해, `DOCSTRUCT_CHART_VERIFY_SOURCE=off` 로 끌 수
+#       있게 했다.
+# ────────────────────────────────────────────────────────────────────
+
+def _chart_page(content, image, *, kind="chart"):
+    """그래프 읽기 시험용 페이지."""
+    from docstruct.models import ImageInfo, PageContent, PageTrace
+
+    return PageContent(
+        page_no=1, page_no_kind="pdf", content=content,
+        images=[ImageInfo(id="image_1", placeholder="<!-- image_1 -->",
+                          image_path=str(image), region_kind=kind)],
+        trace=PageTrace(extractor="docling", text_source="text_layer"))
+
+
+_CHART_ANSWER = ("| 항목 | 값 |\n|---|---|\n"
+                 "| 전략목표 Ⅰ | 20.7% |\n| 전략목표 Ⅱ | 25.7% |")
+
+
+def test_chart_read_verifies_against_page_text():
+    """읽어낸 값이 본문에 있으면 검증된 것으로 표시한다."""
+    from docstruct.media.chart_read import verified_ratio
+
+    hit, total = verified_ratio(_CHART_ANSWER, "전략목표 Ⅰ 은 20.7 이고 Ⅱ 는 25.7 이다")
+    assert (hit, total) == (2, 2)
+
+
+def test_chart_verify_ignores_single_digits():
+    """한 자리 숫자는 대조에 쓰지 않는다.
+
+    우연히 맞을 확률이 높아 근거가 되지 못한다.
+    """
+    from docstruct.media.chart_read import verified_ratio
+
+    _, total = verified_ratio("| a | 5 |\n| b | 7 |", "본문에 5 와 7 이 있다")
+    assert total == 0
+
+
+def test_chart_read_records_verification(tmp_path, monkeypatch):
+    """검증 결과가 ImageInfo 에 남는다."""
+    from docstruct.media import chart_read
+
+    image = tmp_path / "c.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(chart_read, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(chart_read, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(chart_read, "invoke_llm", lambda *a, **k: _CHART_ANSWER)
+
+    good = _chart_page("전략목표 Ⅰ 은 20.7, Ⅱ 는 25.7", image)
+    assert chart_read.read_charts([good]) == 1
+    assert good.images[0].chart_verified == 1.0
+
+    poor = _chart_page("전혀 다른 내용", image)
+    chart_read.read_charts([poor])
+    assert poor.images[0].chart_verified == 0.0
+
+
+def test_chart_verify_can_be_switched_off(tmp_path, monkeypatch):
+    """대조 대상을 바꾸거나 끌 수 있다.
+
+    본문 자체가 OCR 결과라면 대조 근거가 약하다.
+    """
+    from docstruct.media import chart_read
+
+    image = tmp_path / "c.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(chart_read, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(chart_read, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(chart_read, "invoke_llm", lambda *a, **k: _CHART_ANSWER)
+    monkeypatch.setenv(chart_read.VERIFY_SOURCE_ENV, "off")
+
+    page = _chart_page("아무 내용", image)
+    chart_read.read_charts([page])
+    assert page.images[0].chart_verified is None
+
+
+def test_chart_read_skips_non_chart_regions(tmp_path, monkeypatch):
+    """그래프로 표시되지 않은 영역은 건드리지 않는다."""
+    from docstruct.media import chart_read
+
+    image = tmp_path / "c.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(chart_read, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(chart_read, "invoke_llm", lambda *a, **k: _CHART_ANSWER)
+
+    page = _chart_page("본문", image, kind="image")
+    assert chart_read.read_charts([page]) == 0
+
+
+def test_chart_read_records_missing_llm(tmp_path, monkeypatch):
+    """LLM 이 없으면 처리 경로에 남긴다.
+
+    조용히 건너뛰면 왜 값이 없는지 알 수 없다.
+    """
+    from docstruct.media import chart_read
+
+    image = tmp_path / "c.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(chart_read, "llm_api_config", lambda: {})
+
+    page = _chart_page("본문", image)
+    assert chart_read.read_charts([page]) == 0
+    assert any("생략" in step.action for step in page.trace.steps)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.17 — 표 재추출에도 신뢰도 표시
+#
+# 배경: 0.3.15 는 통과·폐기만 했다. 통과한 표에는 아무 표시가 없어, 얼마나
+#       확인된 것인지 알 수 없었다. 그래프에는 `chart_verified` 를 두었는데
+#       표에는 없어 일관성도 없었다.
+#
+#       실측(성과계획서 41건) 분포:
+#
+#           1.0  21건   금액·숫자가 모두 일치
+#           0.9   2건   숫자 일부 차이
+#           0.5  18건   견줄 숫자가 없음 (판단 보류)
+#
+#       **낮다고 값이 틀린 것은 아니다.** 확인할 근거가 적었다는 뜻이다.
+# ────────────────────────────────────────────────────────────────────
+
+def _fill_md(rows):
+    """검증 시험용 GFM 표."""
+    return "\n".join(rows[:1] + ["|---|---|---|"] + rows[1:])
+
+
+def test_fill_diff_reports_counts_not_score():
+    """점수가 아니라 무엇이 얼마나 다른지 낸다.
+
+    표는 대조할 기준이 없다 — 원본 markdown 자체가 깨져 있어 재추출한
+    것이므로 그것과 견줘 "맞다" 고 할 수 없다. 하나로 뭉친 점수는
+    "0.5 면 반쯤 맞다" 처럼 읽혀 오해를 부른다.
+    """
+    from docstruct.tables.fill import fill_diff
+
+    original = _fill_md(["| a | 1,234 | 12345 |", "| b | 5,678 | 67890 |"])
+    rebuilt = _fill_md(["| 구분 | 1,234 | 12345 |", "| b | 5,678 | 67890 |"])
+
+    diff = fill_diff(original, rebuilt)
+    assert diff["amounts"] == 2
+    assert diff["amounts_lost"] == 0
+    assert diff["amounts_new"] == 0
+    assert diff["numbers_lost"] == 0
+
+
+def test_fill_diff_counts_missing_values():
+    """빠진 값을 센다."""
+    from docstruct.tables.fill import fill_diff
+
+    original = _fill_md(["| a | 1,234 | 5,678 | 9,012 |"])
+    diff = fill_diff(original, _fill_md(["| 구분 | 1,234 |"]))
+    assert diff["amounts"] == 3
+    assert diff["amounts_lost"] == 2
+
+
+def test_fill_diff_serialized():
+    """빠짐 정보가 JSON 에 남는다."""
+    import json
+
+    from docstruct.models import TableInfo
+
+    table = TableInfo(id="table_1", table_num=1, placeholder="", markdown="| a |",
+                      fill_diff={"amounts": 12, "amounts_lost": 0,
+                                 "amounts_new": 0, "numbers": 3,
+                                 "numbers_lost": 1})
+    data = table.to_dict()
+    assert data["fill_diff"]["amounts"] == 12
+    json.dumps(data, ensure_ascii=False)
+
+
+def test_fill_diff_computed_from_real_values():
+    """빠짐 정보가 실제 값에서 계산된다."""
+    from docstruct.tables.fill import fill_diff
+
+    original = _fill_md(["| a | 1,234 | 5,678 |", "| b | 9,012 |"])
+    rebuilt = _fill_md(["| 구분 | 1,234 | 5,678 |", "| b | 9,012 |"])
+
+    diff = fill_diff(original, rebuilt)
+    assert diff["amounts"] == 3 and diff["amounts_lost"] == 0
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.18 — 차트 대조 범위를 이웃 쪽으로
+#
+# 배경: 0.3.16 은 **같은 쪽 본문**만 견줬다. 사용자가 지적했다 — 이 문서는
+#       정보가 여기저기 산재해 있다고. 실측으로 확인했다.
+#
+#           43쪽 그래프의 값이 41~42쪽 표에 있음
+#
+#           같은 쪽만    0/9   =   0%
+#           ±2쪽        8/9   =  89%
+#           문서 전체    9/9   = 100%
+#
+#       같은 쪽 대조로는 **검증률이 0** 이었다. 공공문서는 설명과 그림이
+#       쪽을 걸쳐 흩어진다.
+#
+#       넓힐수록 우연히 맞을 확률도 커지므로 기본은 ±2쪽으로 두고, 문서
+#       전체나 같은 쪽만 보도록 바꿀 수 있게 했다.
+# ────────────────────────────────────────────────────────────────────
+
+def _span_pages(image, *, chart_page=43):
+    """값이 이웃 쪽에 흩어진 상황."""
+    from docstruct.models import ImageInfo, PageContent, PageTrace
+
+    def page(number, content, chart=False):
+        return PageContent(
+            page_no=number, page_no_kind="pdf", content=content,
+            images=[ImageInfo(id=f"img{number}", placeholder="",
+                              image_path=str(image), region_kind="chart")]
+            if chart else [],
+            trace=PageTrace(extractor="docling", text_source="text_layer"))
+
+    return [page(41, "전략목표 Ⅰ 20.7"), page(42, "전략목표 Ⅱ 25.7"),
+            page(chart_page, "그래프 제목만", chart=True)]
+
+
+_SPAN_ANSWER = "| Ⅰ | 20.7% |\n|---|---|\n| Ⅱ | 25.7% |"
+
+
+def _patch_chart_llm(monkeypatch):
+    """차트 읽기 LLM 을 가짜로 바꾼다."""
+    from docstruct.media import chart_read
+
+    monkeypatch.setattr(chart_read, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(chart_read, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(chart_read, "invoke_llm", lambda *a, **k: _SPAN_ANSWER)
+
+
+def test_chart_verify_looks_at_neighbouring_pages(tmp_path, monkeypatch):
+    """이웃 쪽 본문까지 견준다.
+
+    같은 쪽만 보면 실측에서 검증률이 0 이었다.
+    """
+    from docstruct.media import chart_read
+
+    image = tmp_path / "c.png"
+    image.write_bytes(b"x")
+    _patch_chart_llm(monkeypatch)
+
+    pages = _span_pages(image)
+    chart_read.read_charts(pages)
+    assert pages[2].images[0].chart_verified == 1.0
+
+
+def test_chart_verify_span_is_configurable(tmp_path, monkeypatch):
+    """범위를 좁히면 검증률이 떨어진다."""
+    from docstruct.media import chart_read
+
+    image = tmp_path / "c.png"
+    image.write_bytes(b"x")
+    _patch_chart_llm(monkeypatch)
+    monkeypatch.setenv(chart_read.VERIFY_SPAN_ENV, "0")     # 같은 쪽만
+
+    pages = _span_pages(image)
+    chart_read.read_charts(pages)
+    assert pages[2].images[0].chart_verified == 0.0
+
+
+def test_chart_verify_document_mode(tmp_path, monkeypatch):
+    """문서 전체와 견줄 수도 있다.
+
+    멀리 떨어진 값도 잡지만, 관계없는 쪽의 숫자와도 맞아 근거가 약해진다.
+    """
+    from docstruct.media import chart_read
+
+    image = tmp_path / "c.png"
+    image.write_bytes(b"x")
+    _patch_chart_llm(monkeypatch)
+    monkeypatch.setenv(chart_read.VERIFY_SOURCE_ENV, "document")
+
+    pages = _span_pages(image, chart_page=200)   # 아주 멀리 떨어뜨림
+    chart_read.read_charts(pages)
+    assert pages[2].images[0].chart_verified == 1.0
+
+
+def test_chart_verify_span_rejects_bad_values(monkeypatch):
+    """범위 설정이 잘못되면 기본값을 쓴다."""
+    from docstruct.media import chart_read
+
+    for bad in ("숫자아님", "-3"):
+        monkeypatch.setenv(chart_read.VERIFY_SPAN_ENV, bad)
+        assert chart_read._verify_span() == chart_read.DEFAULT_VERIFY_SPAN
+
+
+def test_chart_verify_spans_neighbour_pages():
+    """그래프 값을 앞뒤 쪽에서도 찾는다.
+
+    실측(행안부 43쪽 원그래프): 같은 쪽만 보면 **0/11**, 앞뒤 1쪽까지 넓히면
+    **9/11** 이 확인됐다. 그래프는 전략목표별 합계이고 같은 쪽 표는
+    프로그램별이라 층위가 달랐다.
+
+    ±2 이상으로 넓혀도 확인 수가 그대로여서 ±1 로 둔다 — 넓힐수록 우연
+    일치만 는다.
+    """
+    from docstruct.media import chart_read
+
+    # 기본은 ±2 — 실측에서 ±1 로도 9/11 이 잡혔고 ±2 이상은 더 늘지 않는다.
+    assert chart_read.DEFAULT_VERIFY_SPAN >= 1
+    assert chart_read._verify_span() >= 1
+
+
+def test_chart_read_uses_neighbour_pages(tmp_path, monkeypatch):
+    """같은 쪽에 값이 없어도 앞뒤 쪽에서 확인한다."""
+    from docstruct.media import chart_read
+    from docstruct.models import ImageInfo, PageContent, PageTrace
+
+    image = tmp_path / "c.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(chart_read, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(chart_read, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(
+        chart_read, "invoke_llm",
+        lambda *a, **k: "| 항목 | 값 |\n|---|---|\n| Ⅰ | 20.7% |\n| Ⅱ | 25.7% |")
+
+    def page(number, content, *, chart=False):
+        return PageContent(
+            page_no=number, page_no_kind="pdf", content=content,
+            images=[ImageInfo(id=f"img{number}", placeholder="",
+                              image_path=str(image), region_kind="chart")]
+            if chart else [],
+            trace=PageTrace(extractor="docling", text_source="text_layer"))
+
+    pages = [page(42, "앞쪽에 20.7 이 있다"),
+             page(43, "차트 제목만 있는 쪽", chart=True),
+             page(44, "뒤쪽에 25.7 이 있다")]
+
+    assert chart_read.read_charts(pages) == 1
+    assert pages[1].images[0].chart_verified == 1.0
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.19 — 모델이 만든 것을 출력에 표시
+#
+# 배경: LLM·VLM 이 다시 만든 표와 그래프가 결과물에서 **파서가 뽑은 것과
+#       구분되지 않았다.** JSON 에도, 요약에도, HTML 미리보기에도 표시가
+#       없었다. 어디까지 믿을지 정하려면 출처를 알아야 한다.
+#
+#           source: "parser"  파서가 뽑은 그대로
+#           source: "llm"     LLM 이 다시 만듦 (fill)
+#           source: "vlm"     VLM 이 지면을 보고 다시 씀
+# ────────────────────────────────────────────────────────────────────
+
+def test_source_field_defaults_to_parser():
+    """손대지 않은 표·그림은 parser 로 남는다."""
+    from docstruct.models import ImageInfo, TableInfo
+
+    table = TableInfo(id="t1", table_num=1, placeholder="", markdown="| a |")
+    assert table.source == "parser"
+    assert ImageInfo(id="i1", placeholder="").source == "parser"
+
+
+def test_source_field_serialized():
+    """출처가 JSON 에 남는다."""
+    import json
+
+    from docstruct.models import TableInfo
+
+    table = TableInfo(id="t1", table_num=1, placeholder="", markdown="| a |",
+                      source="vlm")
+    data = table.to_dict()
+    assert data["source"] == "vlm"
+    json.dumps(data, ensure_ascii=False)
+
+
+def test_vlm_paths_mark_source(tmp_path, monkeypatch):
+    """VLM 이 손댄 표·그림에 출처가 남는다."""
+    import docstruct.infrastructure.llm.client as llm_client
+    from docstruct.media import chart_read
+    from docstruct.models import ImageInfo, PageContent, PageTrace, TableInfo
+    from docstruct.tables import vlm_rebuild
+
+    image = tmp_path / "p.png"
+    image.write_bytes(b"x")
+    monkeypatch.setattr(llm_client, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(vlm_rebuild, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(vlm_rebuild, "invoke_llm",
+                        lambda *a, **k: "| 구분 | 값 |\n|---|---|\n| 가 | 1 |")
+
+    table = TableInfo(id="t1", table_num=1, placeholder="",
+                      markdown="| 品 | 品 |\n|---|---|\n| a | b |",
+                      odd_columns=(7, 8))
+    page = PageContent(page_no=1, page_no_kind="pdf", content="본문",
+                       page_image_path=str(image), tables=[table],
+                       trace=PageTrace(extractor="docling", text_source="ocr"))
+    assert vlm_rebuild.rebuild_broken_tables([page]) == 1
+    assert table.source == "vlm"
+
+    monkeypatch.setattr(chart_read, "llm_api_config", lambda: {"model": "x"})
+    monkeypatch.setattr(chart_read, "encode_image_file",
+                        lambda _p: ("image/png", "AAAA"))
+    monkeypatch.setattr(chart_read, "invoke_llm",
+                        lambda *a, **k: "| 항목 | 값 |\n|---|---|\n| Ⅰ | 20.7% |")
+    info = ImageInfo(id="i1", placeholder="", image_path=str(image),
+                     region_kind="chart")
+    chart_page = PageContent(page_no=1, page_no_kind="pdf", content="20.7",
+                             images=[info],
+                             trace=PageTrace(extractor="docling", text_source="ocr"))
+    assert chart_read.read_charts([chart_page]) == 1
+    assert info.source == "vlm"
+
+
+def _source_doc():
+    """출처가 섞인 문서."""
+    from docstruct.models import (
+        ImageInfo, PageContent, PageDocument, PageTrace, TableInfo,
+    )
+
+    def table(number, source, diff=None):
+        return TableInfo(
+            id=f"t{number}", table_num=number, placeholder="", markdown="| a |",
+            source=source, fill_diff=diff, content_type="table",
+            quality="sufficient",
+            original_markdown="| old |" if source != "parser" else None)
+
+    page = PageContent(
+        page_no=1, page_no_kind="pdf", content="본문",
+        tables=[table(1, "parser"),
+                table(2, "llm", {"numbers_lost": 2, "amounts_lost": 1}),
+                table(3, "vlm")],
+        images=[ImageInfo(id="i1", placeholder="", region_kind="chart",
+                          source="vlm"),
+                ImageInfo(id="i2", placeholder="", region_kind="chart")],
+        trace=PageTrace(extractor="docling", text_source="text_layer"))
+    return PageDocument(filename="x.pdf", source_format="pdf", pages=[page])
+
+
+def test_summary_shows_model_made_counts():
+    """콘솔 요약이 모델이 만든 수를 보여 준다."""
+    from docstruct.report import summary_lines
+
+    text = "\n".join(summary_lines(_source_doc()))
+    assert "LLM 1" in text and "VLM 1" in text
+    assert "값이 빠진 표" in text
+    assert "그래프" in text
+
+
+def test_preview_shows_source_badges():
+    """HTML 미리보기에 출처 배지가 나온다."""
+    from docstruct.preview import summary_html, table_overview_html
+
+    doc = _source_doc()
+    overview = table_overview_html(doc)
+    assert "출처" in overview                 # 열 이름
+    assert "파서" in overview and "LLM" in overview and "VLM" in overview
+    assert "-3" in overview                   # 빠진 값 수
+
+    summary = summary_html(doc)
+    assert "LLM 1" in summary and "그래프" in summary
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.20 — 실험 기법을 독립 모듈로 분리
+#
+# 배경: 표 구조 인식을 보완하는 기법을 여럿 시험하는 중인데, 각각이 본체에
+#       섞이면 **나중에 무엇을 지워야 할지 알 수 없다.** 실제로 설정이 20개를
+#       넘었고 일부는 이미 폐기 대상이었다(빈 칸 비율 판정 → 정상 표 82% 오판).
+#
+#       `docstruct/experiments/` 에 한 파일당 하나씩 두고 레지스트리에
+#       등록한다. 폐기할 때는 파일을 지우고 등록을 빼면 된다.
+#
+#       다섯 기법은 각각 다른 연구 계보에서 발상을 빌렸다.
+#
+#           split_merge     GridFormer  격자 위상으로 병합을 본다
+#           grid_refine     SEMv3 KOR   제안 대비 오프셋만 회귀
+#           two_way_match   TFLOP       텍스트 위치를 구조 판단에
+#           grid_consensus  계보 밖     문서 전체를 보는 후처리의 이점
+#           otsl_diff       OTSL        다섯 토큰 구조 표현
+# ────────────────────────────────────────────────────────────────────
+
+def test_experiments_registered():
+    """다섯 기법이 등록돼 있다."""
+    from docstruct.experiments import all_experiments
+
+    keys = {e.key for e in all_experiments()}
+    assert keys == {"split_merge", "grid_refine", "two_way_match",
+                    "grid_consensus", "otsl_diff"}
+
+
+def test_experiments_off_by_default():
+    """실험은 기본으로 꺼져 있다.
+
+    검증이 끝나면 본체로 옮긴다.
+    """
+    from docstruct.experiments import enabled_experiments
+
+    assert enabled_experiments() == []
+
+
+def test_experiment_toggle(monkeypatch):
+    """환경변수로 켜고 끌 수 있다."""
+    from docstruct.experiments import enabled_experiments
+
+    monkeypatch.setenv("DOCSTRUCT_EXP_SPLIT_MERGE", "true")
+    assert [e.key for e in enabled_experiments()] == ["split_merge"]
+
+
+def test_experiments_document_themselves():
+    """각 기법이 무엇을 보완하는지·어디서 빌렸는지 적혀 있다.
+
+    적어 두지 않으면 몇 달 뒤에 이 설정이 무엇이었는지 알 수 없다.
+    """
+    from docstruct.experiments import all_experiments
+
+    for exp in all_experiments():
+        assert exp.purpose and exp.origin and exp.note
+        assert exp.formats
+        assert exp.status in ("proposed", "testing", "verified", "retired")
+
+
+def _split_cell(row, col, text, box, *, col_span=1):
+    """병합 검출 시험용 셀 — 실제 docling 스키마로 만든다."""
+    from tests.table_fixtures import make_cell
+
+    return make_cell(row, col, text, col_span=col_span, box=box)
+
+
+def test_split_merge_detects_broken_header():
+    """세로 병합이 좌우로 갈린 모습을 잡는다.
+
+    실측: `구분` → `구` / `분` 으로 쪼개져 양쪽 열에 붙었다.
+    """
+    from docstruct.experiments.split_merge import find_split_merges
+    from tests.table_fixtures import make_table
+
+    item = make_table(1, 3, [_split_cell(0, 0, "구", (100, 100, 115, 112)),
+                             _split_cell(0, 1, "분", (117, 100, 132, 112)),
+                             _split_cell(0, 2, "총 계 (A+B)", (140, 100, 220, 112))])
+
+    found = find_split_merges(item)
+    assert len(found) == 1
+    assert found[0]["texts"] == ["구", "분"]
+
+
+def test_split_merge_ignores_normal_table():
+    """정상 표에서는 아무것도 잡지 않는다."""
+    from docstruct.experiments.split_merge import find_split_merges
+    from tests.table_fixtures import make_table
+
+    item = make_table(1, 2, [_split_cell(0, 0, "구분", (100, 100, 140, 112)),
+                             _split_cell(0, 1, "총계", (150, 100, 200, 112))])
+    assert find_split_merges(item) == []
+
+
+def test_grid_refine_nudges_only_nearby():
+    """경계를 한도 안에서만 옮긴다.
+
+    멀리 있는 관측값은 다른 열의 경계다.
+    """
+    from docstruct.experiments.grid_refine import refine_edges
+
+    assert refine_edges([100, 150, 200], [98, 152, 199]) == [98, 152, 199]
+    assert refine_edges([100, 150], [98, 300]) == [98, 150]
+
+
+def test_grid_consensus_finds_standard():
+    """같은 서식 표들의 중앙값으로 표준 격자를 만든다."""
+    from docstruct.experiments.grid_consensus import consensus_edges
+
+    standard = consensus_edges([[100, 150, 200], [101, 149, 201],
+                                [100, 151, 199], [130, 150, 200]])
+    assert abs(standard[0] - 100.5) < 1
+    assert abs(standard[1] - 150) < 1
+
+
+def test_two_way_match_flags_crowding():
+    """한 셀에 조각이 몰리면 불일치로 잡는다."""
+    from docstruct.converters.pdf.cell_match import Box
+    from docstruct.experiments.two_way_match import disagreements
+
+    cells = [Box(100, 100, 150, 120), Box(150, 100, 200, 120)]
+    fine = [(Box(105, 105, 145, 115), "왼쪽"), (Box(155, 105, 195, 115), "오른쪽")]
+    assert disagreements(cells, fine) == []
+
+    crowded = [(Box(105, 105, 145, 115), "A"), (Box(110, 105, 148, 115), "B")]
+    assert len(disagreements(cells, crowded)) == 1
+
+
+def test_otsl_expresses_merges():
+    """OTSL 이 병합을 토큰으로 나타낸다."""
+    from docstruct.experiments.otsl_diff import to_otsl, token_diff
+
+    merged = to_otsl([{"row": 0, "col": 0, "rowspan": 2, "colspan": 1},
+                      {"row": 0, "col": 1, "rowspan": 1, "colspan": 2},
+                      {"row": 1, "col": 1, "rowspan": 1, "colspan": 1},
+                      {"row": 1, "col": 2, "rowspan": 1, "colspan": 1}], 2, 3)
+    plain = to_otsl([{"row": r, "col": c, "rowspan": 1, "colspan": 1}
+                     for r in range(2) for c in range(3)], 2, 3)
+
+    assert "L" in merged and "U" in merged      # 가로·세로 병합 토큰
+    assert token_diff(merged, plain) == 2
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.22 — 가짜 객체를 실제 스키마로
+#
+# 배경: 테스트가 `SimpleNamespace` 로 표 셀을 흉내 냈다. 그러면 **실제와
+#       다른 것을 시험하게 된다.** 실제로 두 번 겪었다.
+#
+#           structure_gap  가짜가 빈 셀도 만들어 두어, 실제 docling 이
+#                          만들지 않는다는 것을 놓쳤다 → 정상 표 82% 오판
+#           fill_diff      시험 데이터가 실제 문단 ID 형태와 달라 두 번 고침
+#
+#       `tests/table_fixtures.py` 로 옮겨, docling 이 있으면 **진짜 클래스**를
+#       쓰고 없으면 같은 필드를 갖춘 대역을 쓴다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_no_ad_hoc_fake_objects_in_tests():
+    """테스트가 임시 가짜 객체를 만들지 않는다.
+
+    표·OCR 객체는 `tests/table_fixtures.py` 를 거친다. 그래야 실제 스키마와
+    어긋나면 한곳에서 드러난다.
+    """
+    from pathlib import Path as _Path
+
+    import ast
+
+    source = (_Path(__file__).resolve().parent / "test_regressions.py").read_text(
+        encoding="utf-8")
+    # 문자열·주석이 아니라 **실제 호출**만 본다
+    used = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "SimpleNamespace"
+    ]
+    assert not used, f"임시 가짜 객체 호출이 {len(used)}곳 남아 있습니다"
+
+
+def test_fixture_cell_matches_real_schema():
+    """헬퍼가 만든 셀이 실제 코드가 읽는 필드를 갖췄다."""
+    from tests.table_fixtures import CELL_FIELDS, make_cell
+
+    cell = make_cell(0, 0, "값", row_span=2, box=(10, 20, 30, 40))
+    for name in CELL_FIELDS:
+        assert hasattr(cell, name), f"{name} 이 없습니다"
+
+    # 실제 코드가 쓰는 방식으로 읽히는가
+    from docstruct.tables.docling import _cell_span
+
+    assert _cell_span(cell, "row") == (0, 2)
+    assert _cell_span(cell, "col") == (0, 1)
+    assert (cell.bbox.l, cell.bbox.t) == (10, 20)
+
+
+def test_fixture_ocr_line_matches_real_schema():
+    """헬퍼가 만든 OCR 조각이 실제 코드가 읽는 속성을 갖췄다."""
+    from docstruct.converters.pdf.cell_match import box_of
+    from tests.table_fixtures import make_ocr_line
+
+    line = make_ocr_line("글자", 10, 20, 50, 40)
+    assert line.text == "글자" and line.score > 0
+    box = box_of(line.box)
+    assert (box.left, box.top, box.right, box.bottom) == (10, 20, 50, 40)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.23 — 중첩 표가 바깥 표의 셀을 훔쳐가던 문제
+#
+# 배경: `_read_table` 이 `element.iter(tc)` 로 셀을 훑어 **중첩 표의 셀까지**
+#       잡았다. 좌표가 겹쳐 서로 덮어쓰고, 두 표가 한 표로 뒤섞였다.
+#
+#       실측(행정안전부 성과계획서 HWPX, 표 580개):
+#
+#           3행 3열 표의 셀이 6개여야 하는데 21개로 잡힘
+#           참고1·참고2 두 표가 한 표로 합쳐짐
+#           원본 PDF 대조 유실률 5.0% → 1.5%
+#
+#       직계 `<hp:tr>` 아래의 `<hp:tc>` 만 자기 셀이다.
+# ────────────────────────────────────────────────────────────────────
+
+def _nested_table_xml():
+    """중첩 표가 든 최소 HWPX 섹션 XML."""
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+        xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p><hp:run><hp:tbl rowCnt="1" colCnt="2">
+    <hp:tr>
+      <hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/>
+        <hp:cellSpan colSpan="1" rowSpan="1"/>
+        <hp:subList><hp:p><hp:run><hp:t>바깥왼쪽</hp:t></hp:run></hp:p></hp:subList>
+      </hp:tc>
+      <hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/>
+        <hp:cellSpan colSpan="1" rowSpan="1"/>
+        <hp:subList><hp:p><hp:run><hp:tbl rowCnt="1" colCnt="2">
+          <hp:tr>
+            <hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/>
+              <hp:cellSpan colSpan="1" rowSpan="1"/>
+              <hp:subList><hp:p><hp:run><hp:t>안쪽A</hp:t></hp:run></hp:p></hp:subList>
+            </hp:tc>
+            <hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/>
+              <hp:cellSpan colSpan="1" rowSpan="1"/>
+              <hp:subList><hp:p><hp:run><hp:t>안쪽B</hp:t></hp:run></hp:p></hp:subList>
+            </hp:tc>
+          </hp:tr>
+        </hp:tbl></hp:run></hp:p></hp:subList>
+      </hp:tc>
+    </hp:tr>
+  </hp:tbl></hp:run></hp:p>
+</hs:sec>"""
+
+
+def test_nested_table_cells_not_stolen():
+    """바깥 표가 중첩 표의 셀을 가져가지 않는다.
+
+    `iter()` 로 훑으면 안쪽 셀의 좌표가 바깥 좌표와 겹쳐 서로 덮어쓴다.
+    """
+    from xml.etree import ElementTree as ET
+
+    from docstruct.converters.hwpx.hwpxtree import HP, _read_table, _tag
+
+    root = ET.fromstring(_nested_table_xml())
+    outer = next(root.iter(_tag(HP, "tbl")))
+
+    table = _read_table(outer, set())
+    assert len(table.cells) == 2                  # 21개가 아니라 2개
+    texts = {" ".join(c.blocks) for c in table.cells}
+    assert "바깥왼쪽" in texts
+
+
+def test_nested_table_content_not_duplicated():
+    """중첩 표 내용이 두 번 나오지 않는다.
+
+    안쪽 표는 별도 블록으로 나오므로, 바깥 셀에도 담으면 중복이다.
+    """
+    from xml.etree import ElementTree as ET
+
+    from docstruct.converters.hwpx.hwpxtree import _walk
+
+    root = ET.fromstring(_nested_table_xml())
+    joined = "\n".join(_walk(root, set()))
+
+    assert joined.count("안쪽A") == 1
+    assert joined.count("바깥왼쪽") == 1
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.24 — PDF 표에 세로 병합 표기가 없던 문제
+#
+# 배경: HWP·HWPX 는 세로 병합이 이어지는 칸에 `〃` 를 남기는데(0.1.75),
+#       **PDF 경로만 그 기능을 못 받았다.** 데이터 셀이 좌상단에만 들어가고
+#       나머지는 빈 칸이라, 값이 맨 윗행만의 것으로 읽힌다.
+#
+#       실측(행정안전부 성과계획서, 같은 문서 두 형식):
+#
+#           PDF    표 322개 · 〃 0회      · insufficient 273 (85%)
+#           HWPX   표 580개 · 〃 4,366회 · insufficient   4 (0.7%)
+#
+#       LLM 판정 사유가 한결같았다 — "병합 셀이 풀리면서 '회계 구분' 열의
+#       값이 윗행에만 귀속되고 아랫행은 빈 칸으로 표시됨".
+# ────────────────────────────────────────────────────────────────────
+
+def test_pdf_table_marks_vertical_merge():
+    """세로 병합이 이어지는 칸에 `〃` 를 남긴다.
+
+    빈 칸으로 두면 값이 맨 윗행만의 것으로 읽힌다 — HWP 경로에서 같은
+    문제로 `페이스북+인스타그램 합계` 가 `페이스북 단독` 으로 잘못 읽혔다.
+    """
+    from docstruct.tables.docling import MERGE_UP, docling_table_to_markdown
+    from tests.table_fixtures import make_cell, make_table
+
+    item = make_table(3, 3, [
+        make_cell(0, 0, "구분", header=True),
+        make_cell(0, 1, "항목", header=True),
+        make_cell(0, 2, "값", header=True),
+        make_cell(1, 0, "프로그램", row_span=2),
+        make_cell(1, 1, "가"), make_cell(1, 2, "100"),
+        make_cell(2, 1, "나"), make_cell(2, 2, "200"),
+    ])
+
+    markdown = docling_table_to_markdown(item)
+    assert "프로그램" in markdown
+    assert MERGE_UP in markdown                  # 아래 행에 표식
+    # 값을 복제하지는 않는다 — 집계가 왜곡된다
+    assert markdown.count("프로그램") == 1
+
+
+def test_pdf_table_merge_mark_matches_hwp():
+    """표식이 HWP·HWPX 와 같은 글자다.
+
+    형식마다 다르면 읽는 쪽이 분기해야 한다.
+    """
+    from docstruct.converters.hwp.hwp5tree import MERGE_UP as HWP_MARK
+    from docstruct.converters.hwpx.hwpxtree import MERGE_UP as HWPX_MARK
+    from docstruct.tables.docling import MERGE_UP as PDF_MARK
+
+    assert PDF_MARK == HWP_MARK == HWPX_MARK
+
+
+def test_pdf_table_merge_mark_can_be_disabled(monkeypatch):
+    """표식을 끌 수 있다."""
+    from docstruct.tables.docling import MERGE_MARK_ENV, docling_table_to_markdown
+    from tests.table_fixtures import make_cell, make_table
+
+    monkeypatch.setenv(MERGE_MARK_ENV, "false")
+    item = make_table(3, 2, [
+        make_cell(0, 0, "구분", header=True), make_cell(0, 1, "값", header=True),
+        make_cell(1, 0, "묶음", row_span=2),
+        make_cell(1, 1, "가"), make_cell(2, 1, "나"),
+    ])
+    assert "〃" not in docling_table_to_markdown(item)
+
+
+def test_pdf_header_merge_still_spreads():
+    """헤더의 가로 병합은 전과 같이 전파된다 (회귀 확인)."""
+    from docstruct.tables.docling import docling_table_to_markdown
+    from tests.table_fixtures import make_cell, make_table
+
+    item = make_table(2, 2, [
+        make_cell(0, 0, "예산", header=True, col_span=2),
+        make_cell(1, 0, "A"), make_cell(1, 1, "B"),
+    ])
+    header = docling_table_to_markdown(item).splitlines()[0]
+    assert header.count("예산") == 2             # 두 열에 전파
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.25 — RAG 브릿지가 새 필드를 안 옮기던 문제
+#
+# 배경: FastAPI 서버(`app/rag/`)는 자체 `TableInfo` dataclass 를 쓰고,
+#       브릿지가 **필드를 하나씩 손으로 옮긴다.** docstruct 에 필드를
+#       더해도 그쪽을 고치지 않으면 결과 JSON 에 나오지 않는다.
+#
+#       실제로 `cells`(0.3.12)·`source`(0.3.19)·`fill_diff`(0.3.15)·
+#       `region_kind`(0.3.13) 가 전부 빠져 있었다. 사용자가 0.3.24 로
+#       돌렸는데 `cells` 가 0개라 버전 문제로 오해했다.
+#
+#       이 테스트는 **필드를 더할 때 브릿지도 고치라**는 알림이다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_table_fields_documented_for_bridge():
+    """표에 새 필드를 더하면 이 목록도 갱신한다.
+
+    RAG 브릿지(`app/rag/adapters/docstruct_bridge.py`)가 필드를 하나씩
+    옮기므로, 여기 목록과 견줘 빠진 것을 알아차릴 수 있다.
+    """
+    from docstruct.models import TableInfo
+
+    #: 다운스트림(RAG·API)이 받아야 하는 필드. 새로 만들면 여기에 더하고
+    #: 브릿지도 함께 고친다.
+    expected = {
+        "id", "table_num", "placeholder", "markdown", "bbox",
+        "llm_title", "content_type", "quality", "reason",
+        "original_markdown", "group_image_ids", "source_image_id",
+        # 0.3.12+
+        "cells", "source", "fill_diff", "continues_from",
+        "inherited_header", "odd_columns", "structure_ratio",
+        # 실험 (docstruct.experiments)
+        "split_merge_hints", "match_disagreements", "edge_drift",
+        "consensus_drift", "otsl",
+    }
+    actual = set(TableInfo(id="t", table_num=1, placeholder="",
+                           markdown="| a |").to_dict())
+    missing = sorted(expected - actual)
+    added = sorted(actual - expected)
+    assert not missing, f"사라진 필드: {missing}"
+    assert not added, f"새 필드가 생겼습니다 — 브릿지도 고치세요: {added}"
+
+
+def test_image_fields_documented_for_bridge():
+    """그림에 새 필드를 더하면 이 목록도 갱신한다."""
+    from docstruct.models import ImageInfo
+
+    expected = {
+        "id", "placeholder", "description", "image_path", "mime_type",
+        "bbox", "text_chars", "text_lines", "region_text", "vlm_markdown",
+        "region_kind", "region_kind_reason", "chart_verified", "source",
+        "table_candidate", "promoted_table_id",
+    }
+    actual = set(ImageInfo(id="i", placeholder="").to_dict())
+    missing = sorted(expected - actual)
+    added = sorted(actual - expected)
+    assert not missing, f"사라진 필드: {missing}"
+    assert not added, f"새 필드가 생겼습니다 — 브릿지도 고치세요: {added}"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.26 — 표 평가가 정상 표를 결함으로 오판하던 문제
+#
+# 배경: PDF 표 322개 중 277개(86%)가 `insufficient` 로 판정됐다. 실제 표를
+#       뜯어보니 **대부분 정상**이었다.
+#
+#           | 전자문서소통시스템(501) | 일반회계 | 9,781 | 26,152 | 17,600 |
+#
+#       모든 값이 제자리인데, `재정사업 평가명` 열이 드문드문하다는 이유로
+#       "병합 셀이 풀렸다" 고 봤다. 그 열은 평가 대상 사업에만 값이 있다.
+#
+#       원인은 프롬프트였다.
+#
+#           "빈 칸이 아래로 이어지는 모양이면 2번(병합 풀림)일 가능성이 높습니다"
+#
+#       예산표는 원래 빈 칸이 그렇게 생긴다. 그리고 `〃` 표기를 설명하지
+#       않아, LLM 이 그것을 "빈 칸으로 처리됨" 이라고 지적하기까지 했다.
+#
+#       InstructTable(2026) 의 하위 작업 분해 방식을 빌려 판단을 단계로
+#       나눴다 — 행·열 세기 → 병합 판단 → 내용 확인.
+# ────────────────────────────────────────────────────────────────────
+
+def test_assess_prompt_explains_merge_mark():
+    """평가 프롬프트가 `〃` 표기를 설명한다.
+
+    설명이 없으면 LLM 이 그 표식을 빈 칸으로 오해한다 — 실측에서
+    "'〃' 등이 빈 칸으로 처리됨" 이라는 판정이 나왔다.
+    """
+    from docstruct.tables.assess import _ASSESS_PROMPT
+
+    assert "〃" in _ASSESS_PROMPT
+    assert "결함이 아닙니다" in _ASSESS_PROMPT
+
+
+def test_assess_prompt_has_ordered_steps():
+    """판단을 단계로 나눈다.
+
+    InstructTable 이 하위 작업 분해로 성능을 올렸다 — 한 번에 훑고
+    인상으로 판정하면 정상 표를 결함으로 본다.
+    """
+    from docstruct.tables.assess import _ASSESS_PROMPT
+
+    for step in ("① 이것이 표인가", "② 행·열이 온전한가",
+                 "③ 빈 칸의 원인이 무엇인가"):
+        assert step in _ASSESS_PROMPT
+
+
+def test_assess_prompt_warns_against_blank_only_judgement():
+    """빈 칸만으로 지적하지 말라고 알린다."""
+    from docstruct.tables.assess import _ASSESS_PROMPT
+
+    assert "빈 칸이 있다는 이유만으로" in _ASSESS_PROMPT
+    assert "드문드문" in _ASSESS_PROMPT     # 열 전체가 드문 경우는 정상
+    assert "연달아 비어" in _ASSESS_PROMPT   # 이때만 병합 풀림
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.27 — 스캔본에서 모든 그림이 그래프로 판정되던 문제
+#
+# 배경: 스캔 PDF(주택과세금 377쪽)를 돌리니 그림 901개 중 **900개가
+#       `chart`** 로 판정됐다.
+#
+#           "그림이 영역의 100% · 글자 0자 — 그래프로 보입니다"  × 900
+#
+#       스캔본은 페이지 전체가 이미지 한 장이라 **어느 영역을 재도 100%**
+#       가 나온다. 0.3.13 에서 그래프 판정을 넣을 때 이 경우를 보지 못했다.
+#
+#       그래프는 지면의 일부를 차지한다. 페이지를 통째로 덮는 그림은 스캔
+#       원본이므로 그래프로 보지 않는다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_full_page_image_is_not_chart(tmp_path):
+    """페이지를 통째로 덮는 그림은 그래프가 아니다."""
+    pytest.importorskip("pypdfium2")
+    import pypdfium2 as pdfium
+
+    from docstruct.converters.pdf.region_kind import (
+        RegionKind, _page_cover_ratio, classify_region,
+    )
+
+    blank = tmp_path / "scan.pdf"
+    document = pdfium.PdfDocument.new()
+    document.new_page(200, 300)
+    document.save(str(blank))
+    document.close()
+
+    full = {"l": 0, "t": 0, "r": 200, "b": 300}
+    assert _page_cover_ratio(blank, 1, full) > 0.9
+    assert classify_region(blank, 1, full).kind is not RegionKind.CHART
+
+
+def test_chart_share_threshold_documented():
+    """지면 비율 한도가 있다."""
+    from docstruct.converters.pdf.region_kind import (
+        MAX_CHART_PAGE_SHARE, MIN_CHART_PAGE_SHARE,
+    )
+
+    assert 0 < MIN_CHART_PAGE_SHARE < MAX_CHART_PAGE_SHARE < 1
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.28 — 그래프 판정이 한 문서에 과적합되던 문제
+#
+# 배경: 벡터 원그래프(행안부 43쪽) 하나를 기준으로 "그림이 영역을 덮으면
+#       그래프" 로 정했다. 그러자 스캔본(주택과세금)에서 장식 901개 중
+#       900개가 그래프로 걸렸다.
+#
+#       사용자가 지적했다 — 실제로는 세 유형이 있고, 벡터를 필수 조건으로
+#       삼으면 **뉴스 그래프를 캡처해 붙인 문서**를 놓친다.
+#
+#           벡터 차트   도형으로 그려짐 · 지면 일부
+#           사진 차트   래스터 · 지면 일부
+#           장식·스캔   배너·로고·QR·스캔 전면
+#
+#       한 신호로 가르지 않고 **여러 신호를 모아** 판단한다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_chart_score_accepts_vector_and_raster():
+    """벡터든 사진이든 그래프로 본다.
+
+    벡터를 필수 조건으로 삼으면 뉴스 그래프 캡처를 놓친다.
+    """
+    from docstruct.converters.pdf.region_kind import chart_score
+
+    vector, _ = chart_score(cover=1.0, page_share=0.22, aspect=2.1,
+                            vector_shapes=30)
+    raster, _ = chart_score(cover=1.0, page_share=0.25, aspect=1.5,
+                            vector_shapes=0)
+    assert vector and raster
+
+
+def test_chart_score_rejects_full_page_scan():
+    """스캔 전면은 그래프가 아니다."""
+    from docstruct.converters.pdf.region_kind import chart_score
+
+    ok, why = chart_score(cover=1.0, page_share=0.81, aspect=0.7,
+                          vector_shapes=0)
+    assert not ok
+    assert "스캔" in why
+
+
+def test_chart_score_rejects_banner_and_logo():
+    """납작한 띠와 작은 로고를 거른다.
+
+    머리말 배너는 `530×80` 처럼 납작하고, QR·로고는 지면의 1% 다.
+    """
+    from docstruct.converters.pdf.region_kind import chart_score
+
+    banner, why_banner = chart_score(cover=1.0, page_share=0.08, aspect=6.6,
+                                     vector_shapes=2)
+    logo, why_logo = chart_score(cover=1.0, page_share=0.01, aspect=1.0,
+                                 vector_shapes=0)
+    assert not banner and "가로세로" in why_banner
+    assert not logo and "로고" in why_logo
+
+
+def test_image_bbox_reaches_output():
+    """그림 좌표가 결과에 남는다.
+
+    판정 근거를 결과만 보고 확인하려면 크기를 알아야 한다 — 없으면
+    원본 PDF 를 다시 열어야 했다.
+    """
+    import json
+
+    from docstruct.models import ImageInfo
+
+    info = ImageInfo(id="i1", placeholder="",
+                     bbox={"l": 0, "t": 0, "r": 100, "b": 50})
+    data = info.to_dict()
+    assert data["bbox"]["r"] == 100
+    json.dumps(data, ensure_ascii=False)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.29 — 빈 원본을 LLM 이 채운 것이 통과하던 문제
+#
+# 배경: 과기부 성과보고서(581쪽, 표 520개)에서 **265개가 LLM 재추출**됐다.
+#       가드레일을 확인하니 금액이 7개 새로 생겼는데도 통과했다.
+#
+#           원본: | 구분 |
+#           결과: | 창구 방문 고객의 평균 소요 시간 | 17분 39초 |
+#                 | ... 경제적 가치(A) | 2,693원 |
+#
+#       원인이 둘이었다.
+#
+#       ① `if amounts and (gone or made)` — 원본에 금액이 0개면 검사를
+#          건너뛰어, 없던 금액이 생겨도 통과했다.
+#       ② 원본이 `| 구분 |` 두 글자뿐인데 158자로 늘어난 것을 막지 못했다.
+#          옮겨 적기가 아니라 **생성**이므로 원본과 견줄 수 없다.
+#
+#       실측: 265건 중 정확히 그 3건만 걸러진다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_fill_guard_checks_new_amounts_without_original():
+    """원본에 금액이 없어도 새로 생긴 금액을 잡는다."""
+    from docstruct.tables.fill import fill_is_safe
+
+    original = _fill_md(["| 구분 | 항목 |", "| 가 | 나 |", "| 다 | 라 |"])
+    rebuilt = _fill_md(["| 구분 | 항목 |", "| 가 | 2,693 |", "| 다 | 1,234 |"])
+    ok, why = fill_is_safe(original, rebuilt)
+    assert not ok
+    assert "신규" in why
+
+
+def test_fill_guard_rejects_filling_empty_table():
+    """거의 빈 원본이 채워지면 되돌린다.
+
+    옮겨 적기가 아니라 생성이므로 원본과 견줄 방법이 없다.
+    """
+    from docstruct.tables.fill import fill_is_safe
+
+    original = "| 구분 |\n|------|"
+    rebuilt = ("| 구분 | 내용 |\n|------|------|\n"
+               "| 창구 방문 고객의 평균 소요 시간 | 17분 39초 |\n"
+               "| 경제적 가치 | 2,693원 |")
+    ok, why = fill_is_safe(original, rebuilt)
+    assert not ok
+    assert "새로 만든" in why
+
+
+def test_fill_guard_keeps_normal_rebuild_of_short_table():
+    """짧아도 내용이 비슷하면 받아들인다.
+
+    빈 원본 검사가 정상 재추출까지 막으면 안 된다.
+    """
+    from docstruct.tables.fill import fill_is_safe
+
+    original = _fill_md(["| 구분 | 값 |", "| 가 | 1 |"])
+    rebuilt = _fill_md(["| 구분 | 값 |", "| 가 | 1 |"])
+    assert fill_is_safe(original, rebuilt)[0]
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.30 — 실험 결과가 API 출력에 나오지 않던 문제
+#
+# 배경: 실험을 켜고 돌렸는데 결과 JSON 에 아무것도 없었다. RAG 브릿지가
+#       실험 필드를 옮기지 않아서였다 — 0.3.25 에서 같은 문제를 고쳤는데
+#       실험 필드는 그때 없었다.
+#
+#       필드를 더할 때마다 브릿지도 고쳐야 한다는 것을 다시 확인했다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_experiment_fields_in_table_output():
+    """실험 필드가 표 출력에 있다.
+
+    없으면 실험을 켜도 결과를 볼 수 없다.
+    """
+    import json
+
+    from docstruct.models import TableInfo
+
+    table = TableInfo(id="t1", table_num=1, placeholder="", markdown="| a |",
+                      split_merge_hints=[{"row": 0, "texts": ["구", "분"]}],
+                      match_disagreements=3, edge_drift=2.5,
+                      consensus_drift=1.2, otsl="C L NL")
+    data = table.to_dict()
+    for key in ("split_merge_hints", "match_disagreements", "edge_drift",
+                "consensus_drift", "otsl"):
+        assert key in data, f"{key} 가 빠졌습니다"
+    json.dumps(data, ensure_ascii=False)
+
+
+def test_experiments_need_env_to_run():
+    """실험은 환경변수로 켜야 돈다.
+
+    켜지 않으면 아무것도 하지 않는다 — 결과가 비어 있으면 이것부터 본다.
+    """
+    from docstruct.experiments import all_experiments, enabled_experiments
+
+    assert all_experiments()           # 등록은 돼 있고
+    assert not enabled_experiments()   # 기본은 꺼짐
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.31 — 목차를 규칙으로 찾기
+#
+# 배경: 목차 추출이 LLM 기반(`--outline`)이고 CLI 전용이라, API 결과에는
+#       목차가 없었다. 스캔본(주택과세금)은 목차가 10쪽 넘게 있는데 본문
+#       텍스트로만 남았다.
+#
+#       목차 줄은 형태가 뚜렷하다 — 왼쪽에 제목, 오른쪽 끝에 쪽번호.
+#
+#           3. 종합소득세 신고·납부 ············ 172
+#
+#       다만 **스캔본은 줄이 나뉜다.** OCR 이 제목과 쪽번호를 다른 줄로
+#       읽는다.
+#
+#           '5.취득세에 부가되는세금'
+#           '57'
+#
+#       실측: 스캔본에서 항목 92개, 쪽 차이 2쪽을 찾았다.
+# ────────────────────────────────────────────────────────────────────
+
+def _toc_page(page_no, text):
+    """목차 시험용 페이지."""
+    from docstruct.models import PageContent, PageTrace
+
+    return PageContent(page_no=page_no, page_no_kind="pdf", content=text,
+                       trace=PageTrace(extractor="x", text_source="y"))
+
+
+def test_toc_finds_inline_entries():
+    """한 줄에 제목과 쪽번호가 있는 목차를 찾는다."""
+    from docstruct.outline.toc import find_toc
+
+    pages = [_toc_page(3, "목 차\n"
+                          "1. 총칙 ················· 5\n"
+                          "가. 목적(법§1) ·········· 5\n"
+                          "2. 과세대상 ············· 12\n")]
+    items = find_toc(pages)
+    assert len(items) == 3
+    assert items[0]["title"].startswith("1. 총칙")
+    assert items[0]["page"] == 5
+
+
+def test_toc_finds_split_entries():
+    """제목과 쪽번호가 다른 줄인 목차도 찾는다.
+
+    스캔본에서 OCR 이 줄을 나눠 읽는다.
+    """
+    from docstruct.outline.toc import find_toc
+
+    pages = [_toc_page(7, "차례\n"
+                          "5.취득세에 부가되는세금\n57\n"
+                          "가.지방교육세(지방법151)\n57\n"
+                          "나. 농어촌특별세\n58\n")]
+    items = find_toc(pages)
+    assert len(items) == 3
+    assert items[0]["page"] == 57
+
+
+def test_toc_ignores_body_references():
+    """머리글이 없는 쪽은 보지 않는다.
+
+    문서 전체를 뒤지면 본문의 참조까지 걸린다.
+    """
+    from docstruct.outline.toc import find_toc
+
+    pages = [_toc_page(50, "자세한 내용은 ······· 57\n"
+                           "관련 규정 ··········· 60\n")]
+    assert find_toc(pages) == []
+
+
+def test_toc_offset_measured():
+    """인쇄 쪽번호와 PDF 쪽번호의 차이를 잰다.
+
+    표지·간지 때문에 어긋난다 — 실측에서 2쪽 차이였다.
+    """
+    from docstruct.outline.toc import page_offset
+
+    items = [{"title": "1. 총칙", "page": 5, "source_page": 7},
+             {"title": "2. 과세", "page": 12, "source_page": 7}]
+    assert page_offset(items) == 2
+
+
+def test_toc_reaches_output():
+    """목차가 결과에 남는다."""
+    import json
+
+    from docstruct.models import PageDocument
+
+    doc = PageDocument(filename="x.pdf", source_format="pdf", pages=[],
+                       toc=[{"title": "1. 총칙", "page": 5, "source_page": 3}],
+                       toc_offset=2)
+    data = doc.to_dict()
+    assert data["toc"][0]["page"] == 5
+    assert data["toc_offset"] == 2
+    json.dumps(data, ensure_ascii=False)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.32 — 목차에서 본문 금액을 걸러내기
+#
+# 배경: 스캔본은 제목과 쪽번호가 다른 줄로 나뉜다. 그런데 **본문의 금액도
+#       같은 모양**이 된다.
+#
+#           가. 취득세액      ← 제목처럼 보임
+#           537              ← 쪽번호처럼 보임
+#
+#       실측(주택과세금 7쪽)에서 목차 쪽번호는 거의 단조 증가한다.
+#
+#           57 · 57 · 58 · 60 · 62 · 62 · 64 · 66 · 67 · 79 …
+#
+#       같은 값이 이어지기는 해도 되돌아가거나 크게 뛰지 않는다. 그 성질로
+#       금액·건수를 거른다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_toc_rejects_body_amounts():
+    """제목 뒤에 금액이 와도 목차로 보지 않는다."""
+    from docstruct.outline.toc import find_toc
+
+    pages = [_toc_page(8, "차례\n"
+                          "5.취득세에 부가되는세금\n57\n"
+                          "가. 취득세액\n537\n"        # 금액 — 크게 뜀
+                          "나. 농어촌특별세\n58\n"
+                          "다. 신고 건수\n842\n"       # 건수 — 크게 뜀
+                          "라. 주택취득 절차\n60\n")]
+    items = find_toc(pages)
+    numbers = [i["page"] for i in items]
+    assert numbers == [57, 58, 60]
+
+
+def test_toc_pages_increase():
+    """쪽번호가 되돌아가면 목차가 아니다."""
+    from docstruct.outline.toc import _looks_like_page
+
+    assert _looks_like_page(58, 57)          # 다음 쪽
+    assert _looks_like_page(57, 57)          # 같은 쪽 (항목 여럿)
+    assert not _looks_like_page(12, 57)      # 되돌아감
+    assert not _looks_like_page(537, 57)     # 크게 뜀 — 금액
+
+
+def test_toc_rejects_year_like_numbers():
+    """연도처럼 큰 수는 쪽번호가 아니다."""
+    from docstruct.outline.toc import MAX_PAGE_NO, _looks_like_page
+
+    assert not _looks_like_page(2025, None)
+    assert MAX_PAGE_NO < 2025
+
+
+def test_toc_keeps_real_entries():
+    """실제 목차는 그대로 잡는다 (회귀 확인).
+
+    실측(주택과세금 377쪽): 항목 90개 · 쪽번호 25~369 · 단조 증가.
+    """
+    from docstruct.outline.toc import find_toc
+
+    body = "차례\n" + "".join(
+        f"{n}. 항목{n}\n{25 + n * 3}\n" for n in range(1, 12))
+    items = find_toc([_toc_page(6, body)])
+    assert len(items) == 11
+    numbers = [i["page"] for i in items]
+    assert numbers == sorted(numbers)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.33 — 목차를 앞쪽에서만 찾기
+#
+# 배경: 문서 전체를 훑고 있었다. 목차는 앞쪽에 있으므로 낭비이고, 본문의
+#       `차례`·`목차` 언급까지 걸릴 수 있다.
+#
+#       실측: 스캔본 7~15쪽 · 행안부 1쪽 · **25쪽 이후 0건**.
+#       논문도 표지·초록 뒤에 오므로 앞쪽에 든다.
+#
+#       뒤쪽 목차가 있는 문서(일본·중국 서적, 합본 자료집, 부록 목차)는
+#       `DOCSTRUCT_TOC_HEAD_PAGES=0` 으로 전체를 본다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_toc_searches_head_pages_only():
+    """앞쪽 범위 밖의 목차는 보지 않는다."""
+    from docstruct.outline.toc import DEFAULT_HEAD_PAGES, find_toc
+
+    far = DEFAULT_HEAD_PAGES + 10
+    pages = [_toc_page(far, "목 차\n1. 총칙 ······· 5\n")]
+    assert find_toc(pages) == []
+
+
+def test_toc_head_limit_can_be_lifted(monkeypatch):
+    """전체 탐색으로 바꿀 수 있다.
+
+    뒤쪽에 목차가 있는 문서가 있다.
+    """
+    from docstruct.outline.toc import DEFAULT_HEAD_PAGES, HEAD_PAGES_ENV, find_toc
+
+    far = DEFAULT_HEAD_PAGES + 10
+    pages = [_toc_page(far, "목 차\n1. 총칙 ······· 5\n")]
+
+    monkeypatch.setenv(HEAD_PAGES_ENV, "0")
+    assert len(find_toc(pages)) == 1
+
+
+def test_toc_still_finds_early_pages():
+    """앞쪽 목차는 그대로 찾는다 (회귀 확인).
+
+    실측: 스캔본 머리글이 7·9·11·13·15쪽에 있었다.
+    """
+    from docstruct.outline.toc import find_toc
+
+    pages = [_toc_page(7, "차례\n1. 총칙 ······· 5\n2. 과세 ······· 12\n")]
+    assert len(find_toc(pages)) == 2
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.34 — 바닥글 쪽번호로 오프셋 재기
+#
+# 배경: 목차의 `25쪽` 이 PDF 몇 쪽인지 알 수 없었다. 목차가 앞쪽(6쪽)인데
+#       항목이 뒤(25쪽)를 가리켜 차이를 잴 수 없었기 때문이다.
+#
+#       본문 바닥글에 인쇄 쪽번호가 있다. 그것과 PDF 쪽을 견주면 된다.
+#
+#       실측(주택과세금 377쪽): 135쪽에서 차이가 잡혔고 **전부 2** 였다.
+#       목차 25쪽 → PDF 27쪽이고, 그 쪽이 실제로 `주택에 대한 취득세` 장
+#       표지였다.
+#
+#       다만 쪽번호가 본문에 남지 않는 문서가 있다 — 과기부는 581쪽 중
+#       6쪽만 잡혀 오프셋이 흔들렸다. 근거가 적으면 믿지 않는다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_printed_offset_from_footer():
+    """바닥글 쪽번호로 차이를 잰다."""
+    from docstruct.outline.toc import printed_page_offset
+
+    pages = [_toc_page(n, f"본문 내용\n{n - 2}\n") for n in range(3, 40)]
+    offset, samples = printed_page_offset(pages)
+    assert offset == 2
+    assert samples >= 20
+
+
+def test_printed_offset_ignores_browser_marker():
+    """브라우저 인쇄 표시(`31/380`)는 쪽번호가 아니다.
+
+    스캔본에 흔하다 — 그것은 PDF 쪽 위치이지 인쇄된 번호가 아니다.
+    """
+    from docstruct.outline.toc import _printed_page
+
+    page = _toc_page(31, "본문\nhttps://example.com/index.html\n31/380\n29\n")
+    assert _printed_page(page) == 29
+
+
+def test_printed_offset_needs_enough_samples():
+    """근거가 적으면 오프셋을 내지 않는다.
+
+    쪽번호가 본문에 남지 않는 문서가 있다.
+    """
+    from docstruct.outline.toc import printed_page_offset
+
+    pages = [_toc_page(n, "본문만 있고 쪽번호 없음\n") for n in range(1, 40)]
+    pages.append(_toc_page(40, "본문\n36\n"))
+    offset, _ = printed_page_offset(pages)
+    assert offset is None
+
+
+def test_printed_offset_rejects_scattered_values():
+    """값이 흩어지면 잘못 잡은 것이다."""
+    from docstruct.outline.toc import printed_page_offset
+
+    # 쪽마다 다른 차이 — 본문 숫자를 잡은 모양
+    pages = [_toc_page(n, f"본문\n{max(n - (n % 7) - 1, 1)}\n")
+             for n in range(10, 50)]
+    offset, _ = printed_page_offset(pages)
+    assert offset is None
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.35 — 목차 유형이 생각보다 다양했다
+#
+# 배경: 사용자가 실제 문서 목차 여덟 장을 보여 주었다. 머리글과 번호 매김이
+#       예상보다 다양했다.
+#
+#           머리글   목차 · 차례 · 차 례 · 순  서 · CONTENTS
+#           번호     제1부 · 제1장 · 01 · 003 · Q1. · I. · Ⅱ. · ◆ · ▶
+#           구분선   점선(···) · 공백만 · 없음
+#
+#       특히 줄이 나뉜 경우(스캔본) 쓰는 번호 매김 규칙이 절반을 놓쳤다 —
+#       `01 우리가 내는 세금`, `제1부 법인세법`, `Q1.`, `◆` 가 다 빠졌다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_toc_heading_variants():
+    """머리글 유형을 모두 인식한다.
+
+    자간을 벌려 쓰는 문서가 많다 — `차  례`, `순  서`.
+    """
+    from docstruct.outline.toc import _HEADING_RE
+
+    for heading in ("목차", "목 차", "차례", "차 례", "차  례",
+                    "순서", "순  서", "CONTENTS", "Contents"):
+        assert _HEADING_RE.search(heading), heading
+
+
+def test_toc_numbering_variants():
+    """번호 매김 유형을 모두 인식한다.
+
+    줄이 나뉜 목차(스캔본)에서 잡음을 거르는 데 쓰므로, 실제 쓰이는
+    형태를 놓치면 항목이 통째로 빠진다.
+    """
+    from docstruct.outline.toc import _NUMBERING_RE
+
+    for title in ("제1부 법인세법", "제1장 개요", "01 우리가 내는 세금",
+                  "003 성실신고", "1. 개요", "가. 국회", "Q1. 쇼핑몰",
+                  "I. 상호합의절차", "Ⅱ. 신청", "① 첫째",
+                  "◆ 사업 시작 단계", "▶ 사례로 보는", "* 조회 안내"):
+        assert _NUMBERING_RE.match(title), title
+
+
+def test_toc_numbering_ignores_plain_text():
+    """번호 없는 본문은 걸러진다."""
+    from docstruct.outline.toc import _NUMBERING_RE
+
+    for text in ("이 조항은 다음과 같다", "납세의무자는 신고해야 한다",
+                 "세액을 계산한다"):
+        assert not _NUMBERING_RE.match(text), text
+
+
+def test_toc_without_dot_leaders():
+    """점선 없이 공백만으로 벌린 목차도 찾는다."""
+    from docstruct.outline.toc import find_toc
+
+    pages = [_toc_page(3, "CONTENTS\n"
+                          "제1장 일감몰아주기 과세제도 개요        10\n"
+                          "1. 개요                          10\n"
+                          "2. 과세요건                       11\n")]
+    items = find_toc(pages)
+    assert len(items) == 3
+    assert items[0]["page"] == 10
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.36 — 머리글 없는 목차
+#
+# 배경: `목차`·`CONTENTS` 머리글이 **아예 없는** 목차가 있었다. 제목만 있고
+#       바로 항목이 이어지는 형태다.
+#
+#           1세대 1주택 비과세 ❶
+#           (소득세법 제89조1항3호)
+#           ❶ 조정대상지역 내 일시적 2주택자의 종전주택 양도기한은?   14
+#           ❷ 신규주택에 세입자가 있는 경우 …                      17
+#
+#       머리글로만 찾으면 이런 쪽을 통째로 놓친다.
+#
+#       목차 쪽은 **`제목 … 쪽번호` 가 여러 줄 이어진다.** 그 모양으로
+#       알아본다 — 5줄 이상이고 쪽의 40% 이상이면 목차로 본다.
+# ────────────────────────────────────────────────────────────────────
+
+_NO_HEADING_TOC = (
+    "1세대 1주택 비과세 ❶\n(소득세법 제89조1항3호)\n"
+    "❶ 조정대상지역 내 일시적 2주택자의 종전주택 양도기한은?    14\n"
+    "❷ 신규주택에 세입자가 있는 경우 비과세 기한은?    17\n"
+    "❸ 2주택 이상을 보유한 1세대가 양도한 후 기산일은?    20\n"
+    "❹ 3주택자가 1주택을 양도한 후 보유기간 기산일은?    22\n"
+    "❺ 1주택과 1분양권을 보유한 1세대가 양도 후 기산일은?    24\n"
+    "❻ 배우자에게 분양권 지분 일부를 증여하는 경우?    26\n"
+)
+
+
+def test_toc_without_heading():
+    """머리글이 없어도 목차 쪽을 알아본다."""
+    from docstruct.outline.toc import find_toc
+
+    items = find_toc([_toc_page(5, _NO_HEADING_TOC)])
+    assert len(items) == 6
+    assert items[0]["page"] == 14
+
+
+def test_toc_needs_enough_entries():
+    """항목이 적으면 목차로 보지 않는다.
+
+    본문에 참조가 한둘 섞인 것과 구분한다.
+    """
+    from docstruct.outline.toc import find_toc
+
+    mixed = ("이 조항은 다음과 같이 적용한다.\n"
+             "납세의무자는 신고해야 한다.\n"
+             "자세한 내용은 아래 표를 참조 ······ 57\n"
+             "관련 규정은 다음과 같다.\n"
+             "세액 계산은 별도로 한다.\n")
+    assert find_toc([_toc_page(9, mixed)]) == []
+
+
+def test_toc_page_ratio_matters():
+    """항목이 쪽의 일부뿐이면 목차가 아니다."""
+    from docstruct.outline.toc import _looks_like_toc_page
+
+    # 항목 6줄 + 본문 30줄 → 비율이 낮다
+    body = _NO_HEADING_TOC + "\n".join(f"본문 {n} 번째 줄입니다." for n in range(30))
+    assert not _looks_like_toc_page(_toc_page(5, body))

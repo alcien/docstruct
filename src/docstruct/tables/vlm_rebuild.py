@@ -180,6 +180,7 @@ def rebuild_broken_tables(pages: list[PageContent], *, progress: bool = False) -
             continue
         table.original_markdown = table.markdown
         table.markdown = markdown
+        table.source = "vlm"
         rebuilt += 1
         width, majority = table.odd_columns
         page.trace.add(

@@ -67,6 +67,9 @@ class RegionKind(str, Enum):
     TABLE = "table"
     TEXT = "text"
     IMAGE = "image"
+    #: 도형은 많은데 글자가 거의 없는 영역. 원그래프·막대그래프처럼 값이
+    #: 그림 안에 있어 텍스트로 옮겨지지 않는다.
+    CHART = "chart"
 
 
 @dataclass
@@ -88,6 +91,202 @@ class RegionVerdict:
     mode_cols: int = 0
     mode_share: float = 0.0
     drift: float = 0.0
+
+
+#: 그래프로 볼 최소 그림 덩어리 비율 (영역 대비).
+#: 사진·로고는 대개 작고 여럿이다.
+MIN_CHART_COVER = 0.35
+
+#: 영역이 지면의 이 비율을 넘으면 스캔 전면으로 본다.
+#: 실측(주택과세금 377쪽)에서 그림 901개 중 900개가 지면의 81~100% 였다.
+#: 스캔본은 페이지 전체가 이미지 한 장이라 어느 영역을 재도 100% 가 나온다.
+MAX_CHART_PAGE_SHARE = 0.6
+
+#: 그래프로 볼 최소 지면 비율. 이보다 작으면 로고·아이콘·장식이다.
+MIN_CHART_PAGE_SHARE = 0.03
+
+#: 그래프다운 가로세로 비. 이 범위를 벗어나면 띠·구분선으로 본다.
+#: 머리말 배너가 `530×80` 처럼 납작하게 나온다.
+CHART_ASPECT_RANGE = (0.25, 4.0)
+
+
+def chart_score(
+    *,
+    cover: float,
+    page_share: float,
+    aspect: float,
+    vector_shapes: int,
+) -> tuple[bool, str]:
+    """이 영역이 그래프인지 여러 신호로 판단한다.
+
+    입력:
+        cover         영역에서 그림이 덮는 비율 0~1
+        page_share    영역이 지면에서 차지하는 비율 0~1
+        aspect        가로/세로 비
+        vector_shapes 영역 안 벡터 도형 수 (0 이면 래스터 이미지)
+    출력: (그래프인지, 사유)
+    비고:
+        **한 문서에 맞춘 규칙은 다른 문서에서 무너진다.** 처음에는 벡터
+        원그래프(행안부) 하나를 보고 "그림이 영역을 덮으면 그래프" 로
+        정했는데, 스캔본에서 장식 901개가 전부 걸렸다.
+
+        실제로 세 유형이 있다.
+
+            벡터 차트    도형으로 그려짐 · 지면 일부 · 글자 없음
+            사진 차트    뉴스 그래프를 캡처해 붙인 것 · 래스터
+            장식·스캔    배너·로고·QR·스캔 전면
+
+        어느 하나로 가르지 않고 **신호를 모아** 판단한다. 벡터 여부는
+        신호의 하나일 뿐 필수 조건이 아니다 — 사진으로 붙인 그래프도
+        그래프다.
+    """
+    reasons: list[str] = []
+
+    if cover < MIN_CHART_COVER:
+        return False, f"그림이 영역의 {cover:.0%} 뿐"
+    if page_share >= MAX_CHART_PAGE_SHARE:
+        return False, f"지면의 {page_share:.0%} — 스캔 전면으로 봅니다"
+    if page_share < MIN_CHART_PAGE_SHARE:
+        return False, f"지면의 {page_share:.0%} — 로고·장식으로 봅니다"
+
+    low, high = CHART_ASPECT_RANGE
+    if not low <= aspect <= high:
+        return False, f"가로세로 {aspect:.1f} — 띠·구분선으로 봅니다"
+
+    reasons.append(f"지면의 {page_share:.0%}")
+    if vector_shapes:
+        reasons.append(f"도형 {vector_shapes}개")
+    else:
+        # 래스터라고 배제하지 않는다. 뉴스 그래프를 캡처해 붙인 문서가 있다.
+        reasons.append("래스터 그림")
+    return True, " · ".join(reasons) + " — 그래프로 보입니다"
+
+
+def _vector_shape_count(
+    pdf_path: str | Path, page_no: int, bbox: dict[str, float]
+) -> int:
+    """영역 안의 벡터 도형 수.
+
+    입력: pdf_path — PDF 경로, page_no — 1부터, bbox — TOPLEFT 좌표
+    출력: 도형 개수. 읽지 못하면 0
+    비고:
+        벡터 차트는 조각·축·범례가 도형으로 그려진다. **다만 도형이 없다고
+        그래프가 아닌 것은 아니다** — 뉴스 그래프를 캡처해 붙인 문서가 있다.
+        신호의 하나로만 쓴다.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        return 0
+    try:
+        document = pdfium.PdfDocument(str(pdf_path))
+    except Exception:                            # noqa: BLE001 - 판정 보조다
+        return 0
+    try:
+        index = page_no - 1
+        if not 0 <= index < len(document):
+            return 0
+        page = document[index]
+        height = page.get_size()[1]
+        low, high = height - bbox["b"], height - bbox["t"]
+        count = 0
+        for obj in page.get_objects():
+            if obj.type != 2:                    # 2 = path
+                continue
+            try:
+                left, bottom, right, top = obj.get_bounds()
+            except Exception:                    # noqa: BLE001
+                continue
+            if (right > bbox["l"] and left < bbox["r"]
+                    and top > low and bottom < high
+                    and right - left > 3 and top - bottom > 3):
+                count += 1
+        return count
+    except Exception:                            # noqa: BLE001
+        return 0
+    finally:
+        document.close()
+
+
+def _page_cover_ratio(
+    pdf_path: str | Path, page_no: int, bbox: dict[str, float]
+) -> float:
+    """이 영역이 지면에서 차지하는 비율.
+
+    입력: pdf_path — PDF 경로, page_no — 1부터, bbox — TOPLEFT 좌표
+    출력: 0~1 실수. 읽지 못하면 0
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        return 0.0
+    try:
+        document = pdfium.PdfDocument(str(pdf_path))
+    except Exception:                            # noqa: BLE001 - 판정 보조다
+        return 0.0
+    try:
+        index = page_no - 1
+        if not 0 <= index < len(document):
+            return 0.0
+        width, height = document[index].get_size()
+        page_area = max(width * height, 1.0)
+        area = (bbox["r"] - bbox["l"]) * (bbox["b"] - bbox["t"])
+        return min(area / page_area, 1.0)
+    except Exception:                            # noqa: BLE001
+        return 0.0
+    finally:
+        document.close()
+
+
+def _drawing_cover(
+    pdf_path: str | Path, page_no: int, bbox: dict[str, float]
+) -> float:
+    """영역에서 그림·도형 덩어리가 차지하는 비율.
+
+    입력: pdf_path — PDF 경로, page_no — 1부터, bbox — TOPLEFT 좌표
+    출력: 0~1 실수. 읽지 못하면 0
+    비고:
+        원그래프는 값이 **그림 안에** 있어 텍스트로 옮겨지지 않는다. 글자가
+        없는 영역을 사진으로 두면 조용히 사라지므로, 그림이 영역 대부분을
+        덮으면 그래프로 본다.
+
+        `get_pos` 는 텍스트 객체에 없어 `get_bounds` 를 쓴다 — 이것을 놓쳐
+        도형이 0개로 세어진 적이 있다.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        return 0.0
+    area = max((bbox["r"] - bbox["l"]) * (bbox["b"] - bbox["t"]), 1.0)
+    try:
+        document = pdfium.PdfDocument(str(pdf_path))
+    except Exception:                            # noqa: BLE001 - 판정 보조다
+        return 0.0
+    try:
+        index = page_no - 1
+        if not 0 <= index < len(document):
+            return 0.0
+        page = document[index]
+        height = page.get_size()[1]
+        # bbox 는 TOPLEFT, pdfium 객체는 BOTTOMLEFT 기준이다.
+        low, high = height - bbox["b"], height - bbox["t"]
+        covered = 0.0
+        for obj in page.get_objects():
+            if obj.type not in (2, 3):           # 2 = path, 3 = image
+                continue
+            try:
+                left, bottom, right, top = obj.get_bounds()
+            except Exception:                    # noqa: BLE001
+                continue
+            width = min(right, bbox["r"]) - max(left, bbox["l"])
+            tall = min(top, high) - max(bottom, low)
+            if width > 0 and tall > 0:
+                covered += width * tall
+        return min(covered / area, 1.0)
+    except Exception:                            # noqa: BLE001
+        return 0.0
+    finally:
+        document.close()
 
 
 def classify_region(
@@ -115,6 +314,19 @@ def classify_region(
 
     chars = char_count if char_count is not None else scanned_chars
     if not rows or chars < MIN_TEXT_CHARS or len(rows) < MIN_TEXT_LINES:
+        # 그래프 판정은 **여러 신호를 모아** 한다. 한 문서에 맞춘 규칙은
+        # 다른 문서에서 무너진다 — 벡터 원그래프 하나를 기준으로 삼았다가
+        # 스캔본 장식 901개가 전부 걸린 적이 있다.
+        width = max(bbox["r"] - bbox["l"], 1.0)
+        height = max(bbox["b"] - bbox["t"], 1.0)
+        is_chart, why = chart_score(
+            cover=_drawing_cover(pdf_path, page_no, bbox),
+            page_share=_page_cover_ratio(pdf_path, page_no, bbox),
+            aspect=width / height,
+            vector_shapes=_vector_shape_count(pdf_path, page_no, bbox),
+        )
+        if is_chart:
+            return RegionVerdict(RegionKind.CHART, f"글자 {chars}자 · {why}")
         return RegionVerdict(
             RegionKind.IMAGE,
             f"글자 {chars}자 · {len(rows)}줄 — 사진·로고로 둡니다",

@@ -290,6 +290,15 @@ def summary_lines(doc: PageDocument) -> list[str]:
         by_type[t.content_type or "미평가"] = by_type.get(t.content_type or "미평가", 0) + 1
 
     filled = sum(1 for t in tables if t.was_filled)
+    # 어떤 것이 기계가 아니라 모델이 만든 것인지 드러낸다. 결과만 보고
+    # 출처를 알 수 없으면 어디까지 믿을지 정할 수 없다.
+    by_llm = sum(1 for t in tables if t.source == "llm")
+    by_vlm = sum(1 for t in tables if t.source == "vlm")
+    charts = [i for _, i in images if i.region_kind == "chart"]
+    charts_read = [i for i in charts if i.source == "vlm"]
+    lost = sum(1 for t in tables
+               if (t.fill_diff or {}).get("numbers_lost")
+               or (t.fill_diff or {}).get("amounts_lost"))
 
     lines = [
         f"파일       : {doc.filename} ({doc.source_format})",
@@ -297,8 +306,13 @@ def summary_lines(doc: PageDocument) -> list[str]:
         f"본문 길이  : {doc.char_count():,}자",
         f"표         : {len(tables)}개"
         + (f"  ({', '.join(f'{k} {v}' for k, v in sorted(by_type.items()))})" if by_type else ""),
-        f"표 재추출  : {filled}개",
+        f"표 재추출  : {filled}개"
+        + (f"  (LLM {by_llm}, VLM {by_vlm})" if by_llm or by_vlm else "")
+        + (f"  ※ 값이 빠진 표 {lost}개" if lost else ""),
         f"이미지     : {len(images)}개",
+        *([f"그래프     : {len(charts)}개"
+           + (f"  (VLM 으로 읽음 {len(charts_read)})" if charts_read else "  ※ 값은 그림 안에 있습니다")]
+          if charts else []),
     ]
 
     # 소요 시간은 로그(INFO)로만 나가면 라이브러리로 쓸 때 안 보인다.

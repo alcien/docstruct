@@ -86,6 +86,17 @@ def extract_hwpx_pages(hwpx_path: str) -> list[PageContent]:
     markdown = normalize_korean_text(markdown)
     content, tables, _ = inject_table_placeholders(markdown)
 
+    if source == "hwpx-tree":
+        # 병합 정보를 함께 낸다. markdown 은 `colSpan="3"` 을 표현하지 못해
+        # 한 칸에만 값이 들어가는데, 그 자리에서 span 이 사라진다.
+        try:
+            grids = hwpxtree.table_grids(hwpx_path)
+        except Exception as exc:             # noqa: BLE001 - 본문은 이미 나왔다
+            _log.warning("표 셀 격자를 읽지 못했습니다: %s", exc)
+            grids = []
+        for table, grid in zip(tables, grids):
+            table.cells = grid
+
     trace = PageTrace(extractor=source, text_source="n/a", table_count=len(tables))
     trace.add("converters.hwpx.hwpxtree", "HWPX(OOXML) 파싱", detail)
     trace.add("docstruct.tables.markdown", "표 블록 placeholder 삽입",

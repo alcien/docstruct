@@ -673,12 +673,63 @@ def build_document(
         if broken:
             _log.info("격자 결함이 있는 표 %d개", broken)
 
+    if fmt == "pdf":
+        # 병합 정보를 JSON 에 담는다. markdown 은 span 을 표현하지 못해
+        # 병합 셀 값이 한 칸에만 남는다.
+        from docstruct.tables.docling import cell_grid
+
+        for page in pages:
+            for table in page.tables:
+                if table.source_item is not None and table.cells is None:
+                    table.cells = cell_grid(table.source_item)
+
     if fmt == "pdf" and get_settings().mark_table_continuation:
         from docstruct.tables.continued import mark_continuations
 
         got = mark_continuations(pages)
         if got:
             _log.info("이어짐으로 표시한 표 %d개", got)
+
+    if fmt == "pdf" and get_settings().read_charts:
+        from docstruct.media.chart_read import read_charts
+
+        got = read_charts(pages, progress=progress)
+        if got:
+            _log.info("VLM 으로 읽은 그래프 %d개", got)
+
+    # 실험 기법은 등록된 것 중 켜진 것만 돌린다. 하나가 깨져도 본체는
+    # 계속 간다 — 검증 전 코드가 파이프라인을 멈추게 하면 안 된다.
+    #
+    # **표를 바꾸는 단계(rebuild_grid·vlm_fix_tables)보다 먼저** 둔다.
+    # 실험은 원본 구조를 진단하는 것이므로, 다시 만든 표를 보면 무엇을
+    # 재는지 알 수 없게 된다.
+    from docstruct.experiments import enabled_experiments
+
+    for experiment in enabled_experiments():
+        if fmt not in experiment.formats or experiment.run is None:
+            continue
+        try:
+            hits = experiment.run(pages, scale=render_scale)
+        except Exception as exc:                 # noqa: BLE001
+            _log.warning("실험 %s 실패: %s", experiment.key, exc)
+            continue
+        if hits:
+            _log.info("실험 %s: %d건", experiment.key, hits)
+
+    if get_settings().detect_toc:
+        # 형식과 무관하다 — 목차 줄 모양은 어디서나 같다.
+        from docstruct.outline.toc import find_toc, page_offset
+
+        from docstruct.outline.toc import printed_page_offset
+
+        doc.toc = find_toc(pages)
+        # 바닥글 쪽번호로 재는 쪽이 정확하다. 목차만으로는 잴 수 없는
+        # 경우가 있다 — 목차가 앞쪽인데 항목이 뒤를 가리키면 그렇다.
+        measured, samples = printed_page_offset(pages)
+        doc.toc_offset = measured if measured is not None else page_offset(doc.toc)
+        if doc.toc or measured is not None:
+            _log.info("목차 항목 %d개 · 쪽 차이 %s (근거 %d쪽)",
+                      len(doc.toc), doc.toc_offset, samples)
 
     if fmt == "pdf" and get_settings().flag_odd_tables:
         odd = _flag_odd_tables(pages)
@@ -920,6 +971,7 @@ def _pipeline_settings(
             korean_ocr=settings.korean_ocr,
             flag_odd_tables=settings.flag_odd_tables,
             mark_table_continuation=settings.mark_table_continuation,
+            read_charts=settings.read_charts,
             flag_broken_tables=settings.flag_broken_tables,
             rebuild_grid=settings.rebuild_grid,
             vlm_fix_tables=settings.vlm_fix_tables,

@@ -368,5 +368,10 @@ def _mark_table_candidates(
         elif verdict.kind is RegionKind.TEXT:
             _log.info("%s 는 도표·텍스트로 보입니다 (%s) — 본문으로 뽑습니다",
                       image_id, verdict.reason)
+        elif verdict.kind is RegionKind.CHART:
+            # 값이 그림 안에 있어 텍스트로 옮겨지지 않는다. 여기서 표시하지
+            # 않으면 무엇을 놓쳤는지도 남지 않는다.
+            _log.info("%s 는 그래프로 보입니다 (%s) — 값은 그림 안에 있습니다",
+                      image_id, verdict.reason)
         else:
             _log.debug("%s 는 그림으로 둡니다 (%s)", image_id, verdict.reason)

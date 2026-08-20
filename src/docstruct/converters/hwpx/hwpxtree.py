@@ -9,7 +9,7 @@
     병합·글자모양이 XML 에 그대로 들어 있어, pyhwp(AGPL) 없이도 같은 품질을
     낼 수 있는지 확인하기 위한 시제품이다.
 호출부:
-    docstruct.converters.hwpx.converter (검증 후 전환 예정)
+    converters.hwpx.converter (검증 후 전환 예정)
 입력: .hwpx / .hwtx 파일 경로
 출력: markdown 문자열 — hwp5tree.to_markdown 과 같은 형식
 
@@ -261,7 +261,18 @@ def _read_table(element: ET.Element, bold_ids: set[str]) -> _Table:
         rows=int(element.get("rowCnt") or 0),
         cols=int(element.get("colCnt") or 0),
     )
-    for tc in element.iter(_tag(HP, "tc")):
+    # **이 표가 직접 가진 셀만** 읽는다. `iter()` 로 훑으면 중첩 표의 셀까지
+    # 잡혀, 좌표가 겹쳐 서로 덮어쓴다.
+    #
+    # 실측(행정안전부 성과계획서): 3행 3열 표의 셀이 6개여야 하는데 21개로
+    # 잡혔고, 참고1·참고2 두 표가 한 표로 뒤섞였다. 그 과정에서 사이의
+    # 서술문이 통째로 사라졌다 — 4,283줄 중 211줄(4.9%), 9쪽은 절반 이상.
+    #
+    # 직계 `<hp:tr>` 아래의 `<hp:tc>` 만 자기 셀이다. 구조가 다른 문서를
+    # 대비해, 하나도 못 찾으면 옛 방식으로 물러선다.
+    own = [tc for tr in element.findall(_tag(HP, "tr"))
+           for tc in tr.findall(_tag(HP, "tc"))]
+    for tc in own or list(element.iter(_tag(HP, "tc"))):
         addr = tc.find(_tag(HP, "cellAddr"))
         span = tc.find(_tag(HP, "cellSpan"))
         cell = _Cell(
@@ -270,7 +281,13 @@ def _read_table(element: ET.Element, bold_ids: set[str]) -> _Table:
             rowspan=int(span.get("rowSpan", 1)) if span is not None else 1,
             colspan=int(span.get("colSpan", 1)) if span is not None else 1,
         )
+        # 중첩 표 안쪽 문단은 뺀다 — 그 표가 별도 블록으로 따로 나오므로
+        # 여기서 또 담으면 같은 내용이 두 번 나온다.
+        nested = {id(para) for inner in tc.iter(_tag(HP, "tbl"))
+                  for para in inner.iter(_tag(HP, "p"))}
         for para in tc.iter(_tag(HP, "p")):
+            if id(para) in nested:
+                continue
             text = _paragraph_text(para, bold_ids)
             if text:
                 cell.blocks.append(text)
@@ -337,3 +354,50 @@ def _walk(node: ET.Element, bold_ids: set[str]) -> list[str]:
             continue
         out.extend(_walk(child, bold_ids))
     return out
+
+
+def table_grids(path: str | Path) -> list[list[dict]]:
+    """표별 셀 격자를 문서 순서로 낸다.
+
+    입력: path — .hwpx / .hwtx 경로
+    출력: 표마다 셀 dict 목록. 셀은 row, col, rowspan, colspan, text
+    비고:
+        markdown 은 병합을 표현하지 못한다. `colSpan="3"` 인 셀도 한 칸에만
+        값이 들어가고 나머지는 빈 칸이 된다 — 실측에서 병합 표기(`〃`)가
+        1,165회 나왔는데, 그 자리의 원래 span 값은 markdown 에서 사라진다.
+
+        HWPX 는 XML 에 병합이 명시돼 있어(`cellSpan`, `cellAddr`) 추측할
+        필요가 없다. 그 값을 그대로 내보내면 구조화 단계가 **병합 셀 값을
+        하위 행에 전파**할 수 있다 — 표 조각을 RAG 청크로 잘라도 레이블이
+        붙어 있게 하는 표준 대응이다.
+
+        markdown 과 순서가 같으므로 `<table N>` 의 N 번째가 이 목록의
+        N-1 번째 항목이다.
+    """
+    archive = zipfile.ZipFile(str(path))
+    try:
+        bold_ids = _bold_char_ids(archive)
+        section_names = sorted(
+            (n for n in archive.namelist()
+             if re.fullmatch(r"Contents/section\d+\.xml", n)),
+            key=lambda n: int(re.search(r"\d+", n.split("/")[1]).group()),
+        )
+
+        grids: list[list[dict]] = []
+        for name in section_names:
+            root = ET.fromstring(archive.read(name))
+            for element in root.iter(_tag(HP, "tbl")):
+                table = _read_table(element, bold_ids)
+                grids.append([
+                    {
+                        "row": cell.row,
+                        "col": cell.col,
+                        "rowspan": cell.rowspan,
+                        "colspan": cell.colspan,
+                        "text": " ".join(cell.blocks).strip(),
+                    }
+                    for cell in sorted(table.cells, key=lambda c: (c.row, c.col))
+                ])
+        return grids
+    finally:
+        archive.close()

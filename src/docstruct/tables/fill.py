@@ -487,9 +487,180 @@ def process_tables(
 
     # ── 3단계: 반영은 순차 (page.content 경합 방지) ──────────────────
     for job, md in results:
-        if md:
-            _apply_fill(job.page, job.table, md)
+        if not md:
+            continue
+        # LLM 이 있던 값을 빠뜨리는 일이 있다. 원본을 덮기 전에 확인한다.
+        ok, why = fill_is_safe(job.table.markdown or "", md)
+        if not ok:
+            job.page.trace.add(
+                "docstruct.tables.fill", "재추출 폐기",
+                f"{job.table.id} · {why} — 원본을 유지합니다", status="warn")
+            _log.warning("%s 재추출 폐기: %s", job.table.id, why)
+            continue
+        job.table.source = "llm"
+        job.table.fill_diff = fill_diff(job.table.markdown or "", md)
+        job.page.trace.add(
+            "docstruct.tables.fill", "재추출 반영", f"{job.table.id} · {why}")
+        _apply_fill(job.page, job.table, md)
 
     for page in pages:
         if page.tables:
             page.content = normalize_table_blocks(page.content)
+
+
+#: 재추출 결과가 원본 숫자를 이 비율 이상 잃으면 되돌린다.
+#: 실측(성과계획서 41개 재추출)에서 대부분의 "손실" 은 필드 잔재나 문단 ID
+#: 정리였다. 실제 데이터가 빠지는 경우는 드물지만, 한 번 빠지면 되돌릴 수
+#: 없으므로 문턱을 둔다.
+MAX_NUMBER_LOSS = 0.2
+
+#: 원본이 이보다 짧으면 견줄 수 없다고 본다 (공백 뺀 글자 수).
+#: 실측에서 `| 구분 |` 한 줄짜리 원본이 두 행으로 채워져 통과했다.
+MIN_DENSE_TO_COMPARE = 20
+
+#: 원본에 숫자가 이보다 적으면 비율 판정을 하지 않는다.
+#: 두세 개뿐일 때 하나만 빠져도 33% 가 되어 정상 정리까지 막는다.
+MIN_NUMBERS_TO_CHECK = 5
+
+#: 필드 잔재. 이 안의 숫자는 원본 데이터가 아니다.
+_FIELD_JUNK_RE = re.compile(r'\{"fields".*?\}\}', re.S)
+
+#: 쉼표 없는 다섯 자리 정수는 HWP 문단 ID 잔재로 본다.
+#: 실측: `의원외교활 동 | 49625 ①한일친선협회`, `원회운영지 원 54004` —
+#: 표 값이 아니라 문단 번호이며, 사라지는 것은 정리이지 손실이 아니다.
+#:
+#: 예산 금액은 `1,234` 처럼 쉼표가 있어 구분된다. 쉼표 없는 다섯 자리가
+#: 실제 값인 표도 있을 수 있으나, 그때는 다른 숫자들이 함께 남아 비율
+#: 판정이 흔들리지 않는다.
+_PARA_ID_RE = re.compile(r"\b\d{5}\b(?!,)")
+
+#: 비교할 숫자 — 네 자리 이상만 본다. 짧은 것은 서식 변화(1.0 ↔ 1)로 흔들린다.
+_NUMBER_RE = re.compile(r"\d[\d,]{3,}")
+
+
+def number_loss(original: str, rebuilt: str) -> tuple[int, int]:
+    """재추출로 사라진 숫자를 센다.
+
+    입력: original — 원본 markdown, rebuilt — 재추출 결과
+    출력: (사라진 개수, 원본 숫자 개수)
+    비고:
+        **필드 잔재 속 숫자는 빼고 센다.** 실측에서 `{"fields": {}}` 에 붙은
+        `49625` 같은 값이 "사라진" 것으로 잡혔는데, 그것은 원본 데이터가
+        아니라 잔재이고 LLM 이 걸러낸 것이 옳다.
+
+        네 자리 이상만 본다. 짧은 숫자는 `1.0` ↔ `1` 처럼 서식만 바뀌어도
+        달라 보인다.
+    """
+    clean = _PARA_ID_RE.sub("", _FIELD_JUNK_RE.sub("", original or ""))
+    before = set(_NUMBER_RE.findall(clean))
+    after = set(_NUMBER_RE.findall(rebuilt or ""))
+    return len(before - after), len(before)
+
+
+#: 쉼표가 든 금액. 표의 실제 데이터이며 서식 변화에 흔들리지 않는다.
+#: 실측(41건 재추출)에서 이 값들은 **하나도 어긋나지 않았다** — 어긋난 것은
+#: 사업코드·번호뿐이었다. 그래서 이것만은 정확히 보존되어야 한다고 본다.
+_AMOUNT_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
+
+
+def amount_mismatch(original: str, rebuilt: str) -> tuple[int, int, int]:
+    """금액이 사라지거나 새로 생겼는지 센다.
+
+    입력: original — 원본 markdown, rebuilt — 재추출 결과
+    출력: (원본 금액 수, 사라진 수, 새로 생긴 수)
+    비고:
+        **빠짐뿐 아니라 바뀜도 본다.** 글자 수나 집합 비교로는 `103` 이
+        `1034` 가 되어도 "하나 사라지고 하나 생김" 이라 상쇄돼 보인다.
+        실제로 그런 사례가 있었다.
+
+            table_31  103 → 1034   (사업코드가 바뀜)
+            table_45  없던 308 이 생김
+
+        개수를 함께 세어 **새로 생긴 값**을 잡는다. 재추출은 옮겨 적는
+        작업이므로 원본에 없던 금액이 나오면 지어낸 것이다.
+    """
+    from collections import Counter
+
+    before = Counter(_AMOUNT_RE.findall(original or ""))
+    after = Counter(_AMOUNT_RE.findall(rebuilt or ""))
+    return (sum(before.values()),
+            sum((before - after).values()),
+            sum((after - before).values()))
+
+
+def fill_is_safe(original: str, rebuilt: str) -> tuple[bool, str]:
+    """재추출 결과를 받아들여도 되는지.
+
+    입력: original — 원본 markdown, rebuilt — 재추출 결과
+    출력: (받아들일지, 사유)
+    비고:
+        LLM 은 못 읽은 것을 지어내고, 반대로 있던 값을 빠뜨리기도 한다.
+        원본을 덮어쓰기 전에 **숫자가 얼마나 남았는지** 확인한다.
+
+        표 형태가 아니거나 원본보다 크게 짧아도 거부한다.
+    """
+    text = (rebuilt or "").strip()
+    if not text:
+        return False, "결과가 비어 있음"
+    rows = [ln for ln in text.splitlines() if ln.strip().startswith("|")]
+    if len(rows) < 2:
+        return False, "표 형태가 아님"
+    # 공백을 뺀 내용으로 견준다. markdown 표는 열 폭을 맞추느라 빈 칸에
+    # 공백을 채우므로, 글자 수로 재면 정리된 결과가 "짧아졌다" 로 잡힌다 —
+    # 실측에서 7,601자 원본이 1,545자가 됐는데 내용은 그대로였다.
+    def _dense(value: str) -> int:
+        return len(re.sub(r"[\s|:-]", "", value or ""))
+
+    before, after = _dense(original), _dense(text)
+    if before and after < before * 0.5:
+        return False, f"내용이 원본의 {after / before:.0%} 로 줄어듦"
+
+    # 원본이 거의 비었는데 결과가 채워졌다면 **지면에서 새로 읽은 것**이다.
+    # 옮겨 적기가 아니라 생성이므로 원본과 견줄 방법이 없다. 실측에서
+    # `| 구분 |` 한 줄짜리 표가 두 행으로 채워져 나왔다.
+    if before < MIN_DENSE_TO_COMPARE and after > before * 3:
+        return False, f"원본이 {before}자뿐인데 {after}자로 늘어남 — 새로 만든 것"
+
+    # 금액은 정확해야 한다. 원본에 없던 값이 나오면 지어낸 것이다.
+    #
+    # **원본에 금액이 0개여도 검사한다.** `if amounts and ...` 로 두었더니
+    # 빈 표(`| 구분 |`)를 LLM 이 내용으로 채운 것이 통과했다 — 실측에서
+    # 3건이 그랬고, 없던 금액 7개가 생겼다. 지면에서 읽었을 수도 있으나
+    # 원본과 견줄 수 없으므로 받아들이지 않는다.
+    amounts, gone, made = amount_mismatch(original, text)
+    if gone or made:
+        return False, f"금액 {amounts}개 중 {gone}개 소실·{made}개 신규"
+
+    lost, total = number_loss(original, text)
+    if total >= MIN_NUMBERS_TO_CHECK and lost / total > MAX_NUMBER_LOSS:
+        return False, f"숫자 {total}개 중 {lost}개 소실"
+
+    detail = f"금액 {amounts}개 일치" if amounts else "금액 없음"
+    if total:
+        detail += f" · 숫자 {total}개 중 {lost}개 차이"
+    return True, detail
+
+
+def fill_diff(original: str, rebuilt: str) -> dict:
+    """재추출에서 무엇이 빠졌는지 센다.
+
+    입력: original — 원본 markdown, rebuilt — 재추출 결과
+    출력: dict — amounts/amounts_lost/amounts_new/numbers/numbers_lost
+    비고:
+        **맞고 틀림을 판정하지 않는다.** 표는 대조할 기준이 없다 — 원본
+        markdown 자체가 깨져 있어서 재추출한 것이므로, 그것과 견줘 "맞다" 고
+        할 수 없다. 글자가 바뀌었는지(`국회` → `국외`)는 더더욱 알 수 없다.
+
+        그래서 **빠짐만 세어 보여 준다.** 하나로 뭉친 점수는 "0.5 면 반쯤
+        맞다" 처럼 읽혀 오해를 부른다. 무엇이 얼마나 다른지 그대로 내고
+        판단은 쓰는 쪽에 맡긴다.
+    """
+    amounts, gone, made = amount_mismatch(original, rebuilt)
+    lost, total = number_loss(original, rebuilt)
+    return {
+        "amounts": amounts,
+        "amounts_lost": gone,
+        "amounts_new": made,
+        "numbers": total,
+        "numbers_lost": lost,
+    }

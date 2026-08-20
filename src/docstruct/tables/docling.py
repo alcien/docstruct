@@ -20,6 +20,27 @@ from docstruct.converters.html.tables import flatten_header_rows
 MAX_HEADER_ROWS = 3
 
 
+#: 세로 병합이 이어지는 칸에 남기는 표식. HWP·HWPX 경로와 같은 값을 쓴다 —
+#: 형식마다 다르면 읽는 쪽이 분기해야 한다.
+MERGE_UP = "〃"
+
+#: 이 표식을 끄는 환경변수. 값을 복제하지도 비우지도 않는 절충이라,
+#: 다운스트림이 원치 않으면 끌 수 있어야 한다.
+MERGE_MARK_ENV = "DOCSTRUCT_TABLE_MERGE_MARK"
+
+
+def _merge_mark_enabled() -> bool:
+    """세로 병합 표식을 남길지.
+
+    입력: 없음 (`DOCSTRUCT_TABLE_MERGE_MARK`)
+    출력: 남기면 True (기본)
+    """
+    import os
+
+    raw = os.environ.get(MERGE_MARK_ENV, "").strip().lower()
+    return raw not in ("0", "false", "off", "no")
+
+
 def _cell_span(cell, axis: str) -> tuple[int, int]:
     """셀이 차지하는 (시작, 끝) 인덱스.
 
@@ -135,6 +156,34 @@ def replace_cell_texts(item, page_image: str | Path, *, scale: float) -> dict:
     }
 
 
+def cell_grid(item) -> list[dict]:
+    """Docling TableItem 의 셀 격자를 낸다.
+
+    입력: item — Docling TableItem
+    출력: 셀 dict 목록 (row, col, rowspan, colspan, text)
+    비고:
+        markdown 은 병합을 표현하지 못한다. 이 값을 함께 내보내면 구조화
+        단계가 병합 셀 값을 하위 행에 전파할 수 있다.
+
+        HWPX 경로(`hwpxtree.table_grids`)와 같은 형태를 쓴다 — 형식마다
+        다르면 쓰는 쪽이 분기해야 한다.
+    """
+    data = getattr(item, "data", None)
+    cells = list(getattr(data, "table_cells", None) or [])
+    grid: list[dict] = []
+    for cell in cells:
+        row0, row1 = _cell_span(cell, "row")
+        col0, col1 = _cell_span(cell, "col")
+        grid.append({
+            "row": row0,
+            "col": col0,
+            "rowspan": max(row1 - row0, 1),
+            "colspan": max(col1 - col0, 1),
+            "text": (getattr(cell, "text", "") or "").strip(),
+        })
+    return sorted(grid, key=lambda c: (c["row"], c["col"]))
+
+
 def empty_cell_ratio(item) -> dict:
     """격자에서 셀 객체가 없는 칸의 비율을 잰다.
 
@@ -209,6 +258,7 @@ def docling_table_to_markdown(item) -> str:
 
     cells = list(data.table_cells)
     header_count = _header_row_count(cells, num_rows)
+    merge_mark = _merge_mark_enabled()
 
     grid: list[list[str]] = [[""] * num_cols for _ in range(num_rows)]
 
@@ -231,6 +281,18 @@ def docling_table_to_markdown(item) -> str:
         else:
             # 데이터는 좌상단에만 — 값 복제는 집계를 왜곡합니다.
             grid[r0][c0] = text
+            # 세로 병합이 이어지는 칸에는 `〃` 를 남깁니다. 빈 칸으로 두면
+            # **값이 맨 윗행만의 것으로 읽힙니다** — HWP 경로에서 같은
+            # 문제로 `페이스북+인스타그램 합계` 가 `페이스북 단독` 으로
+            # 잘못 읽혔습니다.
+            #
+            # 실측(행정안전부 성과계획서 PDF): 이 표기가 없어 표 322개 중
+            # 273개(85%)가 "병합 셀이 풀렸다" 는 판정을 받았습니다. 같은
+            # 문서를 HWPX 로 읽으면 4/580 입니다.
+            if merge_mark and r1 - r0 > 1:
+                for r in range(r0 + 1, min(r1, num_rows)):
+                    if not grid[r][c0]:
+                        grid[r][c0] = MERGE_UP
 
     while grid and not any(cell.strip() for cell in grid[-1]):
         grid.pop()
