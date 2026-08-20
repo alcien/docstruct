@@ -38,6 +38,11 @@ DEFAULT_TOLERANCE = 5.0
 #: 다수를 판단할 최소 표 수.
 MIN_GROUP = 3
 
+#: 열 폭 대비 이 비율을 넘어야 어긋남으로 본다.
+#: 실측(행안부): 정상 예산표들이 열 폭의 10~50% 안에서 흔들렸다. 열 하나를
+#: 통째로 밀어낼 정도(100%)라야 구조가 어긋난 것이다.
+MIN_DRIFT_RATIO = 1.0
+
 
 def _tolerance() -> float:
     """같은 열로 볼 오차.
@@ -141,7 +146,14 @@ def run(pages: list[PageContent], **_kwargs) -> int:
         for page, table, edges in members:
             drift = [abs(a - b) for a, b in zip(edges, standard)]
             worst = max(drift) if drift else 0.0
-            if worst <= tolerance:
+            # **표 폭에 견준다.** 고정 pt 로 재면 넓은 표가 불리하다 —
+            # 실측(행안부 성과계획서)에서 예산표 97개 중 87개가 걸렸는데,
+            # 열 폭이 60pt 인 표에서 20pt 는 흔한 편차였다.
+            #
+            # 열 하나를 통째로 밀어낼 만큼 어긋난 것만 본다.
+            width = max(standard[-1] - standard[0], 1.0)
+            column = width / max(len(standard) - 1, 1)
+            if worst <= tolerance or worst < column * MIN_DRIFT_RATIO:
                 continue
             table.consensus_drift = round(worst, 1)
             marked += 1

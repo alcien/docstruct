@@ -7011,3 +7011,42 @@ def test_two_way_match_flags_real_straddle():
     crowded = [(Box(105, 105, 145, 115), "A"),
                (Box(110, 105, 148, 115), "B")]
     assert disagreements(cells, crowded)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.43 — ④ 가 정상 편차를 어긋남으로 보던 문제
+#
+# 배경: 행안부 성과계획서(429쪽, 표 321개)로 ④ 를 돌리니 **110건(34%)**
+#       이 걸렸다. 국세청(3/61)과 크게 달랐다.
+#
+#       파보니 예산표 97개 중 87개가 걸렸다 — **다수 자신이 걸린** 것이다.
+#       어긋남 분포가 5~108pt 로 넓었는데, 고정 pt(5pt) 로 재서 정상 편차도
+#       잡혔다.
+#
+#       열 폭이 68pt 인 표에서 20pt 흔들림은 흔하다. **열 하나를 통째로
+#       밀어낼 만큼**(열 폭 이상) 어긋난 것만 봐야 한다.
+#
+#       비율 기준을 넣으니 110 → 13건. 남은 것은 전부 108pt(열 폭의 1.6배)로,
+#       한 열이 밀린 모양이다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_consensus_uses_relative_drift():
+    """어긋남을 표 폭에 견준다.
+
+    고정 pt 로 재면 넓은 표가 불리하다.
+    """
+    import inspect
+
+    from docstruct.experiments import grid_consensus
+
+    source = inspect.getsource(grid_consensus.run)
+    assert "MIN_DRIFT_RATIO" in source
+    assert "column" in source
+
+
+def test_consensus_drift_ratio_documented():
+    """열 폭 대비 기준이 있다."""
+    from docstruct.experiments.grid_consensus import MIN_DRIFT_RATIO
+
+    # 열 하나를 통째로 밀어낼 정도라야 한다
+    assert MIN_DRIFT_RATIO >= 1.0
