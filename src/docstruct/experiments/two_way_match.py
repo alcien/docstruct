@@ -94,9 +94,17 @@ def run(pages: list[PageContent], *, scale: float = 2.0, **_kwargs) -> int:
                 continue
             boxes = [Box(float(c.bbox.l), float(c.bbox.t),
                          float(c.bbox.r), float(c.bbox.b)) for c in cells]
-            inside = [(b, t) for b, t in fragments
-                      if any(b.overlap_ratio(x) > 0 for x in boxes)]
-            odd = disagreements(boxes, inside)
+            # **낱말은 셀보다 잘다.** 한 셀에 여러 낱말이 들어가는 것은
+            # 정상이므로, 그것을 불일치로 세면 안 된다 — 실측에서 61개 표가
+            # 전부 걸렸고 한 표에서 966건이 나왔다.
+            #
+            # 셀 하나에 온전히 담기는 낱말은 빼고, **셀 경계를 걸치는**
+            # 것만 본다. 그것이 "텍스트가 옆 칸으로 갔다" 는 신호다.
+            straddling = [
+                (b, t) for b, t in fragments
+                if sum(1 for x in boxes if b.overlap_ratio(x) > 0.1) > 1
+            ]
+            odd = disagreements(boxes, straddling)
             if not odd:
                 continue
             table.match_disagreements = len(odd)

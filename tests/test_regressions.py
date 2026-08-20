@@ -6956,3 +6956,58 @@ def test_render_all_option_exists():
     from docstruct.pipeline import build_document
 
     assert "render_all" in inspect.signature(build_document).parameters
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.42 — ①③ 이 정상 표를 전부 잡던 문제
+#
+# 배경: 렌더 없이 돌게 한 뒤 실행하니 **61개 표가 전부** 걸렸다.
+#
+#           ① edge_drift          0.9 ~ 4.0pt · 61건
+#           ③ match_disagreements 6 ~ 966건  · 61건
+#
+#       둘 다 원인이 "정상인 것을 이상으로 봤다" 였다.
+#
+#       **①** 셀 경계와 글자 시작점은 원래 다르다 — 안쪽 여백 때문이다.
+#            0.5pt 를 넘으면 잡았는데, 정상 여백이 0.9~4.0pt 였다.
+#
+#       **③** 낱말은 셀보다 잘다. 한 셀에 여러 낱말이 들어가는 것은
+#            정상인데 그것을 불일치로 셌다. **셀 경계를 걸치는** 낱말만
+#            봐야 "텍스트가 옆 칸으로 갔다" 는 신호가 된다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_grid_refine_ignores_cell_padding():
+    """셀 안쪽 여백을 어긋남으로 보지 않는다."""
+    from docstruct.experiments.grid_refine import MIN_MEANINGFUL_DRIFT
+
+    # 실측에서 정상 표들이 0.9~4.0pt 였다
+    assert MIN_MEANINGFUL_DRIFT >= 4.0
+
+
+def test_two_way_match_counts_straddling_only():
+    """셀 하나에 담기는 낱말은 세지 않는다.
+
+    한 셀에 여러 낱말이 들어가는 것은 정상이다.
+    """
+    import inspect
+
+    from docstruct.experiments import two_way_match
+
+    source = inspect.getsource(two_way_match.run)
+    assert "straddling" in source
+    assert "> 1" in source                  # 두 셀 이상을 걸칠 때만
+
+
+def test_two_way_match_flags_real_straddle():
+    """한 셀에 여러 조각이 몰리면 잡는다.
+
+    셀 → 조각 방향은 하나만 고를 수 있으므로, 둘 이상이 같은 셀을
+    가리키면 어긋난다.
+    """
+    from docstruct.converters.pdf.cell_match import Box
+    from docstruct.experiments.two_way_match import disagreements
+
+    cells = [Box(100, 100, 150, 120), Box(150, 100, 200, 120)]
+    crowded = [(Box(105, 105, 145, 115), "A"),
+               (Box(110, 105, 148, 115), "B")]
+    assert disagreements(cells, crowded)
