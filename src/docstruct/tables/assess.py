@@ -41,7 +41,10 @@ _ASSESS_PROMPT = """\
 
 {content}
 
-## 문제가 있는 표만 JSON 배열로 응답하세요. 충분한 표는 JSON에 포함하지 마세요.
+## 표마다 JSON 항목을 하나씩 냅니다.
+
+**유형(`table_kind`)은 모든 표에** 적습니다 — 정상인 표도 포함합니다.
+품질 판정(`quality`)은 **문제가 있을 때만** 적습니다.
 
 표마다 아래 순서로 판단하세요. 앞 단계에서 정상으로 판명되면 뒤는 보지
 않습니다.
@@ -105,19 +108,34 @@ quality=insufficient 로 표시하고, reason 에 **"병합 셀이 풀려 값이
 - `〃` 가 보이면 그 열은 이미 처리된 것입니다.
 - 헤더가 두 줄인 표에서 위 줄이 여러 열을 덮는 것은 정상입니다.
 
+### table_kind — 이 표가 무엇인가 (모든 표에 필수)
+
+- "budget"     : 예산·결산 표 (금액, 회계구분, 집행률 등)
+- "indicator"  : 성과지표 표 (목표·실적·달성률)
+- "program"    : 사업·프로그램 목록 (단위사업명, 사업코드 등)
+- "org"        : 조직도·체계도를 표로 그린 것
+- "review"     : 지적사항·개선계획 등 서술형 표
+- "cover"      : 표지·간지·목차
+- "other"      : 위에 없는 것
+
+**조직도·체계도(`org`)는 markdown 으로 표현할 수 없습니다.** 계층과 연결선이
+사라지므로, 빈 칸이 많아도 파싱 결함이 아닙니다. 그 점을 감안해 판정하세요.
+
 ### 각 항목 필드:
 - "id"              : table ID (예: "table_1")
-- "content_type"    : table | text | image
-- "title"           : 표/도표 제목 (필수)
-- "quality"         : wrong | insufficient (content_type=table일 때만)
+- "table_kind"      : 위 일곱 중 하나 (**모든 표에 필수**)
+- "content_type"    : table | text | image (문제 있을 때만)
+- "title"           : 표/도표 제목
+- "quality"         : wrong | insufficient (문제 있을 때만)
 - "group_image_ids" : image일 때 묶이는 table ID 목록, 없으면 null
-- "reason"          : 판단 이유 (디버그용)
+- "reason"          : 판단 이유 (문제 있을 때만)
 
 응답 형식 (JSON 배열만, 다른 텍스트 없음):
 [
-  {{"id": "table_2", "content_type": "table", "title": "...", "quality": "insufficient", "group_image_ids": null, "reason": "..."}},
-  {{"id": "table_4", "content_type": "image", "title": "...", "group_image_ids": ["table_4", "table_5"], "reason": "..."}},
-  {{"id": "table_7", "content_type": "text", "reason": "표 구조가 아닌 단락 텍스트"}}
+  {{"id": "table_1", "table_kind": "budget", "title": "세입예산 현황"}},
+  {{"id": "table_2", "table_kind": "indicator", "title": "...", "content_type": "table", "quality": "insufficient", "group_image_ids": null, "reason": "..."}},
+  {{"id": "table_4", "table_kind": "org", "title": "...", "content_type": "image", "group_image_ids": ["table_4", "table_5"], "reason": "..."}},
+  {{"id": "table_7", "table_kind": "other", "content_type": "text", "reason": "표 구조가 아닌 단락 텍스트"}}
 ]
 """
 
@@ -143,6 +161,14 @@ _PROMOTE_SECTION = """\
 """
 
 _VALID_CONTENT_TYPES = frozenset({TABLE, TEXT, IMAGE})
+
+#: 표 유형. 다루는 방법이 유형마다 다르다.
+#:   budget     예산·결산   indicator  성과지표
+#:   program    사업 목록   org        조직도·체계도
+#:   review     서술형      cover      표지·목차
+_VALID_TABLE_KINDS = frozenset({
+    "budget", "indicator", "program", "org", "review", "cover", "other",
+})
 _VALID_QUALITIES = frozenset({WRONG, INSUFFICIENT})
 
 #: assess 프롬프트에 넣을 페이지 본문 최대 길이 (컨텍스트 초과 방지)
@@ -205,6 +231,11 @@ def _apply_assessment(
         if not info:
             _mark_default(table, unassessed=unassessed)
             continue
+
+        # 유형은 문제가 없는 표에도 온다. content_type 판정보다 먼저 담는다.
+        kind = (info.get("table_kind") or "").strip().lower()
+        if kind in _VALID_TABLE_KINDS:
+            table.table_kind = kind
 
         content_type = (info.get("content_type") or "").strip().lower()
         if content_type not in _VALID_CONTENT_TYPES:

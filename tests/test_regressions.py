@@ -6004,7 +6004,7 @@ def test_table_fields_documented_for_bridge():
         "llm_title", "content_type", "quality", "reason",
         "original_markdown", "group_image_ids", "source_image_id",
         # 0.3.12+
-        "cells", "source", "fill_diff", "continues_from",
+        "cells", "source", "fill_diff", "continues_from", "table_kind",
         "inherited_header", "odd_columns", "structure_ratio",
         # 실험 (docstruct.experiments)
         "split_merge_hints", "match_disagreements", "edge_drift",
@@ -7050,3 +7050,75 @@ def test_consensus_drift_ratio_documented():
 
     # 열 하나를 통째로 밀어낼 정도라야 한다
     assert MIN_DRIFT_RATIO >= 1.0
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.44 — 표 유형 판단
+#
+# 배경: 실험마다 검출률이 문서에 따라 크게 달랐다(④ 가 국세청 3건 · 행안부
+#       13건). 표 유형별로 적용이 갈리는지 보려면 **유형 데이터가 먼저**
+#       있어야 한다.
+#
+#       평가 LLM 이 이미 표를 보고 있으므로 거기에 한 항목을 더한다 —
+#       호출이 늘지 않는다.
+#
+#           budget · indicator · program · org · review · cover · other
+#
+#       특히 `org`(조직도)는 markdown 으로 표현할 수 없다. 빈 칸이 많아도
+#       파싱 결함이 아니라는 것을 평가가 알아야 한다.
+# ────────────────────────────────────────────────────────────────────
+
+def test_assess_prompt_asks_table_kind():
+    """평가 프롬프트가 유형을 묻는다."""
+    from docstruct.tables.assess import _ASSESS_PROMPT
+
+    assert "table_kind" in _ASSESS_PROMPT
+    for kind in ("budget", "indicator", "program", "org", "review", "cover"):
+        assert f'"{kind}"' in _ASSESS_PROMPT
+
+
+def test_assess_prompt_notes_org_limitation():
+    """조직도가 markdown 으로 표현 불가함을 알린다."""
+    from docstruct.tables.assess import _ASSESS_PROMPT
+
+    assert "조직도" in _ASSESS_PROMPT
+    assert "표현할 수 없습니다" in _ASSESS_PROMPT
+
+
+def test_table_kind_parsed_without_problem():
+    """문제가 없는 표에서도 유형을 담는다.
+
+    유형은 모든 표에 필요하므로 `content_type` 이 없어도 받아야 한다.
+    """
+    from docstruct.models import TableInfo
+    from docstruct.tables.assess import _apply_assessment
+
+    tables = [TableInfo(id="table_1", table_num=1, placeholder="",
+                        markdown="| a |")]
+    _apply_assessment(tables, [{"id": "table_1", "table_kind": "budget",
+                                "title": "세입예산 현황"}])
+    assert tables[0].table_kind == "budget"
+    assert tables[0].quality == "sufficient"        # 문제 없음
+
+
+def test_table_kind_rejects_unknown():
+    """모르는 유형은 담지 않는다."""
+    from docstruct.models import TableInfo
+    from docstruct.tables.assess import _apply_assessment
+
+    tables = [TableInfo(id="table_1", table_num=1, placeholder="",
+                        markdown="| a |")]
+    _apply_assessment(tables, [{"id": "table_1", "table_kind": "nosuch"}])
+    assert tables[0].table_kind is None
+
+
+def test_table_kind_serialized():
+    """유형이 JSON 에 남는다."""
+    import json
+
+    from docstruct.models import TableInfo
+
+    table = TableInfo(id="t1", table_num=1, placeholder="", markdown="| a |",
+                      table_kind="org")
+    assert table.to_dict()["table_kind"] == "org"
+    json.dumps(table.to_dict(), ensure_ascii=False)

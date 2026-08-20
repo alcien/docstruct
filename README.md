@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.43"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.44"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.43"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.44"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.43"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.44"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -305,6 +305,30 @@ LLM 없이 규칙으로 합니다.
 전체를 봅니다.
 
 끄려면 `detect_toc=false` 입니다.
+
+---
+
+## 표 유형
+
+평가 LLM 이 표마다 유형을 판단합니다. 이미 표를 보고 있으므로 호출이 늘지
+않습니다.
+
+```json
+{"table_kind": "budget", "quality": "sufficient"}
+```
+
+| 유형 | 무엇 |
+|---|---|
+| `budget` | 예산·결산 (금액, 회계구분, 집행률) |
+| `indicator` | 성과지표 (목표·실적·달성률) |
+| `program` | 사업·프로그램 목록 |
+| `org` | **조직도·체계도를 표로 그린 것** |
+| `review` | 지적사항·개선계획 등 서술형 |
+| `cover` | 표지·간지·목차 |
+| `other` | 그 밖 |
+
+`org` 는 markdown 으로 표현할 수 없습니다 — 계층과 연결선이 사라집니다.
+빈 칸이 많아도 파싱 결함이 아니며, 평가도 그 점을 감안합니다.
 
 ---
 
@@ -966,7 +990,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.43"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.44"
 ```
 
 ### 한글이 깨져 보일 때

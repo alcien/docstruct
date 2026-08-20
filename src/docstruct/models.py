@@ -70,6 +70,10 @@ class TableInfo:
     #: 못하는 병합 정보를 담는다 — 구조화 단계가 병합 셀 값을 하위 행에
     #: 전파할 수 있게 하기 위함이다.
     cells: list[dict] | None = None
+    #: 이 표가 무엇인가 — budget | indicator | program | org | review |
+    #: cover | other. 유형마다 다루는 방법이 달라야 한다. 특히 `org`(조직도)
+    #: 는 markdown 으로 표현할 수 없어 빈 칸이 많은 것이 정상이다.
+    table_kind: str | None = None
     #: 이 표가 어떻게 만들어졌는지. 결과만 보고 출처를 알 수 있어야 한다.
     #:   parser  파서가 뽑은 그대로
     #:   llm     LLM 이 다시 만듦 (fill)
