@@ -96,6 +96,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="의미 경로(목차) 추출 — 페이지당 LLM 1회 추가",
     )
 
+    exp = p.add_argument_group("실험")
+    exp.add_argument(
+        "--exp",
+        metavar="KEY[,KEY...]",
+        help="실험 기법을 켭니다 (쉼표로 여럿). `--exp list` 로 목록을 봅니다. "
+             "예: --exp split_merge,otsl_diff",
+    )
+
     render = p.add_argument_group("렌더링")
     render.add_argument(
         "--no-render",
@@ -381,6 +389,38 @@ def _print_check() -> int:
     return 0 if ok else 1
 
 
+def _enable_experiments(spec: str) -> list[str] | None:
+    """`--exp` 로 지정한 실험을 켠다.
+
+    입력: spec — 쉼표로 이은 키. `list` 면 목록만 낸다
+    출력: 켠 키 목록. 목록 출력이거나 잘못된 키면 None
+    비고:
+        실험은 **환경변수로만** 켠다. `Settings` 에 넣지 않는 것은 폐기할
+        때 본체를 건드리지 않기 위함이다. 이 함수는 그 환경변수를 대신
+        세팅해 준다 — 서버에서는 여전히 환경변수를 직접 쓴다.
+    """
+    from docstruct.experiments import all_experiments
+
+    known = {e.key: e for e in all_experiments()}
+    if spec.strip().lower() in ("list", "?"):
+        from docstruct.experiments.report import lines
+
+        print("\n".join(lines()))
+        return None
+
+    keys = [k.strip() for k in spec.split(",") if k.strip()]
+    unknown = [k for k in keys if k not in known]
+    if unknown:
+        print(f"모르는 실험: {', '.join(unknown)}", file=sys.stderr)
+        print(f"쓸 수 있는 것: {', '.join(sorted(known))}", file=sys.stderr)
+        return None
+
+    for key in keys:
+        os.environ[known[key].env] = "true"
+    print(f"실험 켬: {', '.join(keys)}")
+    return keys
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 실행.
 
@@ -407,6 +447,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_options:
         _print_options()
         return 0
+
+    if args.exp:
+        if _enable_experiments(args.exp) is None:
+            return 0 if args.exp.strip().lower() in ("list", "?") else 1
 
     try:
         _apply_settings(args.settings)

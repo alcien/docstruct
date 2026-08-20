@@ -6700,3 +6700,61 @@ def test_toc_page_ratio_matters():
     # 항목 6줄 + 본문 30줄 → 비율이 낮다
     body = _NO_HEADING_TOC + "\n".join(f"본문 {n} 번째 줄입니다." for n in range(30))
     assert not _looks_like_toc_page(_toc_page(5, body))
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.3.37 — `--exp` 로 실험 켜기
+#
+# 배경: 실험을 환경변수로만 켤 수 있어 불편했다. `--set` 은 `Settings` 필드를
+#       요구하는데, 실험을 거기 넣으면 **격리한 의미가 없어진다** — 폐기할
+#       때 본체를 건드리게 된다.
+#
+#       `--exp` 는 환경변수를 대신 세팅한다. 격리는 유지된다.
+#
+#           docstruct 문서.pdf -o out --exp split_merge,otsl_diff
+#           docstruct --exp list
+# ────────────────────────────────────────────────────────────────────
+
+def test_exp_flag_sets_env(monkeypatch):
+    """`--exp` 가 실험 환경변수를 켠다."""
+    from docstruct.cli import _enable_experiments
+    from docstruct.experiments import enabled_experiments
+
+    for name in ("DOCSTRUCT_EXP_SPLIT_MERGE", "DOCSTRUCT_EXP_OTSL_DIFF"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert _enable_experiments("split_merge,otsl_diff") == [
+        "split_merge", "otsl_diff"]
+    assert {e.key for e in enabled_experiments()} == {"split_merge", "otsl_diff"}
+
+
+def test_exp_flag_rejects_unknown_key(capsys, monkeypatch):
+    """모르는 키는 거부하고 목록을 알린다."""
+    from docstruct.cli import _enable_experiments
+
+    assert _enable_experiments("nosuch") is None
+    assert "모르는 실험" in capsys.readouterr().err
+
+
+def test_exp_list_prints_catalog(capsys):
+    """`--exp list` 가 목록을 낸다."""
+    from docstruct.cli import _enable_experiments
+
+    assert _enable_experiments("list") is None
+    out = capsys.readouterr().out
+    assert "split_merge" in out and "grid_consensus" in out
+
+
+def test_experiments_not_in_settings():
+    """실험은 `Settings` 에 없다.
+
+    거기 넣으면 폐기할 때 본체를 건드리게 된다.
+    """
+    import dataclasses
+
+    from docstruct.core.config import Settings
+    from docstruct.experiments import all_experiments
+
+    fields = {f.name for f in dataclasses.fields(Settings)}
+    for exp in all_experiments():
+        assert exp.key not in fields, f"{exp.key} 가 Settings 에 있습니다"
