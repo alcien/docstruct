@@ -1,10 +1,13 @@
 """깨진 ToUnicode 매핑 탐지 — 글머리표가 엉뚱한 글자로 나올 때.
 
+입력:
+    본문
+
 역할:
     HWP 에서 내보낸 PDF 는 글머리표(□ ○ ※ ▪)를 심볼 폰트의 글리프로 담는데,
     그 폰트의 ToUnicode CMap 이 엉뚱한 코드포인트를 가리키는 경우가 많다.
     그러면 텍스트 레이어에서 `□` 대신 `숿` 같은 **정상 한글 음절**이 나온다.
-    PUA(U+F020~) 가 아니므로 converters.korean_text.map_pua 가 잡지 못한다.
+    PUA(U+F020~) 가 아니므로 docstruct.text.korean_text.map_pua 가 잡지 못한다.
 
     이 모듈은 고치지 않는다. **어떤 코드포인트가 의심스러운지 증거를 모아**
     보여 줄 뿐이다. 매핑표는 문서마다 다를 수 있어 추측으로 넣으면 멀쩡한
@@ -186,7 +189,7 @@ def report(pdf_path: str | Path, *, pages: int = 5) -> None:
     if pua:
         codes = ", ".join(f"U+{ord(c):04X}" for c in pua[:10])
         print(f"  PUA 문자 {len(pua)}종: {codes}")
-        print("  → 이쪽은 converters.korean_text.map_pua 가 처리합니다.")
+        print("  → 이쪽은 docstruct.text.korean_text.map_pua 가 처리합니다.")
 
     if not suspects:
         print("  의심 문자 없음.")

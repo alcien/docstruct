@@ -1,11 +1,14 @@
 """HWP 서식 정보 → markdown 서식.
 
+입력:
+    HWP 서식 정보
+
 역할:
     pyhwp 트리에는 문단·표 말고도 서식이 다 들어 있다. 지금까지 ``Text`` 만
     읽어 제목도 굵은 글씨도 평문이 됐다. DocInfo 의 스타일·글자모양을
     문단에 연결해 markdown 으로 옮긴다.
 호출부:
-    docstruct.converters.hwp.hwp5tree
+    docstruct.converters.hwp.pyhwp_backend.hwp5tree · docstruct.converters.hwpx.hwpxtree
 출력:
     제목(`#`), 강조(`**`, `*`), 목록(`- `) 이 반영된 문단 문자열
 
@@ -49,17 +52,24 @@ _NON_BODY_STYLES = frozenset({
     "쪽 번호", "머리말", "꼬리말", "각주", "미주", "메모", "캡션",
 })
 
+#: 굵게 표기 (hwpxtree.BOLD 와 같은 값).
+BOLD = "**"
+
 #: 목록 글머리로 자주 쓰이는 문자. 한글 공문서 관례를 따른다.
 #: `□ ○ - ∙ ▪ ➊` 같은 것들로, 계층이 이 순서로 내려간다.
 _BULLET_LEVELS: tuple[tuple[str, ...], ...] = (
     ("□", "■", "◆"),
-    ("○", "●", "◎"),
+    # `ㅇ`(한글 낱자 이응)은 공문서에서 `○` 자리에 매우 흔히 쓰인다.
+    # 실측(조달청): `ㅇ 본  청 : 현원 592.3명` 이 계층 없이 평문으로 남았다.
+    ("○", "●", "◎", "ㅇ"),
     ("-", "–", "∙", "▪", "·"),
     ("*", "▸", "▷"),
 )
 
 #: 글머리 뒤에 공백이 오는 형태만 목록으로 본다.
-_BULLET_RE = re.compile(r"^([□■◆○●◎\-–∙▪·*▸▷])\s+(.*)$")
+#: `ㅇ` 는 한글 낱자(이응)라 정규식에도 함께 적어야 한다 — 목록 문자 무리에
+#: 넣는 것만으로는 여기서 걸리지 않는다.
+_BULLET_RE = re.compile(r"^([□■◆○●◎ㅇ\-–∙▪·*▸▷])\s+(.*)$")
 
 #: 번호 체계로 나타낸 제목. 실제 공문서는 `개요 N` 스타일 대신 이 표기를
 #: 쓰는 경우가 훨씬 많다 — 626KB 정부 문서에서 스타일 기반 제목은 0건,
@@ -197,6 +207,45 @@ def format_paragraph(
         return "  " * depth + "- " + emphasized
 
     return _apply_emphasis(body, styles, charshape_id)
+
+
+def format_body_text(text: str) -> str:
+    """본문 문단 하나를 제목·목록 표기로 바꾼다 (스타일 정보 없이).
+
+    입력: text — 이미 강조(`**`)가 적용된 문단 텍스트
+    출력: 제목이면 `#`, 목록이면 들여쓴 `- `, 아니면 원문 그대로
+    비고:
+        `format_paragraph` 에서 **스타일에 기대지 않는 부분만** 떼어낸
+        것이다. HWP 는 스타일 표(DocStyles)를 갖고 있지만 HWPX 경로는
+        없다 — 그래도 글머리 기호와 번호 표기는 텍스트만으로 읽히므로
+        계층을 똑같이 복원할 수 있다.
+
+        HWPX 산출에 들여쓰기가 하나도 없던 것이 이 때문이다 (실측:
+        같은 조달청 문서에서 HWP 317줄 대 HWPX 0줄). 한글 공문서는
+        `□ → ○ → - → *` 로 계층을 내리므로 기호가 곧 수준이다.
+
+        문단 전체가 굵은 경우(`**□ …**`) 기호가 `**` 뒤에 숨어 정규식이
+        빗나간다. 벗겨서 판단하고 다시 씌운다.
+    """
+    body = (text or "").strip()
+    if not body:
+        return ""
+
+    bold = len(body) > 4 and body.startswith(BOLD) and body.endswith(BOLD)
+    inner = body[len(BOLD):-len(BOLD)].strip() if bold else body
+
+    def _wrap(value: str) -> str:
+        """굵기를 되씌운다 (비어 있으면 그대로)."""
+        return f"{BOLD}{value}{BOLD}" if bold and value else value
+
+    level = _numbered_heading_level(inner)
+    if level:
+        return "#" * level + " " + _wrap(_strip_bullet(inner)[1])
+
+    depth, rest = _bullet_depth(inner)
+    if depth is not None:
+        return "  " * depth + "- " + _wrap(rest)
+    return body
 
 
 def _numbered_heading_level(text: str) -> int | None:

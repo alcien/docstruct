@@ -129,10 +129,10 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(name)s: %(mess
 logging.getLogger("docling").setLevel(logging.WARNING)
 
 from docstruct import build_document
-from docstruct import preview, report
-from docstruct import colab
-from docstruct.checks import show_environment
-from docstruct.nbui import FilePicker
+from docstruct.output import preview, report
+from docstruct.output import colab
+from docstruct.core.checks import show_environment
+from docstruct.output.nbui import FilePicker
 from docstruct.pipeline import SUPPORTED_SUFFIXES
 
 print("로드 완료 —", ", ".join(SUPPORTED_SUFFIXES))
@@ -209,7 +209,7 @@ md("""
 """)
 
 code("""
-ok, message = colab.check_llm_reachable(timeout=15)  # = docstruct.checks.check_llm_reachable
+ok, message = colab.check_llm_reachable(timeout=15)  # = docstruct.core.checks.check_llm_reachable
 print(("✅ " if ok else "⚠️ ") + message)
 
 USE_LLM = ok
@@ -343,12 +343,14 @@ code('''
 # Colab은 ipywidgets 슬라이더가 불안정할 수 있어 페이지 번호를 직접 지정합니다.
 PAGE = 0     # 0부터 시작
 
-preview.show_page(doc.pages[PAGE])
+# SRC 를 함께 넘긴다 — 파이프라인은 표가 있는 쪽만 렌더하므로, 주지 않으면
+# 표지·목차처럼 표 없는 쪽에서 지면 이미지가 보이지 않는다.
+preview.show_page(doc.pages[PAGE], pdf_path=SRC)
 '''.strip())
 
 code('''
 # 전체 페이지 한 번에 보기 (페이지가 많으면 limit 조정)
-# preview.show_pages(doc, limit=5, show_image=False)
+# preview.show_pages(doc, limit=5, pdf_path=SRC, show_image=False)
 '''.strip())
 
 md("## 12. 추출된 이미지")
@@ -425,7 +427,7 @@ doc = colab.retry_failed_pages(SRC, OUT_DIR, backend="auto",
 ```python
 import os
 os.environ["DOCLING_FORCE_FULL_PAGE_OCR"] = "true"
-from docstruct.core.config import rebuild_settings; from docstruct.checks import invalidate_caches
+from docstruct.core.config import rebuild_settings; from docstruct.core.checks import invalidate_caches
 rebuild_settings(); invalidate_caches()
 ```
 

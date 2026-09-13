@@ -1,5 +1,8 @@
 """환경변수 → 설정 객체.
 
+입력:
+    환경변수·.env·site_defaults
+
 역할:
     .env 와 환경변수를 읽는 유일한 지점. 다른 모듈은 os.environ 을 직접
     읽지 않고 get_settings() 를 통해 값을 얻는다. 잘못된 값은 경고 후
@@ -8,7 +11,7 @@
     converters.pdf.docling_backend  Docling 파이프라인 구성
     docstruct.tables.*              LLM 설정·동시 실행 수
     infrastructure.llm.client       엔드포인트
-    docstruct.checks / cli          환경 표시
+    docstruct.core.checks / cli          환경 표시
 출력:
     Settings — LLM 엔드포인트, OCR/PDF 백엔드, 연산 장치, 동시 실행 수 등
 """
@@ -22,6 +25,8 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
+# ═══ 구간 1 — .env · site_defaults 읽기 ══════════════════════════════════════
+# 환경변수 < .env < 사이트 기본값 < 코드 기본값 순으로 겹친다. 어느 것이 적용됐는지 is_default 로 안다.
 def _default_env_path() -> Path:
     """``.env`` 를 찾을 위치를 정한다.
 
@@ -219,6 +224,84 @@ def _warn_wrapped_lines(path: Path, raw_values: dict[str, str | None]) -> None:
         )
 
 
+#: 스레드 수를 바로잡을 때 쓸 상한. 더 잡아도 표 인식이 빨라지지 않고
+#: 메모리만 는다 (보수적으로 정한 값).
+# ═══ 구간 2 — 스레드·연산 장치 ════════════════════════════════════════════════════
+# num_threads 위생(0 금지) · cuda/mps 가용성 · CUDA_VISIBLE_DEVICES 충돌 판정 · 장치 최종 결정(resolve_device).
+_MAX_AUTO_THREADS = 8
+
+
+def sane_thread_count() -> int:
+    """쓸 만한 스레드 수.
+
+    입력: 없음
+    출력: 1 이상의 정수
+    """
+    return max(1, min(os.cpu_count() or 1, _MAX_AUTO_THREADS))
+
+
+def sanitize_thread_env() -> int | None:
+    """스레드 관련 환경변수가 쓸 수 없는 값이면 바로잡는다.
+
+    입력: 없음
+    출력: 바로잡은 값이 있으면 그 값, 없으면 None
+    비고:
+        두 변수를 본다.
+
+        `OMP_NUM_THREADS` — Docling 이 읽어 `torch.set_num_threads()` 에
+        넘긴다. torch 는 **양수만 받는다.**
+
+        `DOCLING_NUM_THREADS` — **Docling 이 직접 읽는다.** Docling 의
+        `AcceleratorOptions` 는 `DOCLING_` 접두어를 쓰는 설정 객체라,
+        우리가 넘기지 않아도 환경에 있으면 그대로 쓴다. 그런데 이 이름은
+        docstruct 설정 `num_threads` 의 환경변수이기도 하고, docstruct 에서
+        **0 은 "기본값에 맡김"** 이라는 뜻이다. 그 0 이 Docling 을 거쳐
+        torch 로 가면 죽는다.
+
+            실패: set_num_threads expects a positive integer
+
+        `.env` 에 `DOCLING_NUM_THREADS=0` 을 적어 둔 경우가 그렇다 —
+        docstruct 문법으로는 맞는 값인데 Docling 에는 독이다. 이럴 때는
+        **변수를 지운다.** docstruct 기본값이 어차피 0(=맡김)이라 뜻이
+        달라지지 않고, Docling 은 제 기본값을 쓴다.
+    """
+    fixed_value: int | None = None
+
+    # ① DOCLING_NUM_THREADS — 0 이면 지운다 (뜻이 같고, Docling 에 안전하다)
+    raw = os.environ.get("DOCLING_NUM_THREADS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value <= 0:
+            _log.warning(
+                "DOCLING_NUM_THREADS=%r 는 Docling 이 그대로 읽어 torch 에 넘겨 "
+                "죽습니다 (양수만 가능) — 지웁니다. docstruct 기본값과 뜻이 "
+                "같습니다. 스레드를 지정하려면 --set num_threads=N 을 쓰세요.",
+                raw,
+            )
+            os.environ.pop("DOCLING_NUM_THREADS", None)
+
+    # ② OMP_NUM_THREADS — 지우면 다른 라이브러리 동작이 바뀔 수 있어 값을 고친다
+    raw = os.environ.get("OMP_NUM_THREADS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value <= 0:
+            fixed_value = sane_thread_count()
+            _log.warning(
+                "OMP_NUM_THREADS=%r 로는 돌 수 없습니다 (torch 는 양수만 받습니다) — "
+                "%d 로 바로잡습니다. 원하는 값이 있으면 --set num_threads=N 으로 주세요.",
+                raw, fixed_value,
+            )
+            os.environ["OMP_NUM_THREADS"] = str(fixed_value)
+
+    return fixed_value
+
+
 def device_available(name: str) -> bool:
     """요청한 연산 장치를 실제로 쓸 수 있는지 확인한다.
 
@@ -277,6 +360,40 @@ def _cuda_device_count() -> int:
         return torch.cuda.device_count()
     except Exception:
         return 0
+
+
+def _vlm_default() -> bool:
+    """VLM 기능의 기본값 — LLM 이 설정돼 있으면 켠다.
+
+    입력: 없음 (환경변수)
+    출력: 켤지 여부
+    비고:
+        **왜 조건부 기본값인가**: 그림·캡처 표·한자로 나온 표처럼 결정론이
+        물러난 자리는 VLM 이 유일한 경로다. 그것을 꺼 두면 사람이 스위치를
+        찾아 켜기 전까지 그 자리가 빈 채로 나간다 — 기본값이 결과를
+        좌우해선 안 되는 자리다.
+
+        그렇다고 무조건 켜면 LLM 이 없는 환경(오프라인 검증·CI)에서 매번
+        실패 경고가 쌓인다. 그래서 **수단이 있을 때만** 켠다.
+
+        설정 로드 도중이라 `llm_available()` 을 부를 수 없어(순환) 환경변수를
+        직접 본다 — 판단 기준은 같다: HTTP 엔드포인트 또는 로컬 VLM.
+    """
+    # 주소가 잡힌 경우(사내 엔드포인트·로컬 VLM)와 **키만 잡힌 경우**를
+    # 모두 받는다. OpenAI 만 쓰는 배치는 주소를 따로 넣지 않는다 —
+    # 설정 쪽이 대비책 주소를 자동으로 세운다 (0.3.82 → 0.3.87).
+    #
+    # **`_get` 으로 본다.** `os.environ` 만 보면 눈이 좁다 — 사내 배치는
+    # 엔드포인트가 **내장 기본값**(_DEFAULTS)에 들어 있어 환경변수에는
+    # 아무것도 없다. 그래서 LLM 은 멀쩡히 붙는데 VLM 기본값만 꺼졌고,
+    # A/B 네 판이 전부 VLM 없이 돌아 비교가 성립하지 않았다 (0.3.99).
+    for name in ("DOCLING_TABLE_API_URL", "DOCSTRUCT_LLM_URL",
+                 "DOCLING_PICTURE_API_URL", "DOCSTRUCT_LOCAL_VLM_MODEL",
+                 "OPENAI_API_KEY", "DOCLING_TABLE_API_KEY",
+                 "DOCLING_TABLE_API_FALLBACK_KEY"):
+        if _get(name).strip():
+            return True
+    return False
 
 
 def _get_device() -> str:
@@ -485,6 +602,8 @@ def docling_picture_api_status() -> str:
     )
 
 
+# ═══ 구간 3 — 값 읽기 보조 ══════════════════════════════════════════════════════
+# _get_* 계열: 형 변환·선택지·불리언·URL 모양 검사. 잘린 경로(_looks_truncated_path)를 잡는다.
 def loaded_env_path() -> Path | None:
     """현재 적용된 .env 경로.
 
@@ -520,6 +639,72 @@ def _get(name: str, default: str = "") -> str:
     if default:
         return default
     return _DEFAULTS.get(name, "")
+
+
+def _get_explicit(name: str) -> str:
+    """**환경변수에 직접 적힌 값만** 읽는다 (내장 기본값 무시).
+
+    입력: name — 변수명
+    출력: 문자열. 환경변수에 없으면 빈 문자열
+    비고:
+        `_get` 은 내장 기본값(_DEFAULTS · site_defaults.py)까지 훑는다.
+        사내 배치는 엔드포인트가 거기 들어 있어, "사람이 직접 지정했는가"
+        를 물으려면 이 함수가 필요하다 — 그 구분이 없으면 `--ask-key`
+        같은 **덮어쓰기 요청**이 내장값을 이길 방법이 없다.
+    """
+    return os.environ.get(name, "").strip().strip("'\"")
+
+
+def key_problem(api_key: str) -> str:
+    """API 키가 HTTP 헤더에 실릴 수 있는지 본다.
+
+    입력: api_key — 키 문자열
+    출력: 문제가 있으면 사람이 읽을 사유, 없으면 빈 문자열
+    비고:
+        **HTTP 헤더는 latin-1 만 싣는다.** 한글이 섞이면 `requests` 가
+        보내는 순간 `'latin-1' codec can't encode characters` 로 터지는데,
+        그 메시지만으로는 원인이 키라는 것을 알 수 없다.
+
+        실측(행정안전부 429쪽): 키에 비 ASCII 가 섞여 표 평가가 쪽마다
+        실패했다 — 6분 걸려 추출을 마친 뒤 **429번** 같은 오류를 냈고,
+        표 321개가 전부 미판정으로 남았다. 결과물은 정직했지만(모두
+        `미판정` 표시) 시간과 GPU 는 이미 썼다.
+
+        띄어쓰기도 잡는다. `.env` 나 키 파일에 `sk-... 행안부용` 처럼
+        메모를 붙이면 그것까지 키가 된다.
+    """
+    if not api_key:
+        return ""
+    try:
+        api_key.encode("latin-1")
+    except UnicodeEncodeError:
+        bad = "".join(sorted({ch for ch in api_key if ord(ch) > 255}))[:8]
+        return (f"키에 ASCII 가 아닌 글자가 있습니다({bad}) — HTTP 헤더에 "
+                "실을 수 없습니다. 한글 입력 상태로 붙여 넣었거나 키 뒤에 "
+                "메모가 붙지 않았는지 보세요")
+    if any(ch.isspace() for ch in api_key):
+        return ("키에 공백이 있습니다 — 키 뒤에 메모나 주석이 붙지 "
+                "않았는지 보세요")
+    return ""
+
+
+def force_openai() -> bool:
+    """OpenAI 만 쓰도록 강제됐는가 (`--ask-key` · `--key-file`).
+
+    입력: 없음 (환경변수 DOCSTRUCT_FORCE_OPENAI)
+    출력: 강제면 True
+    비고:
+        **왜 필요한가** — `--ask-key` 는 키만 넣었다. 그런데 사내 배치는
+        엔드포인트가 내장 기본값(site_defaults.py)에 들어 있어 주소가 늘
+        차 있고, `_key_for` 는 OpenAI 가 아닌 주소에 OpenAI 키를 붙이지
+        않는다(당연하다 — 남의 서버로 키를 보낼 수 없다). 결과는 **키를
+        입력받고도 사내 엔드포인트로 가고 키는 버려지는 것**이었다.
+        키를 물어 놓고 쓰지 않는 것은 조용한 거짓말이다.
+
+        "주소가 하나도 없으면 OpenAI 를 쓴다"(0.3.87)는 처리가 있었지만,
+        site_defaults.py 가 들어온 뒤로 그 조건이 성립하지 않는다.
+    """
+    return _get_bool("DOCSTRUCT_FORCE_OPENAI", False)
 
 
 def _get_float(name: str, default: float) -> float:
@@ -638,6 +823,8 @@ def _split_url(url: str) -> tuple[str, str]:
 # ── 설정 모델 -------------------------------------------------------------
 
 @dataclass(frozen=True)
+# ═══ 구간 4 — 설정 객체 ════════════════════════════════════════════════════════
+# LLMEndpoint(표·그림·대비책 엔드포인트) · Settings(전체) · LocalVLM. 필드마다 출처 주석이 있다.
 class LLMEndpoint:
     """OpenAI 호환 ``/v1/chat/completions`` 서버 하나."""
 
@@ -717,11 +904,13 @@ class Settings:
     flag_broken_tables: bool             # 빈 칸이 있는 표를 표시할지 (기본 끔)
     flag_odd_tables: bool                # 같은 서식 중 열 수가 다른 표를 표시할지
     mark_table_continuation: bool        # 쪽을 넘는 표에 이어짐 관계를 표시할지
-    read_charts: bool                    # 그래프를 VLM 으로 읽을지 (기본 끔)
+    read_charts: bool                    # 그래프를 VLM 으로 읽을지 (LLM 있으면 기본 켬)
     detect_toc: bool                     # 목차를 규칙으로 찾을지
     scanned_skip_docling_ocr: bool       # 스캔본에서 docling OCR 을 끌지
+    verify_ocr: bool                     # OCR 결과를 LLM 으로 검증할지
+    reread_doubts: bool                  # 의심 자리를 VLM 으로 다시 읽을지
     rebuild_grid: bool                   # 그런 표의 격자를 OCR 좌표로 다시 세울지 (기본 끔)
-    vlm_fix_tables: bool                 # 그런 표를 VLM 으로 다시 만들지
+    vlm_fix_tables: bool                 # 그런 표를 VLM 으로 다시 만들지 (LLM 있으면 기본 켬)
 
     def describe(self) -> list[tuple[str, str, bool]]:
         """사람이 읽는 설정 요약을 만든다.
@@ -730,11 +919,28 @@ class Settings:
         출력: [(항목, 값, ok)] 목록 — checks.show_config 가 표로 그린다
         """
         rows: list[tuple[str, str, bool]] = []
+        raw_key = _get_explicit("OPENAI_API_KEY")
+        problem = key_problem(raw_key)
+        if problem:
+            # **못 쓴다는 사실을 화면에 올린다.** 키가 잡혀 있는데 판정이
+            # 건너뛰면 사람은 원인을 엉뚱한 데서 찾는다.
+            rows.append(("OPENAI_API_KEY", f"쓸 수 없음 — {problem}", False))
+        if force_openai():
+            # **강제 사실을 맨 위에 적는다.** 아래 줄들이 왜 사내 주소가
+            # 아닌지 설명해 주지 않으면, 설정이 무시된 것처럼 보인다.
+            rows.append((
+                "엔드포인트 강제",
+                "OpenAI 만 사용 (--ask-key/--key-file) — 사내 엔드포인트·"
+                "로컬 VLM 은 이 실행에서 쓰지 않습니다",
+                True,
+            ))
         if self.llm:
             rows.append((
                 "LLM (표 평가/재추출/목차)",
                 f"{self.llm.url} · {self.llm.model or '(모델 미지정)'}"
-                + (" · 내장 기본값" if is_default("DOCLING_TABLE_API_URL") else " · .env"),
+                + (" · OpenAI 강제" if force_openai()
+                   else (" · 내장 기본값"
+                         if is_default("DOCLING_TABLE_API_URL") else " · .env")),
                 bool(self.llm.model),
             ))
         else:
@@ -808,6 +1014,8 @@ class Settings:
 
 
 #: 그림 처리 방식으로 인정하는 값.
+# ═══ 구간 5 — 조립 ═══════════════════════════════════════════════════════════
+# _build_settings 가 위 구간을 모아 Settings 를 만든다. get_settings 는 캐시, rebuild_settings 로 갱신.
 _PICTURE_MODES = ("read", "describe", "both", "off")
 
 
@@ -1006,13 +1214,32 @@ def _build_settings() -> Settings:
           OPENAI_API_KEY 는 OpenAI 주소일 때만 붙인다 — 사내 엔드포인트로
           남의 키를 보내지 않기 위함이다.
     """
-    picture_url = _get("DOCLING_PICTURE_API_URL")
-    picture_model = _get("DOCLING_PICTURE_API_MODEL")
+    # **OpenAI 강제(`--ask-key`·`--key-file`)면 내장 엔드포인트를 쓰지
+    # 않는다.** 사람이 키를 넣어 준 것은 "이 키로 OpenAI 를 쓰겠다" 는
+    # 뜻이지 "사내 주소에 키를 얹겠다" 는 뜻이 아니다. 다만 **환경변수로
+    # 직접 지정한 값은 이긴다** — `--set DOCLING_TABLE_API_MODEL=gpt-4o`
+    # 같은 지정까지 뭉개면 모델을 고를 길이 없어진다.
+    forced = force_openai()
+    if forced:
+        openai_url = _get("DOCLING_TABLE_API_FALLBACK_URL")
+        openai_model = _get("DOCLING_TABLE_API_FALLBACK_MODEL")
+        picture_url = _get_explicit("DOCLING_PICTURE_API_URL") or openai_url
+        picture_model = _get_explicit("DOCLING_PICTURE_API_MODEL") or openai_model
+    else:
+        picture_url = _get("DOCLING_PICTURE_API_URL")
+        picture_model = _get("DOCLING_PICTURE_API_MODEL")
     picture_timeout = _get_float("DOCLING_PICTURE_API_TIMEOUT", 120.0)
     picture_prompt = _get("DOCLING_PICTURE_API_PROMPT") or None
     # OPENAI_API_KEY 는 **OpenAI 주소일 때만** 씁니다.
     # 사내 엔드포인트로 남의 키를 보내지 않기 위함입니다.
     openai_key = _get("OPENAI_API_KEY")
+    # **못 쓸 키는 아예 달지 않는다.** 달아 두면 호출할 때마다 터지는데,
+    # 429쪽짜리 문서에서는 그 오류가 429번 난다. 여기서 한 번 알리고
+    # 키 없는 상태로 간다 — 그 경로는 "미판정" 으로 정직하게 처리된다.
+    problem = key_problem(openai_key)
+    if problem:
+        _log.error("OPENAI_API_KEY 를 쓰지 않습니다 — %s", problem)
+        openai_key = ""
     picture_key = _get("DOCLING_PICTURE_API_KEY") or _key_for(picture_url, openai_key)
 
     picture = _make_endpoint(
@@ -1021,8 +1248,12 @@ def _build_settings() -> Settings:
     )
 
     # TABLE_* 가 필드별로 비어 있으면 PICTURE_* 로 채웁니다 (원본 프로젝트 동작 유지).
-    table_url = _get("DOCLING_TABLE_API_URL") or picture_url
-    table_model = _get("DOCLING_TABLE_API_MODEL") or picture_model
+    if forced:
+        table_url = _get_explicit("DOCLING_TABLE_API_URL") or picture_url
+        table_model = _get_explicit("DOCLING_TABLE_API_MODEL") or picture_model
+    else:
+        table_url = _get("DOCLING_TABLE_API_URL") or picture_url
+        table_model = _get("DOCLING_TABLE_API_MODEL") or picture_model
     table_timeout = _get_float("DOCLING_TABLE_API_TIMEOUT", picture_timeout)
     table_key = _get("DOCLING_TABLE_API_KEY") or _key_for(table_url, openai_key) or (
         picture_key if _same_host(table_url, picture_url) else ""
@@ -1061,6 +1292,11 @@ def _build_settings() -> Settings:
         _log.warning("DOCLING_PDF_BACKEND=%r 는 알 수 없는 값 — auto 사용", pdf_backend)
         pdf_backend = "auto"
 
+    # OpenAI 강제면 **로컬 VLM 도 쓰지 않는다.** 로컬 모델이 잡혀 있으면
+    # 표 판정·재추출이 HTTP 대신 그쪽으로 가서, 키를 넣은 의미가 절반만
+    # 남는다 (조달청 실행에서 `vlm_model` 이 사내 모델로 찍힌 자리다).
+    local_vlm = None if forced else _build_local_vlm()
+
     return Settings(
         pdf_backend=pdf_backend,
         force_full_page_ocr=_get_bool("DOCLING_FORCE_FULL_PAGE_OCR", False),
@@ -1075,15 +1311,21 @@ def _build_settings() -> Settings:
         flag_broken_tables=_get_bool("DOCSTRUCT_FLAG_BROKEN_TABLES", False),
         flag_odd_tables=_get_bool("DOCSTRUCT_FLAG_ODD_TABLES", True),
         mark_table_continuation=_get_bool("DOCSTRUCT_MARK_TABLE_CONTINUATION", True),
-        read_charts=_get_bool("DOCSTRUCT_READ_CHARTS", False),
+        # 그림·복잡한 표는 결정론이 물러난 자리다 — **LLM 이 설정돼 있으면
+        # 기본으로 켠다.** 명시적으로 끄고 싶으면 환경변수·--set 으로 끈다.
+        # LLM 이 없는 환경에서는 자동으로 꺼져 헛도는 호출이 생기지 않는다.
+        read_charts=_get_bool("DOCSTRUCT_READ_CHARTS", _vlm_default()),
         detect_toc=_get_bool("DOCSTRUCT_DETECT_TOC", True),
         scanned_skip_docling_ocr=_get_bool(
             "DOCSTRUCT_SCANNED_SKIP_DOCLING_OCR", False),
+        verify_ocr=_get_bool("DOCSTRUCT_VERIFY_OCR", False),
+        reread_doubts=_get_bool("DOCSTRUCT_REREAD_DOUBTS", False),
         rebuild_grid=_get_bool("DOCSTRUCT_REBUILD_GRID", False),
-        vlm_fix_tables=_get_bool("DOCSTRUCT_VLM_FIX_TABLES", False),
+        vlm_fix_tables=_get_bool("DOCSTRUCT_VLM_FIX_TABLES", _vlm_default()),
         llm=llm,
-        llm_fallback=_build_fallback(),
-        local_vlm=_build_local_vlm(),
+        # 강제일 때 주 엔드포인트가 이미 OpenAI 라 대비책은 뜻이 없다.
+        llm_fallback=None if forced else _build_fallback(),
+        local_vlm=local_vlm,
         docling_picture=picture,
         ocr_backend=_get("DOCLING_OCR_BACKEND", "rapidocr").lower(),
         ocr_lang=_get("DOCLING_OCR_LANG"),

@@ -76,8 +76,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(name)s: %(mess
 logging.getLogger("docling").setLevel(logging.WARNING)
 
 from docstruct import build_document
-from docstruct import preview, report
-from docstruct.checks import show_environment, reload_environment, show_llm_check
+from docstruct.output import preview, report
+from docstruct.core.checks import show_environment, reload_environment, show_llm_check
 from docstruct.core import winfix
 
 # Windows 비 UTF-8 로케일(cp949)에서 PyTorch/Docling 초기화가 죽는 문제를 우회합니다.
@@ -114,7 +114,7 @@ LLM이 미설정이면 표 평가·재추출 없이 **순수 파싱 결과**만 
 
 code('''
 # .env 를 방금 고쳤다면 이 셀을 실행하세요 (커널 재시작 불필요).
-from docstruct.checks import reload_environment
+from docstruct.core.checks import reload_environment
 reload_environment()
 ''')
 
@@ -133,7 +133,7 @@ code('''
 %autoreload 2
 
 # 코드가 바뀌면 설정·어댑터 캐시도 옛것이 남습니다.
-from docstruct.checks import invalidate_caches
+from docstruct.core.checks import invalidate_caches
 invalidate_caches()
 
 # 주의: converters/pdf/docling_backend.py 를 고치면 Docling 컨버터 캐시가
@@ -160,7 +160,7 @@ code('''
 # docstruct.configure(llm_url="http://다른주소:11060/v1", llm_concurrency=8)
 
 # 현재 적용값 확인
-from docstruct.checks import show_environment
+from docstruct.core.checks import show_environment
 show_environment()
 '''.strip())
 
@@ -175,7 +175,7 @@ md("""
 """)
 
 code("""
-from docstruct.nbui import FilePicker
+from docstruct.output.nbui import FilePicker
 from docstruct.pipeline import SUPPORTED_SUFFIXES
 
 picker = FilePicker(
@@ -295,7 +295,7 @@ md("""
   2. docling.ocr                  OCR 수행 (스캔 페이지) — rapidocr · 96셀 전부 OCR
   3. docstruct.extractors.pdf     요소 분류 — 텍스트블록 9 · 표 1 · 그림 2
   4. docstruct.tables.docling     TableItem → GFM markdown — 1개 (병합셀 grid 복원)
-  5. docstruct.media.page_render  페이지 PNG 렌더 — pypdfium2 · 2.0x
+  5. docstruct.images.page_render  페이지 PNG 렌더 — pypdfium2 · 2.0x
   6. docstruct.tables.assess      LLM 표 판정 — table_2:table/insufficient  (2.1s)
   7. docstruct.tables.fill        LLM 표 재추출 — table_2 교체  (3.4s)
   8. docstruct.tables.tags        표 블록 정규화
@@ -314,6 +314,12 @@ md("""
 """)
 
 code('''
+# 슬라이더로 쪽을 넘기며 **지면과 판독 결과를 대조**한다.
+# SRC(원본 PDF)를 함께 넘기는 것이 중요하다 — 파이프라인은 표가 있는
+# 쪽만 렌더하므로(렌더의 원래 용도가 표 재추출의 시각 근거다), 표지·
+# 목차처럼 표가 없는 쪽은 저장된 이미지가 없다. 실측(행안부 429쪽):
+# 이미지가 있는 쪽은 289쪽뿐이라 1~6쪽을 열면 아무것도 보이지 않았다.
+# pdf_path 를 주면 없는 쪽을 그 자리에서 그려 **모든 쪽**이 보인다.
 try:
     import ipywidgets as W
     from IPython.display import display
@@ -330,16 +336,17 @@ try:
         def _render(*_):
             with out:
                 out.clear_output(wait=True)
-                preview.show_page(doc.pages[slider.value], show_image=show_img.value)
+                preview.show_page(doc.pages[slider.value], pdf_path=SRC,
+                                  show_image=show_img.value)
 
         slider.observe(_render, names="value")
         show_img.observe(_render, names="value")
         display(W.VBox([W.HBox([slider, show_img]), out]))
         _render()
     else:
-        preview.show_page(doc.pages[0])
+        preview.show_page(doc.pages[0], pdf_path=SRC)
 except ImportError:
-    preview.show_pages(doc, limit=5)
+    preview.show_pages(doc, limit=5, pdf_path=SRC)
 '''.strip())
 
 code('''

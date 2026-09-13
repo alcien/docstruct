@@ -10,6 +10,24 @@
     DocStruct (파사드), structure / structure_to_json (한 줄 사용),
     모델 클래스, build_document (하위 수준 함수)
 
+패키지 지도 (0.4.84 구조화) — 두 축으로 읽는다::
+
+    형식 축  "무슨 파일인가"           인식 축  "무엇을 알아내는가"
+    ──────────────────────────────    ────────────────────────────────
+    converters/  pdf · hwpx · hwp     tables/      ① 표 구조
+                 · html · common      text/        ② 텍스트 (판독·검증·정규화)
+    extractors/  형식별 → 공통 모델    images/      ③ 그림 (정체·판독·대조)
+                                      outline/     ②의 윗단 — 목차·경로
+                                      structuring/ ①의 윗단 — 레코드·계층
+    공통 층                            experiments/ 실험 사다리 (주로 ①)
+    core/           설정·환경·진단     align/       HWPX↔PDF 쪽 맞춤
+    infrastructure/ LLM·VLM 통신       output/      산출물·노트북 표시
+    models.py       결과 모델(계약)    pipeline.py  조립 — 구간 0~12
+    api.py · cli.py · __main__.py     진입점
+
+    형식은 extractors 에서 끝난다. pipeline 부터는 형식을 모르고 인식 축만
+    안다. 각 폴더의 __init__ 에 그 폴더의 모듈 표(입력 → 출력 · 역할)가 있다.
+
 사용 예::
 
     from docstruct import DocStruct
@@ -31,8 +49,8 @@
     doc = ds.document
     print(doc.pages[0].trace.summary())     # 한 줄 요약
     print(doc.pages[0].trace.log())         # 순차 실행 로그
-    docstruct.preview.show_pipeline(doc)    # 노트북에서 표로
-    docstruct.preview.show_page(doc.pages[0])
+    docstruct.output.preview.show_pipeline(doc)    # 노트북에서 표로
+    docstruct.output.preview.show_page(doc.pages[0])
 
     # 여러 문서를 한 번에 (진행 막대 포함)
     from docstruct import DocStructBatch
@@ -70,9 +88,16 @@ from docstruct.models import (
 )
 from docstruct.pipeline import SUPPORTED_SUFFIXES, build_document
 
-# 노트북에서 `docstruct.preview.show_page(...)` 처럼 바로 쓸 수 있게
+# 노트북에서 `docstruct.output.preview.show_page(...)` 처럼 바로 쓸 수 있게
 # 서브모듈을 미리 붙여 둡니다 (import docstruct 만으로 접근 가능).
-from docstruct import preview, report  # noqa: E402,F401
+from docstruct.output import preview, report  # noqa: E402,F401
+
+# 쪽 맞춤 진입점 (0.4.93). `align_documents` 는 document.json 두 벌을 받는
+# 낮은 수준 함수이고, `align_pair` 는 **두 벌을 마련하는 일까지** 한다 —
+# 산출 폴더에 이미 돌린 결과가 있으면 그것을 쓰고 없는 것만 판독한다.
+from docstruct.align.documents import align_documents  # noqa: E402,F401
+from docstruct.align.pair import (AlignPair, Prepared,  # noqa: E402,F401
+                                  align_pair, find_counterpart, prepare)
 
 # winfix 는 core 안에 있지만 `from docstruct import winfix` 로 쓰도록
 # README 가 안내해 왔습니다. 여기서 붙여 두면 패키지 배포본과
@@ -102,6 +127,12 @@ __all__ = [
     "TraceStep",
     # 하위 수준
     "build_document",
+    "align_pair",
+    "align_documents",
+    "prepare",
+    "find_counterpart",
+    "AlignPair",
+    "Prepared",
     "SUPPORTED_SUFFIXES",
     # 서브모듈
     "preview",

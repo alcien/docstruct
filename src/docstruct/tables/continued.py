@@ -182,5 +182,46 @@ def mark_continuations(pages: list[PageContent]) -> int:
     return marked
 
 
+def with_header(markdown: str | None, header: list[str]) -> str | None:
+    """이어지는 표의 markdown 앞에 물려받은 머리 행을 붙인다.
+
+    **파이프라인은 이것을 부르지 않는다.** 표시(read-only) 쪽에서만 쓴다.
+
+    입력: markdown — 표 markdown, header — 앞 표의 머리 칸 목록
+    출력: 머리가 붙은 markdown. 붙일 수 없으면 None
+    비고:
+        열 수가 다르면 붙이지 않는다 — 어긋난 머리는 없느니만 못하다.
+        이미 머리가 있는(첫 행이 머리처럼 보이는) 표도 건드리지 않는다:
+        지면이 머리를 다시 인쇄한 경우다.
+
+        **왜 원본에 넣지 않는가** (0.3.9 의 결정, 0.4.8 에서 재확인):
+        열 수가 쪽마다 13~17 로 달라(빈 열이 잘린다) 앞에서부터 억지로
+        맞추게 되고, 그 정렬이 틀리면 되돌릴 수 없다. 그래서 `markdown`
+        은 그대로 두고 `inherited_header` 로 관계만 기록한다 — 실제 값을
+        보고 맞추는 것은 구조화 단계의 몫이다.
+
+        다만 **사람이 볼 때는 머리가 있어야 읽힌다** (조달청 p70: 17열
+        표가 데이터부터 시작해 "재정사업 평가명" 이 어느 열인지 알 수
+        없었다). 그래서 표시 전용으로 이 함수를 둔다 — 붙인 결과를
+        저장하지 않으므로 되돌릴 수 없는 정렬 사고가 나지 않는다.
+    """
+    body = (markdown or "").strip()
+    if not body or not header:
+        return None
+    lines = body.split("\n")
+    first = [c.strip() for c in lines[0].strip().strip("|").split("|")]
+    if len(first) != len(header):
+        return None
+    if [c.strip() for c in header] == first:
+        return None                              # 지면이 머리를 다시 찍었다
+
+    head = "| " + " | ".join(str(c).strip() for c in header) + " |"
+    rule = "| " + " | ".join(["---"] * len(header)) + " |"
+    # 원래 markdown 의 구분선은 데이터 사이에 남으면 안 되므로 걷어낸다.
+    rest = [l for i, l in enumerate(lines)
+            if not (i == 1 and set(l.replace("|", "").replace(" ", "")) <= set("-:"))]
+    return "\n".join([head, rule, *rest])
+
+
 #: 옛 이름. 0.3.9 에서는 헤더를 markdown 에 끼워 넣었다.
 inherit_headers = mark_continuations

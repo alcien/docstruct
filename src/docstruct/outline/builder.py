@@ -1,5 +1,8 @@
 """문서 목차(의미 경로) 추출.
 
+입력:
+    쪽 목록
+
 역할:
     페이지 본문을 LLM 에 보내 섹션 계층을 뽑고, 페이지를 넘어가며
     직전 경로를 이어받아 문서 전체의 목차를 만든다.
@@ -14,7 +17,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from docstruct.content import expand_tables_and_images
+from docstruct.output.content import expand_tables_and_images
 from docstruct.models import PageContent, PageDocument
 from docstruct.infrastructure.llm.client import invoke_llm, llm_api_config
 from docstruct.infrastructure.llm.json_parse import parse_json_array

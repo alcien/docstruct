@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "docstruct"
-version = "0.3.53"
+version = "0.5.9"
 description = "HWP/HWPX/PDF 문서를 페이지 단위로 구조화해 JSON 으로 내보내는 라이브러리"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +35,11 @@ dependencies = [
     "pyhwp>=0.1b15",                 # hwp5html 실행파일이 함께 설치됨
     "olefile>=0.47",
     "six>=1.16",                     # pyhwp 가 쓰면서 선언하지 않는 의존성
+
+    # 이미지 판독 가능성 측정·보정 (media/legibility · image_prep)
+    # 없으면 모든 그림이 "판정 불가" 가 된다 — 조용히 넘어가지 않도록
+    # 경고하지만, 애초에 있어야 판정이 선다.
+    "opencv-python-headless>=4.8",
 
     # HWPX
     "python-hwpx>=1.0",

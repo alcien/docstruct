@@ -1,5 +1,8 @@
 """사이트 전용 기본값 예시.
 
+입력:
+    (코드 상수)
+
 역할:
     이 파일을 ``site_defaults.py`` 로 복사하고 값을 채우면, 설치 직후
     설정 없이 해당 엔드포인트로 동작한다. 환경변수·.env 가 언제나 우선한다.
@@ -23,4 +26,6 @@ DEFAULTS = {
     # 그림 설명 VLM (생략하면 그림 캡션 없이 동작)
     "DOCLING_PICTURE_API_URL": "http://내부주소:포트/v1/chat/completions",
     "DOCLING_PICTURE_API_MODEL": "모델명",
+    # 동시 호출 수 (기본 4). 서버가 받아 주는 만큼 올린다.
+    "DOCLING_LLM_CONCURRENCY": "8",
 }

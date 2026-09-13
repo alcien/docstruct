@@ -1,5 +1,8 @@
 """`<table N> ... </table N>` 블록 생성·파싱·동기화.
 
+입력:
+    본문 markdown · 표 번호 · 표 markdown
+
 역할:
     본문 markdown 안에서 표를 감싸는 태그 블록을 다루는 문자열 유틸.
     LLM 이 표 위치를 지목할 수 있게 하고, 재추출 결과를 본문에 되돌린다.
@@ -7,7 +10,7 @@
     docstruct.tables.markdown  블록 삽입
     docstruct.tables.fill      블록 교체·제거·컨텍스트 추출
     docstruct.pipeline         정규화
-    docstruct.preview          표시용 파싱
+    docstruct.output.preview          표시용 파싱
 출력:
     문자열 (본문 markdown) 또는 위치 정보
 """

@@ -1,5 +1,8 @@
 """표 품질 판정 (LLM).
 
+입력:
+    표 + 쪽 이미지
+
 역할:
     페이지 본문과 (있으면) 페이지 이미지를 LLM 에 보내, 각 `<table N>` 이
     실제로 표인지(content_type) 와 파싱 품질이 쓸 만한지(quality)를 판정한다.
@@ -18,8 +21,8 @@ from typing import Any
 
 from docstruct.core.config import get_settings
 
-from docstruct.media.images import encode_image_file
-from docstruct.progress import ProgressBar
+from docstruct.images.encode import encode_image_file
+from docstruct.core.progress import ProgressBar
 from docstruct.models import (
     IMAGE,
     INSUFFICIENT,
@@ -162,6 +165,43 @@ _PROMOTE_SECTION = """\
 
 _VALID_CONTENT_TYPES = frozenset({TABLE, TEXT, IMAGE})
 
+#: 모델이 쓰는 다른 말들. 지시문은 세 값(table·text·image)을 요구하지만
+#: 모델은 "표"·"chart"·"조직도" 처럼 다른 말을 쓰기도 한다. 뜻이 같으면
+#: 받아들이고, 그래도 모르면 지어내지 않고 기록한다.
+#:
+#: **빈 값은 여기에 해당하지 않는다** — 지시문이 content_type 을 "문제
+#: 있을 때만" 적으라고 하므로 생략은 "표이고 괜찮다" 는 뜻이다 (0.3.91 이
+#: 이것을 오판해 정상 표 46개에 경고를 남겼고 0.3.92 에서 바로잡았다).
+_CONTENT_TYPE_ALIASES = {
+    "표": TABLE, "테이블": TABLE, "tabular": TABLE, "table data": TABLE,
+    "tabledata": TABLE,
+    "데이터": TABLE, "data": TABLE, "grid": TABLE,
+    "텍스트": TEXT, "본문": TEXT, "문단": TEXT, "paragraph": TEXT,
+    "prose": TEXT, "sentence": TEXT, "list": TEXT, "목록": TEXT,
+    "이미지": IMAGE, "그림": IMAGE, "사진": IMAGE, "figure": IMAGE,
+    "picture": IMAGE, "chart": IMAGE, "graph": IMAGE, "diagram": IMAGE,
+    "도표": IMAGE, "조직도": IMAGE,
+}
+
+
+def normalize_content_type(raw: str | None) -> str | None:
+    """모델이 낸 content_type 을 우리 세 값으로 맞춘다.
+
+    입력: raw — 모델 응답 값
+    출력: table·text·image 중 하나. 맞출 수 없으면 None
+    비고:
+        영문 소문자 세 값만 받으면 같은 뜻의 다른 말이 전부 기본값으로
+        떨어진다. 별칭을 받되 **모르는 값은 지어내지 않고** None 을 낸다 —
+        호출부가 그 사실을 기록한다.
+    """
+    text = (raw or "").strip().lower().replace("_", " ").strip()
+    if not text:
+        return None
+    if text in _VALID_CONTENT_TYPES:
+        return text
+    compact = text.replace(" ", "")
+    return _CONTENT_TYPE_ALIASES.get(text) or _CONTENT_TYPE_ALIASES.get(compact)
+
 #: 표 유형. 다루는 방법이 유형마다 다르다.
 #:   budget     예산·결산   indicator  성과지표
 #:   program    사업 목록   org        조직도·체계도
@@ -237,10 +277,24 @@ def _apply_assessment(
         if kind in _VALID_TABLE_KINDS:
             table.table_kind = kind
 
-        content_type = (info.get("content_type") or "").strip().lower()
-        if content_type not in _VALID_CONTENT_TYPES:
-            _log.debug("알 수 없는 content_type=%r — 기본값 적용: %s", content_type, table.id)
+        raw_type = info.get("content_type")
+        if raw_type in (None, ""):
+            # **생략은 계약대로 "문제 없음" 이다.** 지시문이 content_type 을
+            # "문제 있을 때만" 적으라고 하므로, 빈 값은 모델이 답을 뺀 것이
+            # 아니라 "표이고 괜찮다" 는 뜻이다. 0.3.91 에서 이것을 "알 수
+            # 없는 값" 으로 잘못 읽어 정상 표 46개에 경고를 남겼다.
             _mark_default(table)
+            table.assessed = True                # 판정은 받았다
+            continue
+
+        content_type = normalize_content_type(raw_type)
+        if content_type is None:
+            # 값이 **있는데** 우리가 그 말을 모르는 경우다 — 지어내지 않고
+            # 그 사실을 남긴다. 조용히 sufficient 로 만들지 않는다.
+            _log.info("알 수 없는 content_type=%r — 기록만 남깁니다: %s",
+                      raw_type, table.id)
+            _mark_default(table)
+            table.reason = f"판정 값을 알 수 없음: content_type={raw_type!r}"
             continue
 
         quality_raw = (info.get("quality") or "").strip().lower()
@@ -271,6 +325,8 @@ def _apply_assessment(
 def promote_images_to_tables(
     page: PageContent,
     assessment: list[dict[str, Any]],
+    *,
+    next_num: int | None = None,
 ) -> None:
     """표로 판정된 그림을 TableInfo 로 승격한다.
 
@@ -287,7 +343,12 @@ def promote_images_to_tables(
         기존 재추출(fill) 경로가 페이지 이미지를 근거로 내용을 채우게 한다.
     """
     by_id = {img.id: img for img in (page.images or [])}
-    next_num = max((t.table_num for t in page.tables), default=0)
+    # **문서 전체에서 하나뿐인 번호여야 한다.** 쪽 안에서만 세면 다른 쪽의
+    # 표와 겹친다 — 실측(조달청 17쪽 실행): 9쪽 승격 표와 10쪽 본래 표가
+    # 둘 다 `table_5` 가 됐다. 표 id 는 정답 매칭·`<table N>` 치환·구조화
+    # 레코드의 열쇠라, 겹치면 그 셋이 조용히 어긋난다.
+    if next_num is None:
+        next_num = max((t.table_num for t in page.tables), default=0)
 
     for item in assessment:
         image_id = str(item.get("id") or "")
@@ -340,16 +401,34 @@ def _insert_table_block(content: str, placeholder: str, table_num: int) -> str:
     return f"{content}\n\n{block}" if content else block
 
 
+#: 한 쪽에서 승격될 수 있는 그림 표의 최대 개수. 쪽마다 이만큼 번호를
+#: 떼어 주면 병렬로 돌아도 겹치지 않는다.
+_PROMOTE_STRIDE = 20
+
+
+def _next_table_num(pages: list[PageContent]) -> int:
+    """문서 전체에서 쓰이지 않은 다음 표 번호.
+
+    입력: pages — 문서의 모든 페이지
+    출력: 최대 table_num
+    """
+    return max((t.table_num for page in pages for t in (page.tables or [])),
+               default=0)
+
+
 def assess_page_tables(
     page: PageContent,
     *,
     cfg: dict[str, Any] | None = None,
+    next_num: int | None = None,
 ) -> None:
     """페이지 하나의 표를 판정한다.
 
     입력:
         page  PageContent (content, tables, page_image_path 사용)
         cfg   LLM 설정. None 이면 전역 설정에서 가져옴
+        next_num  그림 승격 표에 줄 시작 번호 (문서 전체 최댓값).
+                  None 이면 이 쪽 안에서만 세므로 다른 쪽과 겹칠 수 있다
     출력: 없음 (page.tables 의 각 TableInfo 갱신)
     동작: LLM 미설정이거나 호출 실패 시 모든 표를 sufficient 로 표시한다.
     """
@@ -413,7 +492,7 @@ def assess_page_tables(
 
     _apply_assessment(page.tables, assessment, unassessed=unassessed)
     if candidates:
-        promote_images_to_tables(page, assessment)
+        promote_images_to_tables(page, assessment, next_num=next_num)
 
 
 def _log_page_failure(page_no: object, exc: Exception) -> None:
@@ -452,13 +531,20 @@ def assess_document(pages: list[PageContent], *, progress: bool = False) -> None
     try:
         if workers <= 1:
             for page in targets:
-                assess_page_tables(page, cfg=cfg)
+                assess_page_tables(page, cfg=cfg, next_num=_next_table_num(pages))
                 bar.update(1, f"p.{page.page_no}")
             return
 
         _log.info("표 평가 %d페이지 · 동시 %d개", len(targets), workers)
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(assess_page_tables, page, cfg=cfg): page for page in targets}
+            # 번호는 **미리** 나눠 준다. 병렬로 돌면서 각자 세면 겹친다.
+            start = _next_table_num(pages)
+            allotted = {}
+            for offset, page in enumerate(targets):
+                allotted[page.page_no] = start + offset * _PROMOTE_STRIDE
+            futures = {pool.submit(assess_page_tables, page, cfg=cfg,
+                                   next_num=allotted[page.page_no]): page
+                       for page in targets}
             for future in as_completed(futures):
                 page = futures[future]
                 try:

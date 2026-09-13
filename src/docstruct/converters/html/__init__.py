@@ -1,11 +1,19 @@
-"""HTML → markdown/텍스트/XML 변환.
+"""converters.html — HTML 중간 표현 → markdown [형식 축 · hwp 경로의 보조].
 
+축: 형식.
 역할:
-    pyhwp 가 만든 HTML 을 구조를 보존하며 변환한다.
+    pyhwp(hwp5html) 가 낸 HTML 을 블록 목록으로 읽고 markdown/텍스트로
+    바꾼다. HWP 사다리 3단의 뒷부분이다.
 호출부:
-    converters.hwp.converter
-출력:
-    html_to_markdown / html_to_text / html_to_xml
+    docstruct.converters.hwp.converter
+
+모듈 (입력 → 출력 · 역할):
+    blocks.py             HTML 문자열 → 블록 목록 → markdown / 텍스트
+                          문단·제목·목록·표를 문서 순서로.
+    tables.py             HTML <table> → GFM 표 문자열 또는 격자(list[list])
+                          rowspan/colspan 을 펼쳐 격자로 만든 뒤 렌더.
+    utils.py              HTML 조각 → 문자열 / 정수
+                          텍스트 정리·속성 읽기 보조.
 """
 from __future__ import annotations
 

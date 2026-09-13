@@ -1,5 +1,8 @@
 """판정 결과에 따른 표 후처리.
 
+입력:
+    판정 결과
+
 역할:
     assess 가 매긴 content_type / quality 를 소비해 표를 처리한다.
       text   `<table N>` 래퍼를 벗겨 본문으로 되돌림
@@ -22,8 +25,8 @@ from typing import Any, NamedTuple
 
 from docstruct.core.config import get_settings
 
-from docstruct.media.images import encode_image_file
-from docstruct.progress import ProgressBar
+from docstruct.images.encode import encode_image_file
+from docstruct.core.progress import ProgressBar
 from docstruct.models import IMAGE, TABLE, TEXT, ImageInfo, PageContent, TableInfo
 from docstruct.tables.tags import (
     block_span,

@@ -1,12 +1,15 @@
 """Windows 비 UTF-8 로케일 우회.
 
+입력:
+    (없음)
+
 역할:
     cp949 같은 로케일에서 PyTorch/Docling 초기화가 파일을 읽다 실패하는
     문제를 우회한다. 해당 환경이 아니면 아무 일도 하지 않는다.
 호출부:
     converters.pdf.docling_backend (컨버터 생성 직전)
     notebooks/preview.ipynb (첫 셀)
-    docstruct.checks (진단 표시)
+    docstruct.core.checks (진단 표시)
 출력:
     없음 (환경변수 설정과 함수 패치). diagnose() 는 진단 문자열
 """
@@ -59,6 +62,77 @@ def needs_fix() -> bool:
     출력: Windows 이고 UTF-8 로케일이 아니면 True
     """
     return is_windows() and not is_utf8_locale()
+
+
+#: 콘솔이 못 찍는 문자를 대신할 글자.
+#: cp949(윈도우 한국어 기본)에는 줄표(`—`)·기호(`⚠`·`✅`)가 없어, 이 문자가
+#: 든 줄을 찍는 순간 `UnicodeEncodeError` 로 **프로그램이 죽는다.**
+#: 실측: 본체 출력·로그 96곳에 이런 문자가 들어 있었고 그중 91곳이 줄표다.
+_CONSOLE_SUBSTITUTES = {
+    "—": "-", "–": "-", "―": "-",
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+    "⚠": "[!]", "✅": "[v]", "❌": "[x]", "️": "",   # 마지막은 변이 선택자
+    "·": "·",                                        # cp949 에 있다 — 그대로
+}
+
+_ERROR_HANDLER = "docstruct_console"
+_console_ready = False
+
+
+def _substitute(error: UnicodeError):
+    """콘솔이 못 찍는 문자를 비슷한 글자로 바꾼다.
+
+    입력: error — UnicodeEncodeError
+    출력: (대체 문자열, 이어서 인코딩할 위치)
+    비고:
+        codecs 오류 처리기 규약을 따른다. 표에 없으면 `?` 로 둔다 —
+        **어떤 경우에도 예외를 다시 던지지 않는다.** 출력 한 글자 때문에
+        처리 결과를 잃는 것이 훨씬 나쁘다.
+    """
+    text = error.object[error.start:error.end]          # type: ignore[union-attr]
+    return ("".join(_CONSOLE_SUBSTITUTES.get(ch, "?") for ch in text), error.end)
+
+
+def make_console_safe() -> bool:
+    """콘솔 출력이 인코딩 때문에 죽지 않게 한다.
+
+    입력: 없음
+    출력: 손을 댔으면 True
+    비고:
+        `sys.stdout`/`sys.stderr` 의 오류 처리기를 바꿔, 콘솔이 못 찍는
+        문자를 비슷한 글자로 대신하게 한다. **UTF-8 콘솔에서는 아무 일도
+        하지 않는다** — 바꿀 필요가 없다.
+
+        인코딩 자체를 UTF-8 로 돌리지 않는 이유: 코드페이지가 949 인 콘솔에
+        UTF-8 바이트를 보내면 한글이 통째로 깨진다. 못 찍는 몇 글자만
+        바꾸는 편이 안전하다.
+    """
+    global _console_ready
+    if _console_ready:
+        return False
+
+    import codecs
+
+    try:
+        codecs.lookup_error(_ERROR_HANDLER)
+    except LookupError:
+        codecs.register_error(_ERROR_HANDLER, _substitute)
+
+    touched = False
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", "") or "").lower()
+        if encoding.replace("-", "") in ("utf8", "utf8mb4"):
+            continue                                    # 이미 안전하다
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue                                    # 파이프·리다이렉트 등
+        try:
+            reconfigure(errors=_ERROR_HANDLER)
+            touched = True
+        except (ValueError, OSError):                   # noqa: PERF203
+            continue
+    _console_ready = True
+    return touched
 
 
 def _disable_torch_compile() -> bool:

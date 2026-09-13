@@ -66,7 +66,7 @@ for _cand in (Path.cwd(), Path.cwd().parent):
 
 import docstruct
 from docstruct import DocStruct, DocStructBatch
-from docstruct import preview          # 속성 대신 명시적 import
+from docstruct.output import preview          # 속성 대신 명시적 import
 
 print("docstruct :", getattr(docstruct, "__file__", "?"))
 
@@ -95,7 +95,7 @@ else:
         print("  이 노트북은", ".".join(map(str, REQUIRED)), "이상이 필요합니다.")
         print("  업그레이드:", UPGRADE)
 
-from docstruct.checks import show_environment
+from docstruct.core.checks import show_environment
 show_environment()
 ''')
 
@@ -122,7 +122,7 @@ code('''
 # import getpass
 # docstruct.set_api_key(getpass.getpass("OpenAI 키(대비책): "))
 
-from docstruct.checks import show_llm_check
+from docstruct.core.checks import show_llm_check
 show_llm_check()
 ''')
 

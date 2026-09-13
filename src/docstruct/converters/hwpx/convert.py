@@ -20,7 +20,8 @@
 ----
     DOCSTRUCT_HWP2HWPX          변환 명령. `{input}` `{output}` 자리표시자 사용
     DOCSTRUCT_HWP2HWPX_TIMEOUT  제한 시간(초). 기본 300
-    DOCSTRUCT_HWP2HWPX_DIR      설치 폴더 (기본: /opt/hwp2hwpx, Colab 은 /content)
+    DOCSTRUCT_HWP2HWPX_DIR      jar 설치 폴더 (기본: /opt/hwp2hwpx, Colab 은 /content)
+    DOCSTRUCT_HWP2HWPX_PY=false 파이썬 변환기를 쓰지 않는다 (jar 만 쓰고 싶을 때)
 
 설치 도우미
 ----------
@@ -63,6 +64,9 @@ _log = logging.getLogger(__name__)
 CONVERTER_ENV = "DOCSTRUCT_HWP2HWPX"
 #: 제한 시간 환경변수.
 TIMEOUT_ENV = "DOCSTRUCT_HWP2HWPX_TIMEOUT"
+
+#: 순수 파이썬 변환기를 끌 때 (기본은 있으면 쓴다).
+PY_BACKEND_ENV = "DOCSTRUCT_HWP2HWPX_PY"
 #: 기본 제한 시간(초). 큰 문서도 넘기도록 넉넉히 잡는다.
 DEFAULT_TIMEOUT = 300.0
 
@@ -81,15 +85,48 @@ def converter_command() -> str | None:
     return value or None
 
 
+def python_backend():
+    """순수 파이썬 변환기 모듈 — 없으면 None (0.5.3).
+
+    입력: 없음
+    출력: `hwp2hwpx` 모듈 또는 None
+    비고:
+        `jkf87/hwp2hwpx-python-refactor` 를 가리킨다. **Java 도 jar 도
+        필요 없다** — 그래서 jar 명령보다 먼저 본다.
+
+        ⚠ **이 모듈은 `pyhwp`(AGPL)에 기댄다.** `hwp2hwpx/reader.py` 가
+        `from hwp5.xmlmodel import Hwp5File` 을 한다. 라이선스 때문에
+        `converters/hwp/pyhwp_backend/` 를 떼어낸 배포라면, 이것을 설치하는
+        순간 pyhwp 가 **런타임 의존으로 다시 들어온다.** 코드를 안 갖는
+        것과 패키지를 안 쓰는 것은 다른 문제이므로, 어느 쪽이 필요한지는
+        배포하는 쪽이 정해야 한다. `docstruct --check` 가 이 사실을 알린다.
+
+        저장소 자체에는 `setup.py`·`pyproject.toml` 이 없어 `pip install
+        git+…` 가 되지 않는다. 받아서 경로에 두거나 requirements 를 설치한 뒤
+        패키지 폴더를 얹는 방식이다.
+    """
+    if os.environ.get(PY_BACKEND_ENV, "").strip().lower() in (
+            "0", "false", "no", "off"):
+        return None
+    try:
+        import hwp2hwpx
+
+        return hwp2hwpx if hasattr(hwp2hwpx, "convert_file") else None
+    except ImportError:
+        return None
+
+
 def is_available() -> bool:
     """변환을 시도할 수 있는지.
 
     입력: 없음
-    출력: 명령이 설정되어 있고 실행파일이 존재하면 True
+    출력: 파이썬 변환기가 있거나, 명령이 설정되어 있고 실행파일이 있으면 True
     비고:
         실행파일 존재까지 확인한다. 명령만 설정하고 설치를 안 한 상태를
         "가능" 으로 보면, 문서마다 실패하고 나서야 알게 된다.
     """
+    if python_backend() is not None:
+        return True
     command = converter_command()
     if not command:
         return False
@@ -123,6 +160,21 @@ def timeout_seconds() -> float:
     return value if value > 0 else DEFAULT_TIMEOUT
 
 
+def _convert_with_python(hwp_path: Path, target_dir: Path):
+    """순수 파이썬 변환기로 바꾼다 (0.5.3).
+
+    입력: hwp_path — 원본, target_dir — 결과를 둘 폴더
+    출력: 변환된 .hwpx 경로
+    예외: 변환기가 실패하면 그대로 올라간다 (호출부가 삼킨다)
+    """
+    module = python_backend()
+    target = target_dir / (hwp_path.stem + ".hwpx")
+    module.convert_file(str(hwp_path), str(target))
+    if not target.is_file():
+        raise RuntimeError(f"변환기가 결과 파일을 만들지 않았습니다: {target}")
+    return target
+
+
 def convert(hwp_path: str | Path, out_dir: str | Path | None = None) -> Path:
     """HWP 를 HWPX 로 변환한다.
 
@@ -139,18 +191,27 @@ def convert(hwp_path: str | Path, out_dir: str | Path | None = None) -> Path:
         결과 파일이 만들어졌고 비어 있지 않은지까지 확인한다 — 종료코드가
         0 이어도 빈 파일을 남기는 도구가 있다.
     """
-    command = converter_command()
-    if not command:
-        raise ConversionUnavailable(
-            f"{CONVERTER_ENV} 가 설정되지 않았습니다. "
-            f'예: {CONVERTER_ENV}="java -jar /opt/hwp2hwpx.jar {{input}} {{output}}"'
-        )
-
     source = Path(hwp_path).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(f"원본을 찾을 수 없습니다: {source}")
 
     target_dir = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="hwp2hwpx-"))
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # **파이썬 변환기를 먼저 쓴다** (0.5.3) — Java 도 jar 도 필요 없다.
+    # jar 명령 유무를 보기 **전에** 갈린다. 순서를 반대로 두면 파이썬
+    # 변환기만 설치한 사람이 "명령이 설정되지 않았습니다" 를 만난다.
+    if python_backend() is not None:
+        return _convert_with_python(source, target_dir)
+
+    command = converter_command()
+    if not command:
+        raise ConversionUnavailable(
+            f"{CONVERTER_ENV} 가 설정되지 않았습니다. "
+            f"파이썬 변환기를 쓰려면 `hwp2hwpx` 모듈을 설치하세요 "
+            f"(jkf87/hwp2hwpx-python-refactor — Java 불필요). "
+            f'또는 예: {CONVERTER_ENV}="java -jar /opt/hwp2hwpx.jar {{input}} {{output}}"'
+        )
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{source.stem}.hwpx"
 

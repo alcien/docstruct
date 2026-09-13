@@ -1,5 +1,8 @@
 """라이브러리 공개 API.
 
+입력:
+    문서 경로 또는 경로 목록·글롭 + 설정 키워드(option_keys)
+
 역할:
     파일명과 설정을 받아 문서를 구조화하고 JSON 으로 내보내는 단일 진입점.
     설정은 get()/set() 으로 다루며, 인스턴스마다 독립적으로 관리되고
@@ -52,6 +55,8 @@ from docstruct.models import PageDocument
 _log = logging.getLogger(__name__)
 
 
+# ═══ 구간 1 — 예외·키 관리 ══════════════════════════════════════════════════════
+# DocStructError · mask(키 가리기) · set_api_key(소스에 키를 두지 않는 경로).
 class DocStructError(Exception):
     """API 사용 오류 (잘못된 설정 키, 실행 순서 위반 등)."""
 
@@ -98,6 +103,8 @@ _ENV_KEYS: dict[str, str] = {
     "read_charts": "DOCSTRUCT_READ_CHARTS",
     "detect_toc": "DOCSTRUCT_DETECT_TOC",
     "scanned_skip_docling_ocr": "DOCSTRUCT_SCANNED_SKIP_DOCLING_OCR",
+    "verify_ocr": "DOCSTRUCT_VERIFY_OCR",
+    "reread_doubts": "DOCSTRUCT_REREAD_DOUBTS",
     "rebuild_grid": "DOCSTRUCT_REBUILD_GRID",
     "vlm_fix_tables": "DOCSTRUCT_VLM_FIX_TABLES",
     "code_formula_enrichment": "DOCLING_CODE_FORMULA_ENRICHMENT",
@@ -119,8 +126,29 @@ _RUN_KEYS: dict[str, Any] = {
     "render_scale": 2.0,
     # 0 이면 나누지 않는다. 페이지 경계가 없는 문서를 조각낼 때 쓴다.
     "split_chars": 0,
+    #: **산출 뿌리.** 여기를 주면 `run()` 이 끝날 때 그 아래
+    #: `<파일이름.확장자>/` 를 만들고 산출물 전부를 거기에 쓴다
+    #: (0.4.96 저장 · 0.4.97 폴더). CLI·일괄과 같은 모양이다.
+    #: 예전에는 이 값이 판독 **중간 산물**(그림·쪽
+    #: 이미지)의 자리로만 쓰여서, `DocStruct(fn, out_dir="out").run()` 을
+    #: 돌리면 `out/` 에 `images/` 만 남았다 — 이름이 "출력 폴더" 인데
+    #: 출력이 없었다. CLI 는 `save()` 를 따로 불러 다섯 파일을 냈으므로
+    #: 같은 인자가 두 경로에서 다른 뜻이었다.
     "out_dir": None,
     "progress": False,
+}
+
+#: **화면 표시 설정** — build_document 에 넘기지 않는다 (0.4.95).
+#: `steps` 는 진행 단계를 어떻게 보여줄지만 정한다: "user"(굵은 13단계) ·
+#: "dev"(진행수·건너뛴 이유·시간) · "off". 기록 파일은 이 값과 무관하게
+#: 산출 폴더가 있으면 언제나 쓴다 — 끄고 싶은 것은 화면 소음이지 기록이 아니다.
+_VIEW_KEYS: dict[str, Any] = {
+    #: 진행 표시 — "brief"(굵은 13단계 · 기본) | "dev"(상세) | "silent"(끔).
+    #: `off`·`user` 는 brief 의 별칭이다 (0.4.99).
+    "steps": "brief",
+    #: `out_dir` 을 줬을 때 `run()` 이 산출물을 쓸지 (0.4.96).
+    #: 중간 산물만 두고 저장은 직접 하고 싶으면 False.
+    "write_outputs": True,
 }
 
 
@@ -139,13 +167,14 @@ def mask(value: str) -> str:
     return f"{value[:6]}…{value[-4:]}" if len(value) > 12 else "(설정됨)"
 
 
-def set_api_key(key: str, *, target: str = "fallback") -> None:
+def set_api_key(key: str, *, target: str = "openai") -> None:
     """API 키를 이 프로세스 전체에 설정한다.
 
     입력:
         key     API 키
-        target  fallback — 연결 실패 시 쓰는 대비 엔드포인트 (기본)
-                llm      — 기본 LLM 엔드포인트
+        target  openai   — **OpenAI 를 기본 LLM 으로 강제한다** (기본값)
+                fallback — 연결 실패 시 쓰는 대비 엔드포인트에만 넣는다
+                llm      — 기본 LLM 엔드포인트 키만 바꾼다 (주소는 그대로)
                 picture  — 그림 설명 VLM
     출력: 없음
     예외: 알 수 없는 target 이면 DocStructError
@@ -153,6 +182,16 @@ def set_api_key(key: str, *, target: str = "fallback") -> None:
     비고:
         키를 소스나 저장소에 두지 않고 실행 시점에 넣기 위한 함수다.
         이후 만드는 DocStruct 인스턴스에 모두 적용된다.
+
+        **기본값이 `openai` 인 이유.** 예전 기본값은 `fallback` 이라
+        `OPENAI_API_KEY` 만 넣었는데, 그 키는 *대비* 엔드포인트에만 쓰이고
+        그것도 URL·모델이 함께 설정돼 있을 때만 산다. 사내 엔드포인트가
+        잡혀 있으면 표 평가·재추출은 계속 그쪽으로 가고, 사내망이 아닌
+        곳(노트북·Colab)에서는 **키를 넣었는데 아무 일도 안 일어났다.**
+        노트북 안내문의 예시가 `getpass("OpenAI 키: ")` 인 만큼, 그 키를
+        넣으면 OpenAI 로 도는 것이 사람이 기대하는 동작이다.
+
+        옛 동작이 필요하면 `target="fallback"` 을 명시한다.
 
     사용 예::
 
@@ -164,20 +203,41 @@ def set_api_key(key: str, *, target: str = "fallback") -> None:
         "llm": "DOCLING_TABLE_API_KEY",
         "picture": "DOCLING_PICTURE_API_KEY",
     }
-    if target not in mapping:
+    if target != "openai" and target not in mapping:
         raise DocStructError(
-            f"알 수 없는 target: {target!r} (가능: {', '.join(mapping)})"
+            f"알 수 없는 target: {target!r} "
+            f"(가능: openai, {', '.join(mapping)})"
         )
 
     key = (key or "").strip()
     if not key:
         raise DocStructError("빈 키는 설정할 수 없습니다.")
 
+    if target == "openai":
+        # 기본 엔드포인트를 OpenAI 로 세운다. 이미 OpenAI 주소를 쓰고
+        # 있으면 주소는 건드리지 않는다 (모델 지정을 존중한다).
+        from docstruct.core.config import _DEFAULTS as DEFAULTS
+
+        url = DEFAULTS["DOCLING_TABLE_API_FALLBACK_URL"]
+        model = DEFAULTS["DOCLING_TABLE_API_FALLBACK_MODEL"]
+        current = os.environ.get("DOCLING_TABLE_API_URL", "")
+        if "api.openai.com" not in current:
+            os.environ["DOCLING_TABLE_API_URL"] = url
+            os.environ["DOCLING_TABLE_API_MODEL"] = model
+        os.environ["DOCLING_TABLE_API_KEY"] = key
+        os.environ["OPENAI_API_KEY"] = key        # 대비 경로도 함께
+        _refresh_settings()
+        _log.info("OpenAI 로 설정됨 — %s · %s",
+                  os.environ["DOCLING_TABLE_API_URL"], mask(key))
+        return
+
     os.environ[mapping[target]] = key
     _refresh_settings()
     _log.info("%s 키 설정됨 — %s", target, mask(key))
 
 
+# ═══ 구간 2 — 산출물 수집 보조 ════════════════════════════════════════════════════
+# scratch 의 그림·쪽 이미지를 out 으로 옮긴다. out 밖 경로는 건드리지 않는다(_is_under).
 def _is_under(path: Path, root: Path) -> bool:
     """path 가 root 아래에 있는지.
 
@@ -294,6 +354,8 @@ def _collect_page_images(doc: Any, target: Path, *, only_from: Path | None = Non
         _log.info("페이지 PNG %d개를 %s 로 옮겼습니다", moved, target)
 
 
+# ═══ 구간 3 — 전역 설정 함수 ═════════════════════════════════════════════════════
+# enable_logging · set_model · configure · defaults · option_keys — 환경변수를 거쳐 Settings 로 간다.
 def enable_logging(level: str | int = "INFO", *, fmt: str | None = None) -> None:
     """진행 로그를 화면에 표시한다.
 
@@ -441,7 +503,7 @@ def _refresh_settings() -> None:
     출력: 없음
     """
     from docstruct.core.config import rebuild_settings
-    from docstruct.checks import invalidate_caches
+    from docstruct.core.checks import invalidate_caches
 
     rebuild_settings()
     invalidate_caches()
@@ -469,7 +531,7 @@ def option_keys() -> tuple[str, ...]:
     입력: 없음
     출력: 정렬된 키 이름 튜플
     """
-    return tuple(sorted({*_ENV_KEYS, *_RUN_KEYS}))
+    return tuple(sorted({*_ENV_KEYS, *_RUN_KEYS, *_VIEW_KEYS}))
 
 
 def _as_env_value(value: Any) -> str:
@@ -487,6 +549,8 @@ def _as_env_value(value: Any) -> str:
 #: 하위 모듈이 전역 설정(core.config)과 Docling·LLM 캐시를 공유하므로,
 #: 같은 프로세스에서 두 run() 이 겹치면 서로의 설정을 덮어쓴다.
 #: 프로세스가 다르면(별도 세션·별도 실행) os.environ 이 분리되어 무관하다.
+# ═══ 구간 4 — 설정 적용 컨텍스트 ═══════════════════════════════════════════════════
+# _applied: run() 동안만 환경변수를 바꾸고 되돌린다. 같은 프로세스의 동시 run 은 락으로 직렬화.
 _RUN_LOCK = threading.RLock()
 
 
@@ -503,7 +567,7 @@ def _applied(env_overrides: dict[str, str]) -> Iterator[None]:
         run() 안의 LLM 병렬 호출은 이 락과 무관하게 그대로 동작한다.
     """
     from docstruct.core.config import rebuild_settings
-    from docstruct.checks import invalidate_caches
+    from docstruct.core.checks import invalidate_caches
 
     if not env_overrides:
         yield
@@ -530,6 +594,53 @@ def _applied(env_overrides: dict[str, str]) -> Iterator[None]:
                     os.environ[key] = old
             rebuild_settings()
             invalidate_caches()
+
+
+# ═══ 구간 5 — 파사드 ══════════════════════════════════════════════════════════
+# _SettingsMixin(set/get/options) → DocStruct(단일) · DocStructBatch(일괄). 결과 모양만 다르고 설정 방식은 같다.
+@contextmanager
+def _reporting_for(source: Any, out_dir: Any, detail: Any) -> Iterator[None]:
+    """이 문서를 도는 동안 진행 단계를 낸다 (노트북·라이브러리 공용).
+
+    입력: source — 문서 경로, out_dir — 산출 폴더(없어도 된다), detail — "user"|"dev"|"off"
+    출력: 없음 (컨텍스트 매니저)
+    비고:
+        **CLI 와 같은 문구가 노트북에서도 나온다** (0.4.95). 예전에는
+        `--steps` 가 CLI 안에만 있어서 `DocStruct(...).run()` 이나
+        `structure()` 는 조용히 몇 분을 썼다 — 멈춘 것처럼 보인다.
+
+        기록 파일은 산출 폴더가 있을 때만 만든다(`steps.progress_path`).
+        없으면 화면에만 낸다 — 저장할 곳을 지어내면 어디에 생겼는지
+        아무도 모른다.
+    """
+    from docstruct.core.steps import (console_sink, jsonl_sink, normalize_mode,
+                                      progress_path, reporting,
+                                      source_format_of)
+
+    # `off` 는 **상세를 끈다**는 뜻으로 읽힌다 — 굵은 13단계로 보낸다.
+    # 정말 아무것도 내지 않으려면 `silent` (0.4.99).
+    mode = normalize_mode(detail)
+    sinks = []
+    if mode != "silent":
+        sinks.append(console_sink(mode))
+    target = progress_path(out_dir)
+    if target is not None:
+        try:
+            Path(target).unlink(missing_ok=True)
+        except OSError:
+            pass
+        sinks.append(jsonl_sink(target))
+    if not sinks:
+        yield
+        return
+
+    name = Path(str(source)).name
+    with reporting(name, source_format_of(source), sinks=sinks,
+                   detail=mode) as got:
+        try:
+            yield
+        finally:
+            got.done()
 
 
 class _SettingsMixin:
@@ -560,7 +671,8 @@ class _SettingsMixin:
             if name == "source":
                 self._set_source(val)
                 continue
-            if name not in _ENV_KEYS and name not in _RUN_KEYS:
+            if (name not in _ENV_KEYS and name not in _RUN_KEYS
+                    and name not in _VIEW_KEYS):
                 raise DocStructError(
                     f"알 수 없는 설정 키: {name!r}\n"
                     f"사용 가능: {', '.join(option_keys())}"
@@ -577,7 +689,8 @@ class _SettingsMixin:
         """
         if key == "source":
             return self._get_source(default)
-        if key not in _ENV_KEYS and key not in _RUN_KEYS:
+        if (key not in _ENV_KEYS and key not in _RUN_KEYS
+                and key not in _VIEW_KEYS):
             raise DocStructError(
                 f"알 수 없는 설정 키: {key!r}\n사용 가능: {', '.join(option_keys())}"
             )
@@ -585,6 +698,8 @@ class _SettingsMixin:
             return self._options[key]
         if key in _RUN_KEYS:
             return _RUN_KEYS[key]
+        if key in _VIEW_KEYS:
+            return _VIEW_KEYS[key]
         return default
 
     def options(self) -> dict[str, Any]:
@@ -698,8 +813,29 @@ class DocStruct(_SettingsMixin):
 
         from docstruct.pipeline import build_document
 
+        from docstruct.output.names import safe_file_name
+
+        # **`out_dir` 은 산출 뿌리다** (0.4.97). 그 아래 `<파일이름.확장자>/`
+        # 를 만들고 거기에 넣는다 — CLI·일괄과 같은 모양이다. 예전에는
+        # 단건만 뿌리에 바로 쏟아, 같은 뿌리로 두 번 돌리면 앞 결과가
+        # 덮였고 CLI 와 결과 배치가 달랐다.
+        out_root = self.get("out_dir")
+        target = (Path(out_root) / safe_file_name(Path(str(self._source)).name)
+                  if out_root is not None else None)
+
+        run_kwargs = self._run_kwargs()
+        if target is not None:
+            # 그림·쪽 이미지도 같은 폴더 안으로 (뿌리에 흩어지지 않게).
+            run_kwargs["out_dir"] = target
+
         with _applied(self._env_overrides()):
-            self._document = build_document(self._source, **self._run_kwargs())
+            with _reporting_for(self._source, target, self.get("steps")):
+                self._document = build_document(self._source, **run_kwargs)
+        # **산출 폴더를 줬으면 거기에 낸다** (0.4.96). 이름이 "출력 폴더" 인데
+        # 그림만 남는 것은 말과 결과가 다른 것이다. CLI 와 같은 다섯 파일을
+        # 같은 자리에 쓴다 — 노트북과 명령행의 결과가 같아야 한다.
+        if target is not None and self.get("write_outputs"):
+            self.save(target)
         return self
 
     @classmethod
@@ -808,7 +944,7 @@ class DocStruct(_SettingsMixin):
             {이름: 경로} — document(.json), markdown(.md), tables(.md),
             pipeline(.md), layout(.md)
         """
-        from docstruct.report import (
+        from docstruct.output.report import (
             write_json,
             write_layout_report,
             write_markdown,
@@ -846,7 +982,7 @@ class DocStruct(_SettingsMixin):
         입력: 없음
         출력: 문자열 목록 (페이지 수·표·이미지·소요 시간 등)
         """
-        from docstruct.report import summary_lines
+        from docstruct.output.report import summary_lines
 
         return summary_lines(self.document)
 
@@ -945,7 +1081,7 @@ class DocStructBatch(_SettingsMixin):
             문서 단위 진행은 options 의 progress 설정을 따른다.
             문서 하나 안의 단계별 진행도 같은 설정으로 표시된다.
         """
-        from docstruct.progress import ProgressBar
+        from docstruct.core.progress import ProgressBar
 
         show = bool(self._options.get("progress", False))
         self._documents = []
@@ -953,7 +1089,15 @@ class DocStructBatch(_SettingsMixin):
 
         from docstruct.pipeline import build_document
 
+        from docstruct.output.names import assign_out_dirs
+
         run_kwargs = self._run_kwargs()
+        out_root = self.get("out_dir")
+        # 진행 기록과 산출물이 **같은 폴더**에 가야 한다. save() 도 같은
+        # 함수로 이름을 정하므로 둘이 어긋나지 않는다(0.4.96).
+        folders = assign_out_dirs([path.name for path in self._paths])
+        # 문서마다 폴더가 갈리므로 파이프라인에는 뿌리를 넘기지 않는다.
+        run_kwargs.pop("out_dir", None)
         bar = ProgressBar(len(self._paths), "문서 처리", unit="건", enabled=show)
 
         # 설정은 **한 번만** 적용한다. 문서마다 적용·해제를 반복하면
@@ -963,7 +1107,14 @@ class DocStructBatch(_SettingsMixin):
                 for path in self._paths:
                     bar.update(0, path.name)
                     try:
-                        self._documents.append(build_document(path, **run_kwargs))
+                        # 일괄에서는 문서마다 **자기 폴더**를 쓴다 —
+                        # `<파일이름.확장자>/`(0.4.93). 한 폴더에 몰면
+                        # 뒤엣것이 앞엣것을 덮는다(0.4.92 에서 겪었다).
+                        per_doc = (Path(out_root) / folders[path.name]
+                                   if out_root is not None else None)
+                        with _reporting_for(path, per_doc, self.get("steps")):
+                            self._documents.append(
+                                build_document(path, **run_kwargs))
                     except Exception as exc:
                         _log.warning("%s 처리 실패: %s", path.name, exc)
                         self._failures.append((path, exc))
@@ -972,6 +1123,12 @@ class DocStructBatch(_SettingsMixin):
                     bar.update(1, path.name)
         finally:
             bar.close()
+
+        # **산출 폴더를 줬으면 거기에 낸다** (0.4.96). 단건 run() 과 같은
+        # 약속이다 — 노트북에서 out_dir 을 주고도 결과가 없으면 이름이
+        # 거짓말이 된다.
+        if out_root is not None and self.get("write_outputs") and self._documents:
+            self.save(out_root)
 
         if self._failures:
             _log.warning(
@@ -1074,8 +1231,12 @@ class DocStructBatch(_SettingsMixin):
         입력:
             out_dir  저장 디렉터리. 문서마다 하위 폴더가 생긴다
             unique   True 면 실행마다 별도 폴더를 만들어 충돌을 피한다
-        출력: {문서명: [저장된 경로]}
-        비고: DocStruct.save() 를 문서마다 호출한다 (json + md 4종).
+        출력: {산출 폴더 이름: [저장된 경로]}
+        비고:
+            DocStruct.save() 를 문서마다 호출한다 (json + md 4종).
+            폴더 이름은 겹치지 않게 배정한다(`output.names`) — 이름이 같은
+            문서가 있으면 확장자·해시로 갈린다. 겹치는 것이 없으면 예전과
+            같은 이름이다.
         """
         out = Path(out_dir).expanduser()
         if unique:
@@ -1086,11 +1247,21 @@ class DocStructBatch(_SettingsMixin):
                 )
             )
 
+        # **겹치지 않는 폴더를 배정한다** (0.4.92). 예전에는 `Path(filename)
+        # .stem` 을 그대로 써서 `성과계획서.hwpx` 와 `성과계획서.pdf` 가 같은
+        # 폴더에 쓰였다 — 뒤엣것이 앞엣것을 덮었다. 게다가 **반환 dict 의
+        # 키도 겹쳐** 호출부는 몇 건이 사라졌는지조차 알 수 없었다.
+        from docstruct.output.names import assign_out_dirs, describe_renames
+
+        folders = assign_out_dirs([doc.filename for doc in self._documents])
+        for line in describe_renames(folders):
+            _log.info("산출 폴더 이름이 겹쳐 구분했습니다: %s", line)
+
         written: dict[str, list[Path]] = {}
         for doc in self._documents:
-            stem = Path(doc.filename).stem
+            folder = folders[doc.filename]
             holder = DocStruct.from_document(doc, **self._options)
-            written[stem] = list(holder.save(out / stem).values())
+            written[folder] = list(holder.save(out / folder).values())
         _log.info("산출물 저장: %s 아래 %d건", out, len(written))
         return written
 
@@ -1119,6 +1290,8 @@ class DocStructBatch(_SettingsMixin):
         return f"<DocStructBatch {len(self._paths)}건 · {state}>"
 
 
+# ═══ 구간 6 — 한 줄 사용 ═══════════════════════════════════════════════════════
+# structure / structure_to_json — 파사드 없이 함수 한 번.
 def _resolve_sources(
     sources: str | Path | Iterable[str | Path], pattern: str
 ) -> list[Path]:

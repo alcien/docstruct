@@ -1,5 +1,8 @@
 """Docling 변환 결과 → PageContent 목록.
 
+입력:
+    Docling 변환 결과
+
 역할:
     DoclingDocument 의 요소를 페이지별로 모아 본문 markdown 을 만들고,
     표는 `<table N>` 블록으로 치환하며, 그림은 파일로 저장해 메타를 남긴다.
@@ -19,9 +22,9 @@ from docstruct.converters.pdf.table_extract import (
     non_table_item_to_markdown,
     page_no as docling_page_no,
 )
-from docstruct.layout import LayoutItem, item_bbox, label_name, preview_text
-from docstruct.media.picture import picture_to_block
-from docstruct.converters.korean_text import normalize_pdf_text
+from docstruct.output.layout import LayoutItem, item_bbox, label_name, preview_text
+from docstruct.images.picture import picture_to_block
+from docstruct.text.korean_text import normalize_pdf_text
 from docstruct.models import ImageInfo, PageContent, PageTrace, TableInfo
 from docstruct.tables.docling import docling_table_to_markdown
 from docstruct.tables.tags import make_table_block, make_table_id, open_tag
@@ -136,6 +139,9 @@ def extract_pdf_pages(
                 doc,
                 image_id=f"image_{image_counter}",
                 image_dir=image_dir,
+                source_path=source_path,
+                page_no=page,
+                bbox=record.bbox,
             )
             info.bbox = record.bbox
             # 설명이 없어도 이미지 메타는 남긴다 (본문 placeholder 와 짝을 맞추기 위함).
@@ -256,7 +262,7 @@ def extract_pdf_pages(
             )
         if images:
             trace.add(
-                "docstruct.media.picture",
+                "docstruct.images.picture",
                 "그림 추출",
                 f"{len(images)}개"
                 + (
@@ -302,7 +308,9 @@ def _inject_region_text(
         if not parts:
             continue
         for info in images:
-            if info.region_kind != "text" or not info.region_text:
+            # 산식(formula)도 본문으로 흘려보낸다 — 그림으로 두면 내용이
+            # 사라지고, 표로 두면 없는 격자가 생긴다 (H12-a).
+            if info.region_kind not in ("text", "formula") or not info.region_text:
                 continue
             text = normalize_pdf_text(info.region_text.strip())
             if not text:
@@ -373,5 +381,8 @@ def _mark_table_candidates(
             # 않으면 무엇을 놓쳤는지도 남지 않는다.
             _log.info("%s 는 그래프로 보입니다 (%s) — 값은 그림 안에 있습니다",
                       image_id, verdict.reason)
+        elif verdict.kind is RegionKind.FORMULA:
+            _log.info("%s 는 산식 배열로 보입니다 (%s) — 본문으로 뽑고 "
+                      "캡처 표 읽기에서 뺍니다", image_id, verdict.reason)
         else:
             _log.debug("%s 는 그림으로 둡니다 (%s)", image_id, verdict.reason)

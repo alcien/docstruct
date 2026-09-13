@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.53"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.5.9"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.3.53"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.5.9"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.53"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.5.9"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -216,7 +216,66 @@ docstruct 문서.pdf -o out/                       # 단일
 docstruct 문서모음/ --glob "*.hwp" -o out/ --progress   # 일괄
 docstruct 문서.pdf --no-llm                      # 완전 오프라인
 docstruct --check                                # 환경·LLM 연결 확인
+docstruct 문서.hwpx --align 문서.pdf -o out/      # 쪽 맞춤 (아래 참고)
 ```
+
+### 쪽 맞춤 — HWPX·HWP 에 PDF 쪽번호 물려주기
+
+**HWPX 에는 쪽 정보가 없습니다.** `hp:pageNum` 은 "여기에 찍어라"는 지시일
+뿐이고, `hp:startNum page` 는 전부 0 이며, 인쇄된 쪽번호는 꼬리말이라 본문
+추출에 들어오지 않습니다. 쪽은 한글이 그릴 때 생기는 것이지 저장되는 것이
+아닙니다. 그래서 같은 문서의 PDF 판독 결과와 맞춰 쪽을 물려줍니다.
+
+```bash
+# 원본 두 개 — 그 자리에서 둘 다 판독하고 맞춥니다
+docstruct 문서.hwpx --align 문서.pdf -o out/
+
+# 이미 돌린 결과끼리 — 재판독 없이 맞춤만 (400쪽대는 재판독이 수십 분)
+docstruct out/문서/document.json --align out/문서_pdf/document.json -o out/
+
+# 형식 지정 (기본 both)
+docstruct 문서.hwpx --align 문서.pdf --align-format markdown
+```
+
+첫 자리가 **쪽이 없는 쪽**(HWPX·HWP), `--align` 자리가 **쪽을 가진 쪽**(PDF)
+입니다. 거꾸로 주면 실행 전에 걸러집니다.
+
+산출은 `out/<문서명>/aligned.json` · `aligned.md` 입니다.
+
+| 결과 필드 | 뜻 |
+|-----------|-----|
+| `pages[].page_no` | 물려받은 PDF 쪽번호 |
+| `pages[].estimated` | **보간으로 채운 쪽** — 눈금으로 잰 쪽과 구분하세요 |
+| `pages[].similarity` | 그 쪽 표들의 짝 닮음 |
+| `matched_tables` / `total_tables` | 표 배정 성적 |
+| `head` / `head_chars` | 첫 눈금 앞 머리말 (표지·간지 — **쪽 미상**) |
+| `unmatched` | 짝을 못 지은 표 (**쪽 미상** — 버리지 않고 따로 싣습니다) |
+| `unmatched_layout_like` | 그중 1행1열 제목 상자 수 — PDF 에 대응 표가 없는 것이 정상 |
+| `matchable_tables` / `matchable_matched` | **성적은 이 분모로 봅니다** — 지면 장식을 뺀 표 |
+| `matched_by_text` | 표 짝이 아니라 **PDF 본문**에서 찾아 쪽을 준 표 수 |
+| `pages[].tables[].page_source` | `text` 면 본문 대조로 쪽을 얻은 것 (`page_evidence` 에 근거) |
+
+HWPX 는 제목 상자도 표로 그리므로 짝이 없는 표가 많이 나옵니다(실측:
+문체부 840표 중 505표). `align_note` 가 **설명할 수 있는 것만** 말합니다.
+
+| `why` | 뜻 |
+|-------|-----|
+| `band` | 1행 또는 1열 — 행·열 관계가 없으므로 데이터 표가 아닙니다 |
+| `too_few_tokens` | 매처가 쓸 토큰이 3개 미만 — **표의 성격이 아니라 매처가 못 한 이유**입니다 |
+| (빈 값) | 아무 설명도 되지 않습니다 — **진짜 검토 대상**입니다 |
+
+실측(네 부처): 쪽 맞춤 **90~94%** — 조달청 94 · 행안부 90 · 문체부 94 ·
+해양경찰청 94. 그중 일부는 표 짝이 아니라 **PDF 본문**에서 찾아 쪽을 준
+것입니다(`matched_by_text`).
+
+> **정확도 수치에 주의하세요.** 쪽 맞춤에는 손으로 만든 정답이 없습니다.
+> 문서에 적힌 80%/96% 는 **맞춤 자신의 닮음 점수**이지 정답 대조가
+> 아닙니다. 문체부에서는 설명되지 않는 미맞춤이 109표 있고 그중에는
+> 678행짜리 별첨 표도 있습니다. 본문 쪽 나누기는 닮음 중앙 83%(실측 쪽만 보면 91%). 표 쪽 배정이 더
+정확한 것은 표가 덩어리라 "어느 쪽에 있었나"가 분명하기 때문입니다.
+
+같은 기능이 FastAPI 에서는 `POST /align/pages` 입니다 — **판정 코드는 한
+벌**(`docstruct.align.documents`)이라 둘의 답이 같습니다.
 
 ### API 키
 
@@ -229,17 +288,33 @@ export OPENAI_API_KEY=sk-...          # Linux/macOS
 set OPENAI_API_KEY=sk-...             # Windows
 
 # 2) 입력받기 — 화면에도 히스토리에도 남지 않음
-docstruct 문서.pdf --ask-key
+docstruct 문서.pdf --ask-key      # 키를 입력받고 **OpenAI 만** 씁니다
 
-# 3) 파일에서
+# 3) 파일에서 — 이것도 OpenAI 만 씁니다
 docstruct 문서.pdf --key-file ~/.openai_key
 
 # 4) .env (작업 디렉터리)
 echo "OPENAI_API_KEY=sk-..." > .env
 ```
 
+키에 **한글이나 공백이 섞이면 거절합니다** (0.4.61). HTTP 헤더는 ASCII 만
+싣기 때문에 그대로 두면 판독을 마친 뒤 호출 단계에서 쪽마다 터집니다 —
+한글 입력 상태로 붙여 넣거나 키 뒤에 메모(`sk-... 행안부용`)를 달지
+않았는지 보세요.
+
+**`--ask-key`·`--key-file` 은 경로를 바꿉니다** (0.4.59). 키를 주면 그
+실행은 OpenAI 로만 갑니다 — 내장 기본값에 들어 있는 사내 엔드포인트와
+로컬 VLM(`DOCSTRUCT_VLM_MODEL`)은 쓰지 않습니다. 환경변수·`--set` 으로
+**직접 지정한** 주소·모델은 그대로 이깁니다(`--set
+DOCLING_TABLE_API_MODEL=gpt-4o`).
+
+방법 1·4(환경변수·.env)로 키만 넣는 것은 경로를 바꾸지 않습니다. 사내
+엔드포인트가 설정돼 있으면 그쪽으로 가고, OpenAI 키는 OpenAI 주소일
+때만 붙습니다 — 남의 서버로 키를 보내지 않기 위함입니다.
+
 설정 여부는 `docstruct --check` 의 `LLM 대비책` 행에서 확인합니다
-(값은 가려서 표시됩니다).
+(값은 가려서 표시됩니다). OpenAI 강제 중이면 맨 위에 `엔드포인트 강제`
+행이 함께 섭니다.
 
 | 플래그 | 효과 |
 |--------|------|
@@ -251,6 +326,8 @@ echo "OPENAI_API_KEY=sk-..." > .env
 | `--outline` | 의미 경로(목차) 추출 — 페이지당 LLM 1회 추가 |
 | `--progress` | 진행 막대 (tqdm 없으면 로그로 대체) |
 | `--scale N` | 페이지 렌더 배율 (기본 2.0) |
+| `--align PDF` | 쪽 맞춤 — HWPX·HWP 에 PDF 쪽번호 물려주기 |
+| `--align-format` | `json` / `markdown` / `both` (기본 both) |
 | `-q` / `-v` | 요약만 / DEBUG 로그 |
 
 종료 코드: 0 성공, 1 실패, 2 인자 오류. 전체 옵션은 `docstruct --help`.
@@ -305,6 +382,65 @@ LLM 없이 규칙으로 합니다.
 전체를 봅니다.
 
 끄려면 `detect_toc=false` 입니다.
+
+---
+
+## OCR 결과 검증
+
+CTC 기반 OCR 은 **글자 모양만** 봅니다. 문맥을 모르므로 이런 일이 납니다.
+
+    원본: "…정하는 이자율"이란 연 1천분의 29를 말한다
+    OCR:  "…정하는 이자율" 이란 연 2.9를 말한다
+
+값이 열 배 틀렸는데 **신뢰도로는 못 잡습니다** — 각 획이 또렷해 점수가
+높게 나옵니다.
+
+```bash
+docstruct 스캔본.pdf -o out --set verify_ocr=true
+```
+
+LLM 이 읽어 낸 글을 훑어 **이상한 곳만 짚습니다.**
+
+```json
+"ocr_doubts": [
+  {"index": 12, "text": "이란 연 2.9를 말한다",
+   "reason": "법령체에서 이자율은 `1천분의 N` 꼴이며 `연 2.9` 는 어긋남"}
+]
+```
+
+**고치지는 않습니다.** `29` 인지 `2.9` 인지는 지면을 봐야 알고, 추측해서
+고치면 없던 값을 만듭니다. 값을 정하는 것은 지면을 보는 쪽(VLM)의 몫입니다.
+
+OCR 로 읽은 쪽에서만 돕니다 — 텍스트 레이어가 온전하면 이 문제가 없습니다.
+
+**표 재추출이 끝난 뒤에** 돕니다. 재추출은 지면을 보고 표를 다시 쓰므로,
+그전에 검증하면 곧 고쳐질 것을 의심 목록에 올리게 됩니다.
+
+    ① OCR              전체
+    ② 표 평가 → 재추출   지면을 봄 · 표 안 확정
+    ③ OCR 검증          표 밖 + 재추출 안 된 표
+
+재추출된 표는 검증에서 뺍니다 — 지면을 보고 쓴 것이라 텍스트만 보는 검증이
+더 나을 수 없고, 조각만 늘어납니다.
+
+### 짚은 자리를 다시 읽기
+
+검증은 **어디가 이상한지만** 말합니다. 무엇이 맞는지는 지면을 봐야 압니다.
+
+```bash
+docstruct 스캔본.pdf -o out \
+  --set verify_ocr=true --set reread_doubts=true
+```
+
+**짚은 쪽만** VLM 에 지면을 보내 바로잡습니다. 전면 재판독보다 훨씬 쌉니다.
+
+    ① OCR              전체
+    ② 표 평가 → 재추출   지면 봄 · 표 안 확정
+    ③ OCR 검증          표 밖을 짚음
+    ④ 의심 자리 재판독   짚은 쪽만 지면 봄
+
+고친 곳만 바꾸고 원본은 `ocr_original` 에 남습니다. VLM 이 못 읽으면
+`모름` 을 내고 손대지 않습니다 — 추측으로 채우지 않습니다.
 
 ---
 
@@ -442,14 +578,357 @@ docstruct 문서.hwp -o out --slim
 파일
  └─ converters/              포맷별 파싱 (Docling / pyhwp / python-hwpx)
      └─ extractors/          → PageContent[] (본문 + <table N> 블록)
-         └─ media/page_render   표 있는 페이지 PNG 렌더        [PDF, 선택]
+         └─ images/page_render   표 있는 페이지 PNG 렌더        [PDF, 선택]
              └─ tables/assess   표 판정: table|text|image + 품질  [LLM, 선택]
                  └─ tables/fill wrong·insufficient만 재추출      [LLM, 선택]
                      └─ tables/tags  블록 정규화
-                         └─ report/  json · md
+                         └─ output/report  json · md
 ```
 
 LLM 단계는 전부 선택입니다. 끄면 파싱 결과가 그대로 나옵니다.
+
+### 그림 구간 표기
+
+산출물(`document.md`)에서 **그림은 구간 표식이 남고, 표는 지워집니다**.
+
+```
+<image 1>
+조직도
+
+> _(그림 `image_1` 판독 — 모델이 읽은 내용)_
+
+청장 아래 차장이 있고, 그 아래 3국 9과로 보입니다.
+</image 1>
+```
+
+복원한 표는 원문에 있던 값을 다시 세운 것이라 본문에 녹아도 됩니다. 그림
+설명은 다릅니다 — VLM 이 `조직도로 보입니다` 처럼 **스스로 쓴 글**이고,
+표식 없이 섞이면 원문 문장과 구별할 수 없습니다. 읽는 사람도, 이 문서를
+근거로 답을 만드는 쪽도 "이 문장이 원본에 있었나" 를 물을 수 있어야 합니다.
+
+파서가 준 설명과 모델이 읽은 내용은 한 구간 안에서 다시 갈립니다 — 앞이
+설명, 뒤가 판독이고 판독에는 출처가 붙습니다. JSON(`pages[].content`)과
+**같은 표기**라 도구를 한 벌로 짤 수 있습니다.
+
+끄려면 `DOCSTRUCT_IMAGE_MARKS=false`.
+
+### 병합 셀 표기
+
+세로로 병합된 칸은 **값을 행마다 되풀이합니다**(0.5.6).
+
+```
+| 11 | 3000 | 국회도서관운영 | 3031 | 도서관운영지원 | … |
+| 11 | 3000 | 국회도서관운영 | 3035 | 전자도서관운영 | … |
+```
+
+예전에는 덮인 행에 `〃` 를 넣었습니다. `〃` 는 표를 **통째로 볼 때만**
+뜻이 통하는데, 이 결과물의 주된 쓰임은 RAG 이고 거기서는 행 하나가 잘려
+나가 조각이 됩니다 — `| 11 | 3000 | 〃 | … |` 만 남으면 무엇이 이어졌는지
+알 길이 없습니다.
+
+표 구조(`cells` 의 rowspan)는 그대로입니다. 되풀이는 **보기 방식**이지
+구조가 아니라서, 병합이 있었다는 사실은 잃지 않습니다.
+
+옛 모양으로 되돌리려면 `DOCSTRUCT_MERGE_FILL=ditto`, 빈 칸으로 두려면
+`DOCSTRUCT_MERGE_FILL=blank`.
+
+### HWP 처리 순서
+
+```
+HWP 입력
+ ├ hwp2hwpx 가 있으면  →  HWPX 로 변환 → hwpxtree     ← 여기서 끝. pyhwp 안 씁니다
+ └ 없으면              →  pyhwp 트리 → hwp5html → HWPML → OLE 텍스트 → 미리보기
+```
+
+변환 경로가 **표 구조(cells)까지 살립니다.** HWP 는 원래 `cells` 를 만들지
+못해 격자 검사·오염 검사·hole_fill 이 비켜 갔는데, HWPX 로 바꾸면 XML 이
+표 구조를 그대로 주므로 그 공백이 닫힙니다.
+
+변환에 성공하면 pyhwp 경로는 **아예 타지 않습니다** — `import docstruct` 만
+으로도 `hwp5` 가 올라오지 않습니다(0.5.4). 시험이 두 가지를 지킵니다.
+
+### HWP 를 HWPX 로 바꿔 읽기 (표가 살아납니다)
+
+HWP 는 `cells` 를 만들지 못해 격자 검사·오염 검사·hole_fill 이 비켜 갑니다.
+**HWPX 로 바꾸면 XML 이 표 구조를 그대로 주므로 그 공백이 닫힙니다.**
+
+**Java 없이** 순수 파이썬 변환기를 쓰는 것이 가장 간단합니다
+(`jkf87/hwp2hwpx-python-refactor`):
+
+```bash
+git clone https://github.com/jkf87/hwp2hwpx-python-refactor
+pip install -r hwp2hwpx-python-refactor/requirements.txt
+# 저장소에 setup.py·pyproject.toml 이 없어 `pip install git+…` 는 되지
+# 않습니다. `hwp2hwpx/` 폴더를 import 경로에 두세요.
+```
+
+`import hwp2hwpx` 가 되면 자동으로 이 경로를 씁니다. jar 설정보다 먼저
+봅니다. 끄려면 `DOCSTRUCT_HWP2HWPX_PY=false`.
+
+> ⚠ **이 변환기는 `pyhwp`(AGPL)에 기댑니다** — `reader.py` 가
+> `from hwp5.xmlmodel import Hwp5File` 을 합니다. 라이선스 때문에
+> `converters/hwp/pyhwp_backend/` 를 떼어낸 배포라면, 이것을 설치하는 순간
+> pyhwp 가 **런타임 의존으로 다시 들어옵니다.** 코드를 안 갖는 것과
+> 패키지를 안 쓰는 것은 다른 문제이므로 어느 쪽이 필요한지 확인하세요.
+> `docstruct --check` 가 이 사실을 함께 알립니다.
+
+Java 가 있는 환경이라면 jar 도 그대로 쓸 수 있습니다:
+
+```python
+from docstruct.converters.hwpx.convert import install_converter, use_converter
+install_converter()               # jar 내려받기
+use_converter("/opt/hwp2hwpx")    # 이미 받아 둔 jar
+```
+
+변환기가 있으면 HWP 입력이 자동으로 이 경로를 탑니다 (사다리 1단).
+없으면 조용히 아래 단으로 내려갑니다 — 설치는 선택입니다.
+끄려면 `DOCSTRUCT_HWP_VIA_HWPX=false`.
+
+### pyhwp(AGPL) 떼어내기
+
+pyhwp 를 쓰는 코드는 **한 폴더**에만 있습니다.
+
+```
+rm -r docstruct/converters/hwp/pyhwp_backend/
+pip uninstall pyhwp
+```
+
+떼어내면 HWP 사다리의 1단(pyhwp 트리)·3단(hwp5html)만 빠지고 나머지는
+그대로 돕니다 — HWP→HWPX 변환 · HWPML · OLE 텍스트 · 미리보기. 사유는
+`trace` 와 `fallback_reason` 에 남습니다. HWPX·PDF 는 영향이 없습니다.
+
+다시 붙일 때도 이 폴더만 넣으면 됩니다. 시험
+(`test_agpl_surface_lives_in_one_folder`)이 폴더 밖에서 pyhwp 를 쓰는 파일이
+생기지 않도록 지킵니다.
+
+### 진행 단계 보기
+
+```
+docstruct 문서.hwpx -o out                  # 굵은 13단계 (기본)
+docstruct 문서.hwpx -o out --steps dev      # 진행수·건너뛴 이유·시간까지
+docstruct 문서.hwpx -o out --steps silent   # 화면에는 안 냄 (파일에는 남습니다)
+```
+
+출력용:
+
+```
+  … 파일 확인 중…
+  … 문서 여는 중…
+  … 표 보정 기법 적용 중…
+  … 표 정합성 검사 중…
+  … 완료
+```
+
+개발자용:
+
+```
+  [ 8/12] 상시 검사 · 0/119 · (앞 단계 5.171초)
+  [ 8/12] integrity · 50표
+  [ 9/12] 표 LLM 판정·재추출 · 건너뜀 — LLM 을 쓰지 않도록 설정했습니다
+```
+
+**형식이 지나가지 않는 단계는 지우지 않고 이유와 함께 남깁니다.** HWP 에서
+표 검사가 왜 없는지가 이 화면의 가장 쓸모 있는 정보이기 때문입니다.
+
+노트북·라이브러리에서도 같은 문구가 나옵니다:
+
+```python
+import docstruct
+
+docstruct.DocStruct("문서.hwpx", out_dir="out").run()
+#   … 파일 확인 중…
+#   … 문서 여는 중…
+#   … 완료
+
+docstruct.structure("문서.hwpx")                      # out_dir 없어도 화면에는 나옵니다
+docstruct.DocStruct("문서.hwpx", steps="dev").run()      # 상세
+docstruct.DocStruct("문서.hwpx", steps="silent").run()   # 화면에는 안 냄
+```
+
+#### 노트북에서 산출물 받기
+
+```python
+import docstruct
+
+docstruct.DocStruct("문서.hwpx", out_dir="out").run()
+# out/문서.hwpx/document.json · document.md · tables.md · pipeline.md
+#     · layout.md · progress.jsonl · images/
+
+docstruct.DocStructBatch("폴더", out_dir="out").run()
+# out/가.hwpx/…  out/나.pdf/…     문서마다 자기 폴더
+```
+
+**`out_dir` 은 산출 뿌리입니다.** 그 아래 `<파일이름.확장자>/` 를 만들고
+거기에 넣습니다 — CLI 와 같은 모양이라 같은 뿌리로 여러 번 돌려도 서로
+덮지 않습니다. `문서.hwpx` 와 `문서.pdf` 도 각자의 자리를 갖습니다.
+
+예전에는 이 값이 판독 중간 산물(그림·쪽 이미지)의 자리로만 쓰여 `out/` 에
+`images/` 만 남았습니다 — CLI 는 `save()` 를 따로 불러 다섯 파일을 냈으므로
+같은 인자가 두 경로에서 다른 뜻이었습니다.
+
+`save("어디")` 를 직접 부르면 **그 경로에 그대로** 씁니다 (하위 폴더를 만들지
+않습니다). 경로를 직접 준 것이므로 그 뜻을 지킵니다.
+
+중간 산물만 두고 저장은 직접 하고 싶으면 `write_outputs=False` 를 주고
+원할 때 `.save("어디")` 를 부릅니다.
+
+`steps` 값은 셋입니다. **`off` 는 "상세를 끈다"** 는 뜻으로 굵은 13단계가
+나옵니다 — 아무것도 내지 않으려면 `silent` 라고 또렷하게 적습니다.
+
+| 값 | 뜻 | 별칭 |
+|---|---|---|
+| `brief` | 굵은 13단계 (기본) | `user` · `off` · `coarse` · `on` · `True` |
+| `dev` | 진행수·건너뛴 이유·시간 | `detail` · `verbose` |
+| `silent` | 화면에 아무것도 내지 않음 | `none` · `quiet` · `False` |
+
+모르는 값은 `brief` 로 봅니다 — 오타 하나로 진행 표시가 통째로 사라지면
+"멈춘 건가" 를 다시 겪게 됩니다.
+
+#### 기록 파일은 어디에 생기나
+
+**산출물 옆입니다** — `document.json` 과 같은 폴더입니다.
+
+```
+out/조달청.hwpx/document.json
+out/조달청.hwpx/progress.jsonl   ← 여기
+```
+
+CLI 는 처리가 끝나면 출력 목록에 이 줄을 함께 냅니다:
+
+```
+  출력:
+    /tmp/out/조달청.hwpx/document.md
+    …
+    /tmp/out/조달청.hwpx/progress.jsonl   (진행 기록 · 프런트 스트리밍 원본)
+```
+
+`--steps-file` 로 자리를 바꿀 수 있고, `--steps off` 로 화면을 꺼도 파일은
+남습니다. **산출 폴더가 없으면 파일을 만들지 않습니다** — 저장할 곳을
+지어내면 어디에 생겼는지 아무도 모르기 때문입니다. 그때는 화면에만 나옵니다.
+
+서버에서는 잡의 작업 폴더에 쌓이고, 그 파일을 `/jobs/{id}/events` 가 읽습니다.
+
+#### 프런트로 스트리밍
+
+진행 이벤트는 언제나 산출 폴더의 `progress.jsonl` 에 **한 줄씩, 매번
+flush 해서** 쌓입니다(`--steps-file` 로 위치를 바꿉니다). 서버는 그 파일을
+따라 읽어 SSE 로 보냅니다:
+
+```
+GET /jobs/{job_id}/events            굵은 13단계
+GET /jobs/{job_id}/events?detail=dev 진행수·이유까지
+```
+
+```javascript
+const es = new EventSource(`/jobs/${jobId}/events`);
+es.onmessage = (e) => {
+  const ev = JSON.parse(e.data);
+  if (ev.kind === "enter") setLabel(ev.user);   // "표 다시 세우는 중…"
+  if (ev.kind === "done") es.close();
+};
+```
+
+파일이 원본이고 스트림은 그것을 따라 읽는 구조입니다 — 판독이 끝난 뒤에도
+같은 파일로 다시 재생할 수 있고, 프런트가 끊겨도 판독은 영향을 받지
+않습니다.
+
+### 쪽 맞춤 (HWPX ↔ PDF)
+
+```python
+from docstruct import align_pair
+
+got = align_pair("성과계획서.hwpx", "성과계획서.pdf", out_dir="out")
+print("\n".join(got.notes))
+#   성과계획서.hwpx: 이미 돌린 결과를 씁니다 (out/성과계획서.hwpx/document.json)
+#   성과계획서.pdf: 새로 판독했습니다
+got.result["pages"][0]["page_no"]
+```
+
+**있으면 쓰고 없으면 판독합니다.** `out_dir` 아래 `<파일이름.확장자>/
+document.json` 을 먼저 보고, 있고 원본보다 새것이면 그대로 씁니다. 없거나
+낡았으면 그 건만 판독해서 저장합니다. 재실행이 24배 빨랐습니다(0.72초 →
+0.03초). 다시 돌리려면 `reuse=False`, CLI 는 `--align-rebuild`.
+
+산출 폴더 이름은 **확장자를 포함한 파일 이름**입니다 — `성과계획서.hwpx/`
+와 `성과계획서.pdf/` 가 각자의 자리를 갖습니다.
+
+같이 쓰는 것:
+
+```python
+from docstruct import find_counterpart, prepare, align_documents
+
+find_counterpart("성과계획서.hwpx")   # → 옆의 성과계획서.pdf (없으면 None)
+prepare("성과계획서.pdf", "out")      # 한 건만 마련 (있으면 재사용)
+align_documents(hwpx_dict, pdf_dict)  # 낮은 수준 — dict 두 벌을 직접
+```
+
+CLI:
+
+```
+docstruct 성과계획서.hwpx --align 성과계획서.pdf -o out
+docstruct 성과계획서.hwpx --align 성과계획서.pdf -o out --align-rebuild
+```
+
+### 여러 건을 한꺼번에 (0.4.91)
+
+```
+docstruct 폴더/ -o out --jobs 4      # 프로세스 4개로 나눠 처리
+docstruct 폴더/ -o out --jobs 0      # CPU 수만큼
+```
+
+**스레드가 아니라 프로세스입니다.** 파싱은 순수 파이썬이라 GIL 을 놓지
+않습니다 — 같은 문서를 스레드 1·2·4·8개로 돌린 실측에서 건당 0.35·0.53·
+0.93·1.60초로 늘고 처리량은 3.8건/초에 머물렀습니다. 스레드를 늘리면
+처리량은 그대로고 건당 응답만 나빠집니다.
+
+그리고 안전합니다. 설정은 `os.environ` 을 거쳐 들어가고 `get_settings()`
+는 **프로세스 전역 캐시**입니다. 한 프로세스에서 서로 다른 설정으로 동시에
+돌리면 서로의 값으로 처리될 수 있어, `DocStruct.run()` 은 락으로 직렬화하고
+`build_document` 를 직접 부르는 경우에는 경고합니다. 프로세스를 가르면
+전역이 각자의 것이 되어 이 문제가 사라집니다.
+
+for 문으로 직접 도는 경우(같은 프로세스, 한 번에 한 건)는 예전과 같습니다 —
+순차라서 섞일 일이 없습니다.
+
+### 고치고 싶은 것이 어디에 있나 (0.4.90)
+
+```
+docstruct --guide '스캔 pdf 표'      # 거쳐야 할 파일을 파이프라인 순서로
+docstruct --guide                    # 찾을 수 있는 것 전체
+```
+
+폴더는 두 축(형식 · 인식)이지만 **실제 작업은 두 축이 만나는 자리**에서
+일어납니다 — "스캔 PDF 의 표" 는 `converters/pdf` 와 `tables` 와
+`experiments` 에 걸쳐 있습니다. 파일은 폴더 하나에만 살 수 있으니 그
+교차는 표로 잇습니다 — 표는 `core/guide.py` 에 **코드로** 있고, 경로가
+실제로 있는지 시험이 확인하므로 낡지 않습니다.
+
+### 패키지 구조 (0.4.84 · 실험 폴더 0.4.85)
+
+코드는 두 축으로 읽습니다 — **형식 축**("무슨 파일인가")은 `extractors/` 에서
+끝나고, 그 위 `pipeline.py` 부터는 형식을 모르고 **인식 축**("무엇을
+알아내는가")만 압니다. 폴더마다 `__init__.py` 에 그 폴더의 모듈 표
+(입력 → 출력 · 역할)가 있고, `pipeline.build_document` 는 구간 0~12 배너로
+나뉘어 있습니다.
+
+```
+형식 축                         인식 축
+converters/  pdf·hwpx·hwp·html  tables/      ① 표 구조 (표시 → 재구성 → LLM 판정)
+extractors/  형식별 → 공통 모델  text/        ② 텍스트 (스캔 판독·검증·정규화·분할)
+                                images/      ③ 그림 (정체·판독·대조·렌더)
+공통 층                          outline/     ②의 윗단 — 목차
+core/          설정·환경·진단    structuring/ ①의 윗단 — 레코드·계층 (+ 상시 검사)
+infrastructure/ LLM·VLM 통신     experiments/ 실험 — tsr/measure·tsr/restore·image·text (0.4.85)
+models.py      결과 모델        align/       HWPX↔PDF 쪽 맞춤
+pipeline.py    조립 (구간 0~12)  output/      산출물·노트북 표시
+api.py · cli.py                 진입점
+```
+
+0.4.83 이전 경로에서 옮긴 것: `media/` → `images/`(그림) + `text/`(ocr_verify·
+ocr_reread·scan_vlm), `converters/korean_text` → `text/`, `report`·`preview`·
+`content`·`layout`·`nbui`·`colab` → `output/`, `checks`·`progress`·
+`diagnose_docling` → `core/`, `split` → `text/`. `docstruct.preview`·
+`docstruct.report` 짧은 경로는 그대로 됩니다.
 
 **표 재추출 근거**는 PDF 는 페이지 이미지, HWP 는 원본 `<table>` HTML 을 씁니다.
 HWP 는 이미지가 없어도 `rowspan`/`colspan` 이 살아 있어 구조 복원이 가능합니다.
@@ -471,7 +950,7 @@ for page in ds.pages:
 2. docling.ocr                  OCR 수행 (스캔 페이지) — rapidocr · 96셀 전부 OCR
 3. docstruct.extractors.pdf     요소 분류 — 텍스트블록 9 · 표 1 · 그림 2
 4. docstruct.tables.docling     TableItem → GFM markdown — 1개 (병합셀 grid 복원)
-5. docstruct.media.page_render  페이지 PNG 렌더 — pypdfium2 · 2.0x
+5. docstruct.images.page_render  페이지 PNG 렌더 — pypdfium2 · 2.0x
 6. docstruct.tables.assess      LLM 표 판정 — table_2:table/insufficient  (2.1s)
 7. docstruct.tables.fill        LLM 표 재추출 — table_2 교체  (3.4s)
 ```
@@ -1011,7 +1490,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.3.53"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.5.9"
 ```
 
 ### 한글이 깨져 보일 때

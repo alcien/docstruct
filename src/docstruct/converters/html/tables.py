@@ -1,5 +1,8 @@
 """HTML `<table>` → markdown.
 
+입력:
+    HTML <table>
+
 역할:
     rowspan/colspan 을 격자로 펼치고, 다단 헤더는 열별로 이어 붙여
     GFM 표 한 줄 헤더로 만든다.

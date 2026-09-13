@@ -1,5 +1,8 @@
 """포맷별 추출기 레지스트리.
 
+입력:
+    확장자
+
 역할:
     확장자를 추출기 함수에 매핑하고, 모든 추출기가 같은 반환 타입
     (ExtractionResult)을 쓰도록 강제한다. 새 포맷 지원은 이 파일에
@@ -26,12 +29,17 @@ class ExtractionResult:
     입력(필드):
         pages         페이지 목록
         failed_pages  파싱 실패로 빠진 페이지 번호 (PDF 전용)
+        failure_reasons  그 실패의 **사유** (모듈·메시지). 번호만으로는
+                      원인을 알 수 없다 — 결과 JSON 까지 나른다
         table_html    원본 `<table>` HTML 조각, 문서 순서 (HWP 전용)
     출력:
         호출부는 포맷과 무관하게 같은 필드를 읽는다. 해당 없는 필드는 빈 값.
     """
 
     pages: list[PageContent]
+    #: 파싱 실패 사유 (["61쪽 (17, 18 …): <모듈>: <메시지>"]).
+    #: 로그에만 남기면 결과를 받아 보는 사람이 원인을 알 수 없다.
+    failure_reasons: list[str] = field(default_factory=list)
     #: 파싱 실패로 결과에서 빠진 페이지 번호 (PDF 전용 — Docling 부분 실패)
     failed_pages: list[int] = field(default_factory=list)
     #: 원본 ``<table>`` HTML 조각, 문서 순서 (HWP 전용 — 재추출 근거)
@@ -111,6 +119,7 @@ def _extract_pdf(path: Path, *, image_dir: Path | None) -> ExtractionResult:
             source_path=path,
         ),
         failed_pages=list(getattr(converter, "failed_pages", []) or []),
+        failure_reasons=list(getattr(converter, "failure_reasons", []) or []),
     )
 
 
@@ -129,11 +138,14 @@ def _extract_hwp(path: Path, *, image_dir: Path | None) -> ExtractionResult:
 
 @register_extractor(".hwpx")
 def _extract_hwpx(path: Path, *, image_dir: Path | None) -> ExtractionResult:
-    """HWPX 를 python-hwpx 로 추출한다.
+    """HWPX 를 XML 직접 파싱으로 추출한다.
 
-    입력: path(HWPX 경로), image_dir(사용하지 않음)
+    입력: path(HWPX 경로), image_dir(그림을 꺼내 둘 위치)
     출력: ExtractionResult — pages
+    비고:
+        `image_dir` 을 넘기지 않으면 그림이 파일로 남지 않고, 그러면
+        VLM 그림 읽기가 대상 없이 지나간다 (0.4.4 이전이 그랬다).
     """
     from docstruct.extractors.hwpx import extract_hwpx_pages
 
-    return ExtractionResult(pages=extract_hwpx_pages(str(path)))
+    return ExtractionResult(pages=extract_hwpx_pages(str(path), image_dir=image_dir))

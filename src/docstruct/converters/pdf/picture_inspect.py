@@ -1,10 +1,13 @@
 """그림 설명(VLM) 결과 조회.
 
+입력:
+    DoclingDocument
+
 역할:
     Docling 이 그림에 붙인 설명 텍스트를 꺼내고, 설명 생성 현황을
     점검할 수 있게 한다.
 호출부:
-    docstruct.media.picture, converters.pdf.converter
+    docstruct.images.picture, converters.pdf.converter
 출력:
     설명 문자열 및 그림별 점검 결과
 """
@@ -99,15 +102,20 @@ def print_picture_reports(
     reports: list[dict[str, Any]],
     *,
     markdown: str = "",
-    placeholder: str = "<!-- image -->",
+    placeholder: str = "<image ",
 ) -> None:
     """PictureItem 진단 결과를 stdout 에 출력한다.
 
     입력:
         reports      collect_picture_reports 결과
         markdown     함께 세어볼 markdown (placeholder 개수 비교용)
-        placeholder  그림 자리 표식 문자열
+        placeholder  그림 자리 표식 (기본은 여는 태그 `<image `)
     출력: 없음 (stdout)
+    비고:
+        기본값이 옛 표식(`<!-- image -->`)으로 남아 있었다 (0.5.8 정정).
+        0.4.89 부터 그림 자리는 `<image N> … </image N>` 이므로, 옛
+        문자열로 세면 **언제나 0개**가 나와 "그림이 본문에 없다" 는
+        잘못된 진단이 된다.
     """
     ph_count = markdown.count(placeholder) if markdown else 0
     if markdown:

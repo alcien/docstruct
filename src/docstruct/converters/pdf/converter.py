@@ -1,5 +1,8 @@
 """Docling 변환 실행과 결과 수집.
 
+입력:
+    PDF 경로
+
 역할:
     PDF 를 DocumentConverter 로 변환하고, 변환 과정에서 로그로만 남는
     정보(페이지 단위 실패, 페이지별 텍스트 출처)를 호출부가 쓸 수 있게 모은다.
@@ -76,6 +79,34 @@ def _failed_page_numbers(result) -> list[int]:
         if isinstance(page_no, int) and page_no >= 0:
             pages.add(page_no)
     return sorted(pages)
+
+
+def _failure_reasons(result) -> list[str]:
+    """페이지 실패의 **사유**를 사람 말로 모은다 (같은 사유는 한 줄로).
+
+    입력: result — Docling 변환 결과
+    출력: ["12쪽 등 61개: <모듈> <메시지>", …]
+    비고:
+        번호만 남기면 원인을 알 수 없다 — 실측(조달청 78쪽): 17~78쪽 중
+        61쪽이 빠졌는데 결과에는 번호 목록만 있어, 같은 PDF 가 앞선 실행
+        에서는 다 읽혔다는 사실 말고는 단서가 없었다. Docling 의 오류
+        객체가 담은 모듈·메시지를 함께 남긴다.
+    """
+    groups: dict[str, list[int]] = {}
+    for err in getattr(result, "errors", None) or []:
+        page_no = getattr(err, "page_no", None)
+        module = (getattr(err, "module_name", None)
+                  or getattr(err, "component_type", None) or "")
+        message = (getattr(err, "error_message", None)
+                   or getattr(err, "message", None) or str(err))
+        key = f"{module}: {message}".strip(": ")[:200]
+        groups.setdefault(key, []).append(
+            page_no if isinstance(page_no, int) else -1)
+    out = []
+    for key, pages in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        sample = ", ".join(str(n) for n in sorted(p for p in pages if p >= 0)[:5])
+        out.append(f"{len(pages)}쪽 ({sample} …): {key}")
+    return out
 
 
 def collect_page_stats(result) -> dict[int, dict]:
@@ -270,6 +301,30 @@ def _docling_install_hint(executable: str) -> str:
     return "\n".join(lines)
 
 
+def _pipeline_markdown(path) -> str:
+    """파이프라인을 돌려 사람이 볼 수 있는 markdown 을 만든다.
+
+    입력: path — 원본 문서 경로
+    출력: markdown 문자열
+    예외: 실패하면 그대로 올린다 (호출부가 옛 경로로 폴백한다)
+    비고:
+        컨버터 자체 경로는 **원재료**다. 그것을 그대로 내보내면 뒤가 전부
+        빠진다 — 한글 정규화·누름틀 잔재 제거·표 placeholder·그림 추출·
+        VLM 판독·펼치기. PDF 는 여기에 더해 0.4.11 의 OCR 게이트 수정과
+        0.4.13 의 텍스트 레이어 메우기도 못 받는다.
+
+        서비스의 `/convert/markdown` 이 이 자리를 탄다. 실측(조달청 HWPX):
+        document.json 에는 VLM 이 조직도를 계층·정원표까지 복원해 담겼는데
+        같은 실행의 `.md` 에는 `<!-- hwpx-image:image1 -->` 원형 표식만
+        남았다 — 컨버터가 파이프라인을 건너뛰었기 때문이다.
+    """
+    from docstruct.pipeline import build_document
+    from docstruct.output.report import document_markdown
+
+    doc = build_document(path, assess_tables=False, fill_tables=False)
+    return document_markdown(doc)
+
+
 class PdfConverter(BaseConverter):
     """PDF → text / markdown / html / xml (Docling Standard Pipeline)."""
 
@@ -403,14 +458,22 @@ class PdfConverter(BaseConverter):
         # 페이지 단위 실패는 예외가 아니라 로그로만 남아서, 결과에서 해당
         # 페이지가 조용히 빠집니다. 호출자가 알 수 있게 보관합니다.
         self.failed_pages = _failed_page_numbers(result)
+        self.failure_reasons = _failure_reasons(result)
         if self.failed_pages:
-            _log.warning(
-                "%d개 페이지가 파싱에 실패해 결과에서 빠집니다: %s "
+            total = len(getattr(result, "pages", None) or []) or None
+            share = (f" — 전체의 {len(self.failed_pages) / total:.0%}"
+                     if total else "")
+            # 절반 넘게 빠지면 이것은 경고가 아니라 **결과가 문서가 아니다**.
+            level = (_log.error if total and len(self.failed_pages) > total * 0.2
+                     else _log.warning)
+            level(
+                "%d개 페이지가 파싱에 실패해 결과에서 빠집니다%s: %s "
                 "(DOCLING_PDF_BACKEND=pypdfium2 또는 "
                 "DOCLING_FORCE_FULL_PAGE_OCR=true 를 시도해 보세요)",
-                len(self.failed_pages),
-                self.failed_pages,
+                len(self.failed_pages), share, self.failed_pages,
             )
+            for reason in self.failure_reasons:
+                level("  실패 사유 · %s", reason)
 
         try:
             self.page_stats = collect_page_stats(result)
@@ -443,6 +506,11 @@ class PdfConverter(BaseConverter):
         입력: 없음
         출력: markdown 문자열 (표는 selective LLM 경로 — export_markdown)
         """
+        try:
+            return _pipeline_markdown(self.path)
+        except Exception as exc:                 # noqa: BLE001 - 폴백이 있다
+            _log.warning("파이프라인 markdown 실패 — 원재료로 물러납니다: %s", exc)
+
         from docstruct.converters.pdf.table_extract import export_markdown
 
         return export_markdown(self._get_document())

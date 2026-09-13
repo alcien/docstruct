@@ -1,5 +1,8 @@
 """본문 markdown 의 표를 `<table N>` 블록으로 치환.
 
+입력:
+    본문 markdown
+
 역할:
     HWP/HWPX 경로에서 markdown 안에 그대로 들어 있는 GFM 표를 찾아
     번호를 매기고 태그 블록으로 감싼다. PDF 경로는 추출 단계에서 이미

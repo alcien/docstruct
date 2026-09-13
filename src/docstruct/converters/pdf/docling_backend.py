@@ -1,5 +1,8 @@
 """Docling 파이프라인 구성.
 
+입력:
+    Settings
+
 역할:
     설정값(core.config)을 Docling 옵션 객체로 옮긴다. PDF 백엔드, OCR 엔진과
     언어, 연산 장치, 단계 병렬화, 그림 설명 VLM 등을 여기서 정한다.
@@ -11,12 +14,19 @@
 """
 from __future__ import annotations
 
+import os
+
 import logging
 import threading
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-from docstruct.core.config import get_settings, resolve_device
+from docstruct.core.config import (
+    get_settings,
+    resolve_device,
+    sane_thread_count,
+    sanitize_thread_env,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -131,7 +141,7 @@ def _warn_if_ocr_unusable(backend: str) -> None:
     if backend in ("auto", "none"):
         return
     try:
-        from docstruct.checks import _ocr_ready
+        from docstruct.core.checks import _ocr_ready
     except ImportError:
         return
     try:
@@ -189,6 +199,27 @@ def _ocr_options() -> Any:
     return TesseractCliOcrOptions(lang=_ocr_langs(["kor", "eng"]))
 
 
+def resolve_thread_count() -> int | None:
+    """Docling 에 넘길 스레드 수. **잘못된 값은 여기서 바로잡는다.**
+
+    입력: 없음 (설정의 num_threads · 환경변수 OMP_NUM_THREADS)
+    출력: 넘길 스레드 수. 지정이 없으면 None (Docling 기본에 맡김)
+    비고:
+        설정이 우선이고, 없으면 환경변수를 본다. 환경변수가 쓸 수 없는
+        값이면 `sanitize_thread_env()` 가 바로잡는다 — torch 가 양수만
+        받기 때문이다 (`set_num_threads expects a positive integer`).
+    """
+    settings = get_settings()
+    if settings.num_threads > 0:
+        return settings.num_threads
+    if settings.num_threads < 0:
+        fixed = sane_thread_count()
+        _log.warning("num_threads=%d 는 쓸 수 없습니다 (양수만 가능) — %d 로 씁니다",
+                     settings.num_threads, fixed)
+        return fixed
+    return sanitize_thread_env()
+
+
 def _accelerator_options():
     """연산 장치 옵션을 만든다.
 
@@ -196,12 +227,15 @@ def _accelerator_options():
     출력: AcceleratorOptions. 지정이 없거나 미지원 버전이면 None
     비고: 요청한 장치를 쓸 수 없으면 CPU 로 대체하고 경고를 남긴다.
     """
-    settings = get_settings()
     device, note = resolve_device()
     if note:
         _log.warning("%s", note)
 
-    if device == "auto" and not settings.num_threads:
+    # **먼저 부른다.** 잘못된 OMP_NUM_THREADS 를 여기서 바로잡아야, 아래에서
+    # 일찍 돌아가더라도 Docling 이 그 값을 읽고 죽지 않는다.
+    threads = resolve_thread_count()
+
+    if device == "auto" and not threads:
         return None   # Docling 자동 판단에 맡김
 
     try:
@@ -219,14 +253,61 @@ def _accelerator_options():
     if device != "auto":
         resolved = getattr(AcceleratorDevice, device.upper(), None)
         kwargs["device"] = resolved if resolved is not None else device
-    if settings.num_threads:
-        kwargs["num_threads"] = settings.num_threads
+    if threads:
+        kwargs["num_threads"] = threads
 
     try:
         return AcceleratorOptions(**kwargs)
     except Exception as exc:
         _log.warning("AcceleratorOptions 구성 실패 (%s) — Docling 기본값 사용", exc)
         return None
+
+
+def docling_default_threads() -> int | None:
+    """Docling 이 제 기본으로 쓸 스레드 수. 못 읽으면 None.
+
+    입력: 없음
+    출력: AcceleratorOptions 의 기본 num_threads
+    비고:
+        "(기본)" 이라고만 찍으면 조정할 수가 없다 — 실제 몇으로 도는지
+        알아야 늘릴지 줄일지 정한다. Docling 버전마다 값이 다를 수
+        있으므로 **직접 만들어 읽는다** (상수로 적어 두면 거짓말이 된다).
+    """
+    try:
+        from docling.datamodel.pipeline_options import AcceleratorOptions
+    except ImportError:
+        try:
+            from docling.datamodel.accelerator_options import (  # type: ignore
+                AcceleratorOptions,
+            )
+        except ImportError:
+            return None
+    try:
+        return int(AcceleratorOptions().num_threads)
+    except Exception:                            # noqa: BLE001 - 표시용이다
+        return None
+
+
+def thread_setting_note() -> str:
+    """스레드 수와 그 출처를 사람 말로.
+
+    입력: 없음
+    출력: 예) "4 (설정 num_threads)" · "8 (환경 OMP_NUM_THREADS 정정)" ·
+              "4 (Docling 기본) · 늘리려면 --set num_threads=N"
+    """
+    settings = get_settings()
+    if settings.num_threads > 0:
+        return f"{settings.num_threads} (설정 num_threads)"
+    resolved = resolve_thread_count()
+    if resolved:
+        return f"{resolved} (환경변수 정정값)"
+    default = docling_default_threads()
+    cores = os.cpu_count() or 1
+    if default is None:
+        return (f"Docling 기본 (값을 읽지 못했습니다) · 이 기기 코어 {cores}개 "
+                f"· 지정하려면 --set num_threads=N")
+    return (f"{default} (Docling 기본) · 이 기기 코어 {cores}개 "
+            f"· 바꾸려면 --set num_threads=N")
 
 
 def _pipeline_options_class(threaded: bool):
@@ -269,8 +350,9 @@ def build_pdf_pipeline_options(*, skip_ocr: bool = False):
     if accelerator is not None:
         pipeline_options.accelerator_options = accelerator
         effective, _ = resolve_device()
-        _log.info("가속 설정: device=%s threads=%s",
-                  effective, settings.num_threads or "(기본)")
+        # 실제로 넘긴 값을 찍는다 — 바로잡힌 값이 설정과 다를 수 있다.
+        _log.info("가속 설정: device=%s · 스레드 %s",
+                  effective, thread_setting_note())
 
     # OCR을 쓸건지.
     #

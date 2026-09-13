@@ -1,5 +1,8 @@
 """HWP → markdown/HTML/XML/텍스트.
 
+입력:
+    .hwp 경로
+
 역할:
     HWP 파일을 세 경로 중 하나로 읽는다.
       hwpml-xml     내용이 실제로는 XML 인 경우 직접 파싱 (표 구조 보존)
@@ -20,37 +23,103 @@ import sys
 from pathlib import Path
 
 from docstruct.converters.base import BaseConverter
-from docstruct.converters.deps import BS4_AVAILABLE, BeautifulSoup, OLEFILE_AVAILABLE, PYHWP_AVAILABLE
+from docstruct.converters import deps
+from docstruct.converters.deps import BS4_AVAILABLE, BeautifulSoup, OLEFILE_AVAILABLE
 from docstruct.converters.html import html_to_markdown, html_to_text, html_to_xml
 from docstruct.converters.hwp.hwpml import is_hwpml, to_html as hwpml_to_html
 from docstruct.converters.hwp.hwpml import to_markdown as hwpml_to_markdown
 from docstruct.converters.hwp.hwpml import to_text as hwpml_to_text
 from docstruct.converters.hwp.hwpml import to_xml as hwpml_to_xml
-from docstruct.converters.hwp import hwp5tree
 from docstruct.core.config import get_settings
 from docstruct.converters.hwp.diagnose import diagnose
 from docstruct.converters.hwp.olefile import clean_text, extract_raw_text, text_to_html, text_to_markdown, text_to_xml
 import logging
 
-from docstruct.converters.hwp.pyhwp import (
-    HwpTimeout, hwp_to_html_str, pyhwp_html_verdict, real_error_lines,
-)
-
-
 _log = logging.getLogger(__name__)
+
+
+def _backend():
+    """pyhwp 백엔드를 얻는다 — **없으면 None** (0.5.0).
+
+    입력: 없음
+    출력: `converters.hwp.pyhwp_backend` 모듈 또는 None
+    비고:
+        **함수 안에서 부른다.** 최상위 import 로 두었더니 그 폴더를 지웠을
+        때 `HwpConverter` 자체가 ImportError 로 죽었다 — AGPL 과 무관한
+        나머지 사다리(HWP→HWPX 변환·HWPML·OLE 텍스트·미리보기)까지 함께.
+        지우려던 것보다 훨씬 많이 잃는 구조였다.
+
+        이제 폴더가 없는 것은 **정상 경로의 하나**다. 1단·3단만 빠지고
+        나머지는 그대로 돈다.
+    """
+    try:
+        from docstruct.converters.hwp import pyhwp_backend
+
+        return pyhwp_backend
+    except ImportError:
+        return None
 
 
 def _first_real_error(exc: Exception) -> str:
     """예외 메시지에서 상시 경고를 뺀 첫 줄을 뽑는다.
 
-    입력: exc — hwp_to_html_str 이 낸 RuntimeError
+    입력: exc — 백엔드의 HTML 단이 낸 RuntimeError
     출력: 로그 한 줄에 넣을 짧은 사유
+    비고: 백엔드가 없으면 예외 문장을 그대로 쓴다.
     """
-    lines = real_error_lines(str(exc), limit=3)
+    backend = _backend()
+    if backend is None:
+        return str(exc).strip().splitlines()[-1] if str(exc).strip() else "원인 미상"
+    lines = backend.real_errors(str(exc))
     return lines[-1].strip() if lines else "원인 미상 (경고 외 메시지 없음)"
 
 #: 파서 트리 결과가 이보다 적으면 실패로 보고 기존 경로로 넘어간다.
 _MIN_TREE_CHARS = 200
+
+
+def _pipeline_markdown(path) -> str:
+    """파이프라인을 돌려 사람이 볼 수 있는 markdown 을 만든다.
+
+    입력: path — 원본 문서 경로
+    출력: markdown 문자열
+    예외: 실패하면 그대로 올린다 (호출부가 옛 경로로 폴백한다)
+    비고:
+        컨버터 자체 경로는 **원재료**다. 그것을 그대로 내보내면 뒤가 전부
+        빠진다 — 한글 정규화·누름틀 잔재 제거·표 placeholder·그림 추출·
+        VLM 판독·펼치기. PDF 는 여기에 더해 0.4.11 의 OCR 게이트 수정과
+        0.4.13 의 텍스트 레이어 메우기도 못 받는다.
+
+        서비스의 `/convert/markdown` 이 이 자리를 탄다. 실측(조달청 HWPX):
+        document.json 에는 VLM 이 조직도를 계층·정원표까지 복원해 담겼는데
+        같은 실행의 `.md` 에는 `<!-- hwpx-image:image1 -->` 원형 표식만
+        남았다 — 컨버터가 파이프라인을 건너뛰었기 때문이다.
+    """
+    from docstruct.pipeline import build_document
+    from docstruct.output.report import document_markdown
+
+    doc = build_document(path, assess_tables=False, fill_tables=False)
+    return document_markdown(doc)
+
+
+def skip_pyhwp() -> bool:
+    """pyhwp(AGPL) 경로를 건너뛸지.
+
+    입력: 없음 (환경변수 `DOCSTRUCT_HWP_NO_PYHWP`)
+    출력: 건너뛰면 True
+    비고:
+        pyhwp 를 설치하지 않거나 라이선스(AGPL) 때문에 쓰지 않으려는
+        환경을 위한 손잡이다. **코드는 지우지 않는다** — 켜면 그대로
+        돌아간다. 끄면 사다리의 위 두 단(hwp5-tree · pyhwp-html)을
+        건너뛰고 olefile 텍스트 폴백이 받는다.
+
+        미설치와 다른 점: 미설치는 import 실패로 걸러지지만 그때마다
+        경고가 쌓이고 진단 메시지가 "설치하세요" 를 권한다. 이 손잡이는
+        **의도한 구성**임을 기록으로 남긴다.
+    """
+    import os
+
+    return os.getenv("DOCSTRUCT_HWP_NO_PYHWP", "").strip().lower() in (
+        "1", "true", "on", "yes")
 
 
 class HwpConverter(BaseConverter):
@@ -113,11 +182,21 @@ class HwpConverter(BaseConverter):
         if self._tree_tried:
             return self._tree_cache
         self._tree_tried = True
-        if not hwp5tree.is_available():
+        if skip_pyhwp():
+            self._tree_failure = "pyhwp 경로를 설정으로 껐습니다 (DOCSTRUCT_HWP_NO_PYHWP)"
+            _log.info("pyhwp 경로 건너뜀 — olefile 폴백으로 처리합니다")
+            return None
+        backend = _backend()
+        if backend is None:
+            self._tree_failure = (
+                "pyhwp 백엔드가 설치본에 없습니다 "
+                "(converters/hwp/pyhwp_backend/ 를 떼어낸 상태)")
+            return None
+        if not backend.is_available():
             self._tree_failure = "pyhwp 파서 모듈(hwp5.xmlmodel)을 불러올 수 없음"
             return None
         try:
-            md = hwp5tree.to_markdown(str(self.path))
+            md = backend.tree_markdown(self.path)
         except Exception as exc:                 # noqa: BLE001 - 폴백이 있으므로 삼킨다
             # **기본 경로가 죽은 것**이므로 INFO 로 묻으면 안 된다. 예전에는
             # INFO 였고, 기본 로깅(WARNING)에서 보이지 않았다. 그래서 뒤이어
@@ -164,12 +243,34 @@ class HwpConverter(BaseConverter):
         if is_hwpml(self.path):
             self._ole_fallback = False
             return False
-        if not PYHWP_AVAILABLE:
+        if skip_pyhwp():
+            # 두 번째 단(hwp5html)도 pyhwp 이므로 함께 건너뛴다.
+            self._fallback_reason = (
+                "pyhwp 경로를 설정으로 껐습니다 (DOCSTRUCT_HWP_NO_PYHWP) — "
+                "텍스트 경로로 처리합니다")
+            self._ole_fallback = True
+            return True
+        backend = _backend()
+        if backend is None:
+            # **왜 내려왔는지 남긴다** (0.5.1). 예전에는 조용히 True 만
+            # 돌려줘서 결과물에 사유가 없었다 — "표가 왜 없지" 를 로그로
+            # 뒤져야 했다. 백엔드를 떼어낸 배포에서는 이것이 정상 경로이므로
+            # 더더욱 적혀 있어야 한다.
+            self._fallback_reason = (
+                "pyhwp 백엔드가 설치본에 없어 텍스트 경로로 처리합니다 "
+                "(표·그림 구조 없음). HWP→HWPX 변환기를 붙이면 표가 살아납니다 "
+                "— converters/hwpx/convert.py")
+            self._ole_fallback = True
+            return True
+        if not deps.PYHWP_AVAILABLE:
+            self._fallback_reason = (
+                "pyhwp 패키지가 설치되지 않아 텍스트 경로로 처리합니다 "
+                "(표·그림 구조 없음)")
             self._ole_fallback = True
             return True
         try:
-            html, stderr = hwp_to_html_str(self.path)
-        except HwpTimeout as exc:
+            html, stderr = backend.html(self.path)
+        except backend.timeout_error() as exc:
             # 시간 안에 못 끝내면 표 구조를 포기하고 텍스트만이라도 뽑는다.
             _log.warning("%s", exc)
             self._ole_fallback = True
@@ -196,7 +297,7 @@ class HwpConverter(BaseConverter):
         self._html_cache = html
         self._html_stderr = stderr
         file_size = os.path.getsize(self.path)
-        insufficient, reason = pyhwp_html_verdict(html, stderr, file_size)
+        insufficient, reason = _backend().html_verdict(html, stderr, file_size)
         self._fallback_reason = reason
         if insufficient:
             if OLEFILE_AVAILABLE:
@@ -235,7 +336,12 @@ class HwpConverter(BaseConverter):
         if self._uses_ole_fallback():
             return text_to_html(self._get_ole_text())
         if self._html_cache is None:
-            self._html_cache, self._html_stderr = hwp_to_html_str(self.path)
+            backend = _backend()
+            if backend is None:
+                raise RuntimeError(
+                    "pyhwp 백엔드가 설치본에 없습니다 "
+                    "(converters/hwp/pyhwp_backend/ 를 떼어낸 상태)")
+            self._html_cache, self._html_stderr = backend.html(self.path)
         return self._html_cache
 
     def _get_ole_text(self) -> str:
@@ -247,8 +353,42 @@ class HwpConverter(BaseConverter):
         if self._ole_text_cache is None:
             if not OLEFILE_AVAILABLE:
                 raise ImportError("olefile 패키지를 설치하세요: pip install olefile")
-            self._ole_text_cache = clean_text(extract_raw_text(self.path))
+            try:
+                self._ole_text_cache = clean_text(extract_raw_text(self.path))
+            except Exception as exc:             # noqa: BLE001 - 아래에 한 단이 더 있다
+                # **마지막 단이 아니다** (0.5.1). olefile 이 컨테이너 자체를
+                # 못 여는 문서(손상·부분 전송)가 있는데, 예전에는 그 예외가
+                # 그대로 위로 튀어 문서가 통째로 실패했다. 미리보기 스트림
+                # (PrvText)에는 본문 일부가 남아 있는 경우가 많다 — 그것이
+                # 진짜 마지막 단이다.
+                # `_fallback_reason` 은 아직 설정되지 않았을 수 있다 —
+                # 이 경로로 곧장 들어오는 호출부가 있다.
+                before = getattr(self, "_fallback_reason", None)
+                self._fallback_reason = (
+                    (before + " / " if before else "")
+                    + f"olefile 이 파일을 열지 못했습니다 ({type(exc).__name__}: {exc})"
+                )
+                _log.warning("olefile 실패 — 미리보기 스트림으로 내려갑니다: %s", exc)
+                self._ole_text_cache = self._preview_text()
         return self._ole_text_cache
+
+    def _preview_text(self) -> str:
+        """사다리 마지막 단 — 미리보기 스트림(PrvText).
+
+        입력: 없음
+        출력: 텍스트. 그것마저 없으면 빈 문자열
+        비고:
+            **여기서는 예외를 내지 않는다.** 사다리의 끝이므로 더 물러날
+            곳이 없다. 빈 결과는 파이프라인이 "내용이 사실상 비었습니다"
+            경고로 알린다 — 예외로 문서를 통째로 잃는 것보다 낫다.
+        """
+        try:
+            from docstruct.converters.hwp.preview import read_prv_text
+
+            return read_prv_text(self.path) or ""
+        except Exception as exc:                 # noqa: BLE001 - 끝이다
+            _log.warning("미리보기 스트림도 읽지 못했습니다: %s", exc)
+            return ""
 
     def to_html(self) -> str:
         """본문을 HTML 로 변환한다.
@@ -270,7 +410,7 @@ class HwpConverter(BaseConverter):
             return hwpml_to_text(self.path)
         if self._uses_ole_fallback():
             return self._get_ole_text()
-        if PYHWP_AVAILABLE:
+        if deps.PYHWP_AVAILABLE:
             return html_to_text(self._get_html())
         print("[경고] pyhwp 없음 — olefile 폴백 (표/그림 구조 손실)", file=sys.stderr)
         return self._get_ole_text()
@@ -281,6 +421,11 @@ class HwpConverter(BaseConverter):
         입력: 없음
         출력: markdown 문자열
         """
+        try:
+            return _pipeline_markdown(self.path)
+        except Exception as exc:                 # noqa: BLE001 - 폴백이 있다
+            _log.warning("파이프라인 markdown 실패 — 원재료로 물러납니다: %s", exc)
+
         if is_hwpml(self.path):
             return hwpml_to_markdown(self.path)
         report = diagnose(self.path)

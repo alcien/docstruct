@@ -1,5 +1,8 @@
 """확장자 → 컨버터 매핑.
 
+입력:
+    확장자
+
 역할:
     파일 확장자에 맞는 BaseConverter 구현을 찾아준다.
     (docstruct 파이프라인은 별도의 extractors.registry 를 쓴다.

@@ -1,5 +1,8 @@
 """그림으로 잡힌 영역을 표 / 텍스트 / 이미지로 가른다 (LLM 호출 없음).
 
+입력:
+    그림 영역 + 텍스트 밀도
+
 역할:
     레이아웃 모델이 ``PictureItem`` 으로 분류한 영역은 셋 중 하나다.
 
@@ -70,6 +73,11 @@ class RegionKind(str, Enum):
     #: 도형은 많은데 글자가 거의 없는 영역. 원그래프·막대그래프처럼 값이
     #: 그림 안에 있어 텍스트로 옮겨지지 않는다.
     CHART = "chart"
+    #: 큰 중괄호 등으로 짠 산식·개조식 배열 (가설 H12-a). 표도 그림도
+    #: 아니다 — 텍스트로 흘려보내고, 캡처 표 읽기(vlm_read)에서 뺀다.
+    #: 실측(개정세법 117쪽): 큰 `{` 는 글자가 아니라 **벡터 경로**로
+    #: 그려져 98쪽(84%)에 있었다 — 글자 `{` 는 문서 전체에 0개.
+    FORMULA = "formula"
 
 
 @dataclass
@@ -289,6 +297,80 @@ def _drawing_cover(
         document.close()
 
 
+#: 중괄호꼴 판별 (H12-a). 두께 상한이 1.8 을 **넘는** 이유: 1.8 이하는
+#: 괘선이다 — ⑨(line_grid)의 LINE_MAX_THICK 과 맞물려, 중괄호는 격자
+#: 검출에서 걸러지고 여기서만 잡힌다. 실측: 개정세법 중괄호 곡선 폭 1.8~6pt.
+BRACE_MIN_WIDTH = 1.8
+BRACE_MAX_WIDTH = 6.0
+BRACE_MIN_HEIGHT = 25.0
+#: 이만큼 모여야 "다발" 이다 — 한 개는 장식일 수 있다.
+MIN_BRACES = 2
+
+
+def formula_signals(
+    pdf_path: str | Path, page_no: int, bbox: dict[str, float],
+) -> tuple[int, int, int]:
+    """영역 안의 산식 신호를 센다.
+
+    입력: pdf_path — 원본, page_no — 1부터, bbox — TOPLEFT {l,t,r,b}
+    출력: (중괄호꼴 수, 가로 괘선 수, 이미지 객체 수). 못 읽으면 (0,0,0)
+    비고:
+        중괄호꼴 = 폭 1.8~6pt · 높이 25pt+ 의 세로로 가늘고 긴 경로.
+        이미지 객체는 진짜 그림 오판을 막는 반대 신호다. 가로 괘선 수는
+        참고 신호로만 남긴다 — 실측(개정세법)에서 산식 블록에도 분수선·
+        상자선(63~421pt)이 있어 **길이·유무로는 표와 갈리지 않았다.**
+        표 여부는 격자 성립(⑨ lattice)으로 가른다 → classify_region.
+    """
+    try:
+        import ctypes
+
+        import pypdfium2 as pdfium
+        import pypdfium2.raw as raw
+    except ImportError:
+        return (0, 0, 0)
+
+    braces = h_rules = images = 0
+    try:
+        document = pdfium.PdfDocument(str(pdf_path))
+    except Exception:                            # noqa: BLE001 - 판별 보조다
+        return (0, 0, 0)
+    try:
+        index = page_no - 1
+        if not 0 <= index < len(document):
+            return (0, 0, 0)
+        page = document[index]
+        height = page.get_size()[1]
+        pad = 2.0
+        for obj in page.get_objects():
+            left = ctypes.c_float(); bottom = ctypes.c_float()
+            right = ctypes.c_float(); top = ctypes.c_float()
+            if not raw.FPDFPageObj_GetBounds(
+                    obj.raw, ctypes.byref(left), ctypes.byref(bottom),
+                    ctypes.byref(right), ctypes.byref(top)):
+                continue
+            l, b = left.value, height - top.value
+            r, t_ = right.value, height - bottom.value
+            cx, cy = (l + r) / 2.0, (b + t_) / 2.0
+            if not (bbox["l"] - pad <= cx <= bbox["r"] + pad
+                    and bbox["t"] - pad <= cy <= bbox["b"] + pad):
+                continue
+            if obj.type == raw.FPDF_PAGEOBJ_IMAGE:
+                images += 1
+                continue
+            if obj.type != raw.FPDF_PAGEOBJ_PATH:
+                continue
+            width, tall = r - l, t_ - b
+            if BRACE_MIN_WIDTH < width <= BRACE_MAX_WIDTH and tall >= BRACE_MIN_HEIGHT:
+                braces += 1
+            elif tall <= BRACE_MIN_WIDTH and width >= 8.0:
+                h_rules += 1
+        return (braces, h_rules, images)
+    except Exception:                            # noqa: BLE001
+        return (0, 0, 0)
+    finally:
+        document.close()
+
+
 def classify_region(
     pdf_path: str | Path,
     page_no: int,
@@ -331,6 +413,24 @@ def classify_region(
             RegionKind.IMAGE,
             f"글자 {chars}자 · {len(rows)}줄 — 사진·로고로 둡니다",
         )
+
+    braces, _rules, region_images = formula_signals(pdf_path, page_no, bbox)
+    if braces >= MIN_BRACES and region_images == 0:
+        # 큰 중괄호 다발 + 이미지 없음. 남은 물음은 "그래도 표인가" —
+        # 표라면 이 영역의 선분으로 격자가 선다 (⑨의 검증된 기계를
+        # 그대로 부른다. 중괄호는 폭>1.8 이라 lattice 입력에 안 들어가고,
+        # 분수선·상자선만으로는 직사각형 격자가 서지 않는다는 것이
+        # 개정세법 117쪽 실측이다: 격자 오성립 0).
+        # 표로 오판하면 없는 격자를 만들고, 그림으로 두면 vlm_read 가
+        # 캡처 표를 지어낸다 — 텍스트로 흘려보내는 것이 유일하게 안전하다.
+        from docstruct.experiments.tsr.measure.line_grid import table_lattice
+
+        if table_lattice(pdf_path, page_no, bbox) is None:
+            return RegionVerdict(
+                RegionKind.FORMULA,
+                f"중괄호꼴 도형 {braces}개 · 격자 불성립 — 산식 배열로 봅니다",
+                rows=len(rows),
+            )
 
     multi = [r for r in rows if len(r) >= MIN_TABLE_COLS]
     if not multi:

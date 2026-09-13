@@ -1,5 +1,8 @@
 """HWP OLE 스트림 텍스트 추출.
 
+입력:
+    OLE 스트림
+
 역할:
     pyhwp 변환이 불충분할 때 쓰는 최후 경로. 본문 텍스트만 얻으며
     표·그림 구조는 보존되지 않는다.
@@ -10,7 +13,7 @@
 """
 from __future__ import annotations
 
-from docstruct.converters.korean_text import normalize_korean_text
+from docstruct.text.korean_text import normalize_korean_text
 
 import re
 import xml.etree.ElementTree as ET

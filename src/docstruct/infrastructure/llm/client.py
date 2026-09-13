@@ -1,5 +1,8 @@
 """LLM 호출 클라이언트.
 
+입력:
+    메시지(텍스트+이미지 data URI)
+
 역할:
     설정된 엔드포인트로 프롬프트(및 이미지)를 보내고 응답 텍스트를 받는다.
     기본은 requests 로 직접 호출한다. `DOCSTRUCT_LLM_ADAPTER` 로 외부
@@ -240,22 +243,98 @@ def _retry_delay(response: Any, attempt: int) -> float:
     return min(BACKOFF_BASE ** attempt, 30.0)
 
 
-def _short_connection_reason(exc: Exception) -> str:
+#: 사내 주소가 프록시를 타면 대개 여기서 막힌다. 실행 중 경고에도 알린다.
+_PROXY_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+               "ALL_PROXY", "all_proxy")
+
+
+def _proxy_in_use(url: str) -> str:
+    """이 주소가 프록시를 타는 상태인지 한 줄로.
+
+    입력: url — 호출할 엔드포인트
+    출력: 프록시를 탈 것으로 보이면 안내 문자열, 아니면 빈 문자열
+    비고:
+        `requests` 는 HTTP_PROXY·HTTPS_PROXY 를 **자동으로 따른다.**
+        브라우저·curl 은 되는데 파이썬만 안 되는 사내망 사고의 대부분이
+        이것이다 — 사내 주소가 외부 프록시로 나가 거부된다. NO_PROXY 에
+        그 호스트가 들어 있으면 안내하지 않는다.
+    """
+    import os
+    from urllib.parse import urlparse
+
+    found = [f"{name}={os.environ[name]}" for name in _PROXY_VARS
+             if os.environ.get(name)]
+    if not found:
+        return ""
+    host = (urlparse(url).hostname or "").strip()
+    no_proxy = (os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "")
+    if host and host in [h.strip() for h in no_proxy.split(",") if h.strip()]:
+        return ""
+    return (f" · 프록시가 설정돼 있습니다({found[0]}) — 사내 주소는 "
+            f"NO_PROXY 에 넣으세요: set NO_PROXY={host},localhost,127.0.0.1")
+
+
+#: 요청마다 새 TCP 연결을 열지 않도록 세션을 하나 둔다. 실측(행안부
+#: 429쪽): 로그에 `Starting new HTTP connection` 이 호출마다 찍혔다 —
+#: 표 재구성 178회·재추출·평가까지 1,100초가 LLM 대기였고, 그 중 연결
+#: 수립이 매번 반복됐다. keep-alive 로 그만큼을 줄인다.
+_SESSION = None
+_SESSION_LOCK = threading.Lock()
+
+
+def _session():
+    """연결을 재사용하는 requests 세션 (스레드 공용).
+
+    입력: 없음
+    출력: requests.Session
+    비고:
+        requests.Session 은 스레드 안전하게 쓸 수 있다(어댑터 풀이 락을
+        갖는다). llm_concurrency 만큼 풀을 잡아 준다.
+    """
+    import requests                              # 지연 임포트 (모듈 규칙)
+
+    global _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is None:
+            session = requests.Session()
+            workers = max(4, get_settings().llm_concurrency)
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=workers, pool_maxsize=workers)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            _SESSION = session
+    return _SESSION
+
+
+def _short_connection_reason(exc: Exception, url: str = "") -> str:
     """연결 실패 사유를 한 줄로 줄인다.
 
-    입력: exc — requests 의 ConnectionError
+    입력: exc — requests 의 ConnectionError, url — 호출한 주소
     출력: 짧은 사유 문자열
+    비고:
+        모르는 사유일 때 **예외 이름만 남기지 않는다.** "ConnectionError"
+        만으로는 어디를 손대야 할지 알 수 없다 — 원문 끝머리를 함께
+        남기고, 프록시가 잡혀 있으면 그것도 알린다 (사내망 사고 1순위).
     """
     detail = str(exc)
+    proxy = _proxy_in_use(url) if url else ""
+    if "ProxyError" in type(exc).__name__ or "Cannot connect to proxy" in detail:
+        return "프록시 연결 실패 — 사내 주소는 NO_PROXY 에 넣으세요"
     if "Connection refused" in detail or "10061" in detail:
-        return "연결 거부 (서버가 내려갔거나 포트가 다름)"
+        return "연결 거부 (서버가 내려갔거나 포트가 다름)" + proxy
     if "No route to host" in detail or "10065" in detail:
-        return "경로 없음 (네트워크 분리)"
+        return "경로 없음 (네트워크 분리)" + proxy
     if "Name or service not known" in detail or "11001" in detail:
-        return "이름 해석 실패 (DNS)"
+        return "이름 해석 실패 (DNS)" + proxy
     if "timed out" in detail.lower() or "10060" in detail:
-        return "응답 없음 (방화벽 가능성)"
-    return type(exc).__name__
+        return "응답 없음 (방화벽 가능성)" + proxy
+    if ("Connection aborted" in detail or "RemoteDisconnected" in detail
+            or "Connection reset" in detail or "10054" in detail):
+        return ("연결이 끊겼습니다 (서버가 닫음 — 재시작 중이거나 "
+                "HTTPS 를 기대하는 주소일 수 있습니다)" + proxy)
+    # 모르는 사유 — 원문 끝머리를 남긴다. 손댈 곳을 알려면 이게 필요하다.
+    tail = detail.strip().replace("\n", " ")[-160:]
+    return f"{type(exc).__name__}: {tail}{proxy}"
 
 
 def _requests_fallback(
@@ -291,11 +370,27 @@ def _requests_fallback(
         payload["model"] = cfg["model"]
 
     headers = {"Content-Type": "application/json", **(cfg.get("headers") or {})}
+    # **보내기 전에 헤더를 검사한다.** HTTP 헤더는 latin-1 만 싣는데,
+    # 키에 한글이 섞이면 `requests` 가 보내는 순간 터진다. 그 예외는
+    # `requests.exceptions.*` 가 아니라 UnicodeEncodeError 라 아래 재시도
+    # 그물에 걸리지 않고 호출부까지 올라가, **쪽마다 같은 오류가 되풀이**
+    # 된다 (실측: 행정안전부 429쪽에서 429번).
+    #
+    # 한 번 알리고 도달 불가로 표시해 나머지 호출을 건너뛴다.
+    for name, value in headers.items():
+        try:
+            str(value).encode("latin-1")
+        except UnicodeEncodeError:
+            reason = (f"{name} 헤더에 ASCII 가 아닌 글자가 있습니다 — "
+                      "API 키를 확인하세요 (한글 입력 상태로 붙여 넣었거나 "
+                      "키 뒤에 메모가 붙은 경우입니다)")
+            mark_unreachable(key_url, key_model, reason)
+            raise LLMUnreachableError(f"{key_url} 호출 불가 — {reason}")
     last_error = ""
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.post(
+            response = _session().post(
                 cfg["url"],
                 json=payload,
                 headers=headers,
@@ -306,7 +401,7 @@ def _requests_fallback(
         except requests.exceptions.ConnectionError as exc:
             # 연결 자체가 안 되는 상태는 재시도해도 같다.
             # 첫 실패에서 표시해 두고 이후 호출은 건너뛴다.
-            reason = _short_connection_reason(exc)
+            reason = _short_connection_reason(exc, cfg["url"])
             mark_unreachable(key_url, key_model, reason)
             raise LLMUnreachableError(f"{key_url} 연결 불가 — {reason}") from exc
         except requests.exceptions.Timeout:

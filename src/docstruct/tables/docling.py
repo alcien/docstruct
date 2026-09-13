@@ -1,5 +1,8 @@
 """Docling TableItem → GFM markdown.
 
+입력:
+    Docling TableItem
+
 역할:
     Docling 이 복원한 표 격자(행·열·병합·헤더 정보)를 GFM 표 문자열로 바꾼다.
     GFM 은 병합셀과 다단 헤더를 표현할 수 없으므로, 헤더는 열 단위로 병합해
@@ -13,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from docstruct.converters.common.table import render_md_table
+from docstruct.converters.common.table import merge_continuation, render_md_table
 from docstruct.converters.html.tables import flatten_header_rows
 
 #: 헤더로 병합할 최대 행 수 (그 이상은 데이터로 간주)
@@ -22,6 +25,8 @@ MAX_HEADER_ROWS = 3
 
 #: 세로 병합이 이어지는 칸에 남기는 표식. HWP·HWPX 경로와 같은 값을 쓴다 —
 #: 형식마다 다르면 읽는 쪽이 분기해야 한다.
+#: 옛 표식 — 호환을 위해 이름은 남긴다. 실제 채움은
+#: `converters.common.table.merge_continuation` 이 정한다.
 MERGE_UP = "〃"
 
 #: 이 표식을 끄는 환경변수. 값을 복제하지도 비우지도 않는 절충이라,
@@ -290,9 +295,13 @@ def docling_table_to_markdown(item) -> str:
             # 273개(85%)가 "병합 셀이 풀렸다" 는 판정을 받았습니다. 같은
             # 문서를 HWPX 로 읽으면 4/580 입니다.
             if merge_mark and r1 - r0 > 1:
+                # 덮인 칸을 무엇으로 채울지는 한 곳이 정한다 (0.5.6) —
+                # 기본은 닻의 값을 되풀이한다. `〃` 는 표를 통째로 볼 때만
+                # 뜻이 통하는데, 이 결과물은 RAG 에서 행 단위로 잘린다.
+                filler = merge_continuation(grid[r0][c0])
                 for r in range(r0 + 1, min(r1, num_rows)):
                     if not grid[r][c0]:
-                        grid[r][c0] = MERGE_UP
+                        grid[r][c0] = filler
 
     while grid and not any(cell.strip() for cell in grid[-1]):
         grid.pop()

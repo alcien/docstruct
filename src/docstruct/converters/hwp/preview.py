@@ -1,5 +1,8 @@
 """HWP 미리보기 스트림(PrvText·PrvImage) 활용.
 
+입력:
+    PrvText·PrvImage 스트림
+
 역할:
     pyhwp 가 본문을 못 읽어 olefile 텍스트 폴백으로 내려가면 표 구조가
     통째로 사라진다. 그런데 한글이 저장할 때 만들어 둔 미리보기 스트림에는
@@ -27,7 +30,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from docstruct.converters.korean_text import normalize_korean_text
+from docstruct.text.korean_text import normalize_korean_text
 
 _log = logging.getLogger(__name__)
 

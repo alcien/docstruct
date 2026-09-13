@@ -1,5 +1,8 @@
 """로컬 CLI 진입점.
 
+입력:
+    명령행 인자 (`docstruct 문서 -o out --exp … --set …`)
+
 역할:
     파일이나 디렉터리를 받아 구조화하고 산출물을 저장한다.
     --check 로 환경·LLM 연결만 확인할 수도 있다.
@@ -17,11 +20,14 @@ import logging
 import os
 import sys
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 
-from docstruct.media.page_render import safe_file_stem
+from docstruct.core.steps import PROGRESS_FILENAME
+from docstruct.output.names import (assign_out_dirs, describe_renames,
+                                    safe_file_name)
 from docstruct.pipeline import SUPPORTED_SUFFIXES, build_document
-from docstruct.report import (
+from docstruct.output.report import (
     summary_lines,
     write_json,
     write_markdown,
@@ -32,17 +38,23 @@ from docstruct.report import (
 
 _log = logging.getLogger("docstruct")
 
+# ═══ 구간 1 — 도움말·인자 정의 ════════════════════════════════════════════════════
+# 사용 예(_EPILOG)와 argparse 구성(_build_parser). 옵션 하나가 곧 문서다.
 _EPILOG = """예시:
   docstruct 보고서.pdf                            out/보고서/ 에 결과
   docstruct 보고서.pdf -o 결과 --no-llm            LLM 없이 파싱만
   docstruct 문서모음/ --glob "*.hwp" --progress     일괄 처리
   docstruct 보고서.pdf --no-fill                  표 판정만 (재추출 안 함)
   docstruct --check                              환경·LLM 연결 확인
+  docstruct 문서.hwpx --align 문서.pdf             HWPX 에 PDF 쪽번호 붙이기
+  docstruct out/문서/document.json --align out/문서_pdf/document.json
+                                                 이미 돌린 결과끼리 맞추기
 
 산출물 (out/<문서명>/):
   document.json  전체 구조     document.md   본문
   tables.md      표 판정       pipeline.md   처리 경로·소요 시간
   layout.md      레이아웃 인식 (PDF)
+  aligned.json / aligned.md   쪽 맞춤 결과 (--align 일 때)
   pages/         페이지 PNG    images/       추출된 그림
 
 종료 코드: 0 성공 · 1 실패 · 2 인자 오류
@@ -100,8 +112,24 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument(
         "--exp",
         metavar="KEY[,KEY...]",
-        help="실험 기법을 켭니다 (쉼표로 여럿). `--exp list` 로 목록을 봅니다. "
-             "예: --exp split_merge,otsl_diff",
+        help="실험 기법과 VLM 손잡이를 켭니다 (쉼표로 여럿). "
+             "`--exp list` 로 목록을 봅니다. "
+             "예: --exp grid_score,grid_restore,vlm_hint,vlm_steps",
+    )
+
+    align = p.add_argument_group("쪽 맞춤 (HWPX·HWP 에 PDF 쪽번호 물려주기)")
+    align.add_argument(
+        "--align",
+        metavar="PDF",
+        help="같은 문서의 PDF 를 지정해 쪽 번호를 붙입니다. 두 자리 모두 "
+             "원본 문서(.hwpx/.pdf) 또는 이미 돌린 document.json 을 받습니다. "
+             "원본을 주면 그 자리에서 판독까지 합니다",
+    )
+    align.add_argument(
+        "--align-format",
+        choices=("json", "markdown", "both"),
+        default="both",
+        help="쪽 맞춤 산출 형식 (기본: both — aligned.json·aligned.md)",
     )
 
     render = p.add_argument_group("렌더링")
@@ -126,6 +154,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="진행 막대 표시 (tqdm 미설치 시 로그로 대체)",
     )
     p.add_argument(
+        "--no-pyhwp",
+        action="store_true",
+        help="HWP 를 pyhwp(AGPL) 없이 처리합니다 — olefile 텍스트 폴백으로 내려갑니다",
+    )
+    p.add_argument(
         "--cpu",
         action="store_true",
         help="GPU 를 쓰지 않습니다 (CUDA 오류가 날 때). --set device=cpu 와 같되 더 확실합니다",
@@ -145,12 +178,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--ask-key",
         action="store_true",
-        help="OpenAI 키를 입력받습니다 (화면·히스토리에 남지 않음)",
+        help="OpenAI 키를 입력받고 **OpenAI 만 씁니다** (화면·히스토리에 "
+             "남지 않음). 사내 엔드포인트·로컬 VLM 설정은 이 실행에서 "
+             "무시됩니다",
     )
     p.add_argument(
         "--key-file",
         metavar="경로",
-        help="키가 담긴 파일에서 읽습니다 (첫 줄만 사용)",
+        help="키가 담긴 파일에서 읽고 **OpenAI 만 씁니다** (첫 줄만 사용)",
     )
     p.add_argument(
         "--where",
@@ -162,7 +197,127 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="환경·LLM 연결만 확인하고 종료 (파일 처리 안 함)",
     )
+    p.add_argument(
+        "--steps",
+        choices=("brief", "user", "off", "dev", "silent", "none"),
+        default="brief",
+        help="진행 단계 표시 — brief: 굵은 13단계(기본) · dev: 진행수·건너뛴 "
+             "이유·시간까지 · silent: 아무것도 내지 않음. "
+             "`user`·`off` 는 brief, `none` 은 silent 의 별칭",
+    )
+    p.add_argument(
+        "--steps-file",
+        metavar="경로",
+        help="진행 이벤트를 JSONL 로 남긴다 (프런트 스트리밍용). "
+             "생략하면 산출 폴더의 progress.jsonl",
+    )
+    p.add_argument(
+        "--align-rebuild",
+        action="store_true",
+        help="`--align` 에서 이미 돌린 결과가 있어도 다시 판독한다 "
+             "(기본은 있으면 다시 씀)",
+    )
+    p.add_argument(
+        "--jobs", "-j",
+        type=int,
+        default=1,
+        metavar="N",
+        help="문서 여러 건을 **프로세스 N개**로 나눠 처리 (기본 1). "
+             "파싱은 순수 파이썬이라 스레드로는 빨라지지 않는다 — "
+             "프로세스여야 한다. 0 이면 CPU 수만큼",
+    )
+    p.add_argument(
+        # `--where` 는 이미 설치 위치를 내는 데 쓴다(0.4.x). 코드 길잡이는
+        # `--guide` 로 둔다 — 묻는 것이 "내 설치가 어디냐" 가 아니라
+        # "이 증상을 고치려면 어느 파일이냐" 이기 때문이다.
+        "--guide",
+        metavar="키워드",
+        nargs="?",
+        const="",
+        help="고치고 싶은 것이 코드 어디에 있는지 찾는다 "
+             "(예: --guide '스캔 pdf 표'). 인자 없이 쓰면 전체 목록",
+    )
     return p
+
+
+# ═══ 구간 2 — 실행 (단일 · 일괄 · 쪽 맞춤) ══════════════════════════════════════════
+# _targets 가 대상을 모으고 _process 가 build_document → report 로 산출. _run_align 은 --align.
+def _run_align(args) -> int:
+    """`--align` 실행 — 두 판독 결과를 맞춰 쪽으로 나눈다.
+
+    입력: args — 명령행 인자 (input · align · align_format · out)
+    출력: 종료 코드 (0 성공, 1 실패)
+    비고:
+        쪽 없는 쪽(HWPX)이 `input`, 쪽을 가진 쪽(PDF)이 `--align` 이다.
+        순서를 거꾸로 주면 PDF 본문을 PDF 쪽에 맞추는 꼴이라 뜻이 없어
+        형식을 보고 미리 알린다 — 실행이 끝난 뒤에 알면 늦다.
+    """
+    import json
+
+    from docstruct.align.documents import summary_lines, to_markdown
+    from docstruct.align.pair import align_pair, out_folder_name
+
+    left = Path(args.input).expanduser()
+    right = Path(args.align).expanduser()
+    for path in (left, right):
+        if not path.is_file():
+            print(f"오류: 파일이 없습니다 — {path}", file=sys.stderr)
+            return 1
+    if left.suffix.lower() == ".pdf":
+        print("오류: 첫 자리는 쪽이 **없는** 쪽(HWPX·HWP 또는 그 "
+              "document.json)입니다. --align 자리에 PDF 를 주세요.",
+              file=sys.stderr)
+        return 1
+
+    out_root = Path(args.out).expanduser().resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+    print(f"\n=== 쪽 맞춤: {left.name} ← {right.name} ===")
+    # **이미 돌린 결과가 있으면 다시 돌리지 않는다** (0.4.93). 예전에는
+    # 맞출 때마다 두 건을 처음부터 판독했다 — 바로 앞에 돌려 둔 결과가
+    # 옆 폴더에 있어도 쓰지 않았다. PDF 한 건이 몇 분씩 걸리는데.
+    use_llm = not args.no_llm
+    try:
+        got = align_pair(
+            left, right, out_root,
+            reuse=not getattr(args, "align_rebuild", False),
+            assess_tables=use_llm and not args.no_assess,
+            fill_tables=use_llm and not args.no_fill,
+            fill_all=args.fill_all,
+            render_pages=not args.no_render,
+            render_all=args.render,
+            render_scale=args.scale,
+            progress=getattr(args, "progress", False),
+        )
+    except ValueError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    for line in got.notes:
+        print(f"  {line}")
+    result = got.result
+
+    out_dir = out_root / out_folder_name(left)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    if args.align_format in ("json", "both"):
+        path = out_dir / "aligned.json"
+        path.write_text(json.dumps(result, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        written.append(path)
+    if args.align_format in ("markdown", "both"):
+        path = out_dir / "aligned.md"
+        path.write_text(to_markdown(result), encoding="utf-8")
+        written.append(path)
+
+    for line in summary_lines(result):
+        print(f"  {line}")
+    if not args.quiet:
+        print("  출력:")
+        for path in written:
+            print(f"    {path}")
+    # **못 맞춘 표가 있어도 실패가 아니다.** 표지·간지 장식이나 목차처럼
+    # PDF 에 표로 잡히지 않는 것이 늘 남는다 (실측: HWPX 580표 중 348개가
+    # 레이아웃 표). 수치를 보여 주고 판단은 쓰는 쪽에 맡긴다.
+    return 0
 
 
 def _targets(input_path: Path, pattern: str) -> list[Path]:
@@ -189,27 +344,160 @@ def _targets(input_path: Path, pattern: str) -> list[Path]:
     return found
 
 
-def _process(src: Path, out_root: Path, args) -> None:
+@contextmanager
+def _step_reporting(src: Path, out_dir: Path, args):
+    """이 문서를 도는 동안 진행 단계를 내보낸다.
+
+    입력: src — 원본, out_dir — 산출 폴더, args — 명령행 인자
+    출력: 없음 (컨텍스트 매니저)
+    비고:
+        **두 겹으로 낸다** (0.4.94). 화면에는 `--steps` 가 정한 만큼만
+        보이고, JSONL 파일에는 언제나 전부 들어간다 — 프런트가 그 파일을
+        읽어 스트리밍하기 때문이다. 화면 설정 때문에 스트림이 얇아지면
+        안 된다.
+
+        `--steps off` 라도 파일은 쓴다. 끄고 싶은 것은 터미널 소음이지
+        기록이 아니다.
+    """
+    from docstruct.core.steps import (console_sink, jsonl_sink, normalize_mode,
+                                      reporting, source_format_of)
+
+    # `off` 는 **상세를 끈다**는 뜻으로 읽힌다 — 굵은 13단계로 보낸다.
+    # 정말 아무것도 내지 않으려면 `silent` (0.4.99).
+    sinks = []
+    mode = normalize_mode(getattr(args, "steps", "brief"))
+    if mode != "silent":
+        sinks.append(console_sink(mode))
+
+    target = getattr(args, "steps_file", None) or (out_dir / PROGRESS_FILENAME)
+    try:
+        Path(target).unlink(missing_ok=True)     # 이번 실행분만 남긴다
+    except OSError:
+        pass
+    sinks.append(jsonl_sink(target))
+
+    with reporting(src.name, source_format_of(src), sinks=sinks,
+                   detail=mode) as got:
+        try:
+            yield got
+        finally:
+            got.done()
+
+
+def _resolve_jobs(requested: int, target_count: int) -> int:
+    """실제로 띄울 프로세스 수.
+
+    입력: requested — `--jobs` 값 (0 이면 CPU 수), target_count — 문서 수
+    출력: 1 이상의 정수
+    비고:
+        문서보다 많은 프로세스는 낭비다. 1건이면 언제나 1 — 프로세스를
+        띄우는 비용(모듈 임포트·모델 적재)이 이득보다 크다.
+    """
+    import os as _os
+
+    if target_count <= 1:
+        return 1
+    count = _os.cpu_count() or 1 if requested == 0 else max(1, requested)
+    return min(count, target_count)
+
+
+def _worker(payload: tuple) -> tuple[str, str | None]:
+    """자식 프로세스에서 문서 하나를 처리한다.
+
+    입력: payload — (경로 문자열, 산출 뿌리 문자열, 옵션 dict, 산출 폴더 이름)
+    출력: (파일 이름, 실패 사유 또는 None)
+    비고:
+        **argparse 객체는 프로세스 사이로 못 보낸다** — dict 로 풀어 보내고
+        여기서 다시 조립한다. 예외도 넘길 수 없으므로(자취가 안 실린다)
+        사유 문자열로 바꿔 돌려준다. 자식이 죽어도 부모는 나머지를 계속한다.
+    """
+    import argparse
+
+    src_s, out_s, opts, folder = payload
+    args = argparse.Namespace(**opts)
+    src, out_root = Path(src_s), Path(out_s)
+    try:
+        _process(src, out_root, args, folder)
+        return src.name, None
+    except Exception as exc:                     # noqa: BLE001 - 한 건이 전체를 멈추지 않는다
+        spot = traceback.extract_tb(exc.__traceback__)
+        where = ""
+        if spot:
+            last = spot[-1]
+            where = f" @ {Path(last.filename).name}:{last.lineno} ({last.name})"
+        return src.name, f"{type(exc).__name__}: {exc}{where}"
+
+
+def _run_parallel(targets: list[Path], out_root: Path, args, jobs: int,
+                  bar, folders: dict[str, str]) -> int:
+    """문서들을 프로세스 여러 개로 나눠 처리한다.
+
+    입력: targets — 문서 목록, out_root — 산출 뿌리, args, jobs — 프로세스 수, bar — 진행 막대
+    출력: 실패 건수
+    비고:
+        **왜 프로세스인가.** 파싱(hwpxtree·hwp5tree)은 순수 파이썬이라 GIL 을
+        놓지 않는다. 실측(조달청, 같은 문서): 스레드 1·2·4·8개에서 건당
+        0.35·0.53·0.93·1.60초 — 처리량은 3.8건/초로 평평했다. 스레드를
+        늘리면 **처리량은 그대로고 건당 응답만 나빠진다.**
+
+        그리고 안전하다. 설정은 `os.environ` 을 거쳐 들어가고 `get_settings()`
+        는 프로세스 전역 캐시다. 한 프로세스에서 서로 다른 설정으로 동시에
+        돌리면 섞이므로 `api._applied` 가 락으로 직렬화한다 — 즉 같은
+        프로세스 안에서는 애초에 병렬이 되지 않는다. 프로세스를 가르면
+        전역이 각자의 것이 되어 락도 GIL 도 무관해진다.
+
+        자식은 **부모의 환경변수를 물려받는다**(fork·spawn 모두). `--set`
+        으로 준 설정이 그대로 따라가므로 자식마다 다시 적용할 필요가 없다.
+    """
+    import concurrent.futures as cf
+
+    opts = vars(args).copy()
+    opts.pop("input", None)
+    payloads = [(str(src), str(out_root), opts, folders[str(src)])
+                for src in targets]
+
+    print(f"프로세스 {jobs}개로 {len(targets)}건을 처리합니다 "
+          f"(같은 프로세스 안에서는 설정이 전역이라 병렬이 되지 않습니다).")
+    failures = 0
+    with cf.ProcessPoolExecutor(max_workers=jobs) as pool:
+        for name, error in pool.map(_worker, payloads):
+            if error:
+                failures += 1
+                print(f"\n=== {name} === 실패: {error}", file=sys.stderr)
+            bar.update(1)
+    bar.close()
+    return failures
+
+
+def _process(src: Path, out_root: Path, args, folder: str | None = None) -> None:
     """파일 하나를 처리하고 산출물을 저장한다.
 
-    입력: path, out_dir, 실행 옵션
+    입력: path, out_dir, 실행 옵션, folder — 배정받은 산출 폴더 이름
     출력: 저장된 파일 경로 목록
+    비고:
+        `folder` 를 주지 않으면 예전처럼 파일 이름에서 만든다 — 한 건만
+        돌릴 때는 겹칠 것이 없다. 여러 건일 때는 `assign_out_dirs` 가
+        **겹치지 않게** 배정한 이름을 받는다(0.4.92).
+
+        기본값도 **확장자를 포함한** 이름이다(`safe_file_name`) — 산출
+        폴더 이름을 정하는 자리는 전부 이 규칙 하나를 쓴다(0.4.98).
     """
-    out_dir = out_root / safe_file_stem(src.name)
+    out_dir = out_root / (folder or safe_file_name(src.name))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     use_llm = not args.no_llm
-    doc = build_document(
-        src,
-        assess_tables=use_llm and not args.no_assess,
-        fill_tables=use_llm and not args.no_fill,
-        fill_all=args.fill_all,
-        render_pages=not args.no_render,
-        render_all=args.render,
-        out_dir=out_dir,
-        render_scale=args.scale,
-        progress=getattr(args, "progress", False),
-    )
+    with _step_reporting(src, out_dir, args):
+        doc = build_document(
+            src,
+            assess_tables=use_llm and not args.no_assess,
+            fill_tables=use_llm and not args.no_fill,
+            fill_all=args.fill_all,
+            render_pages=not args.no_render,
+            render_all=args.render,
+            out_dir=out_dir,
+            render_scale=args.scale,
+            progress=getattr(args, "progress", False),
+        )
 
     written = [
         write_markdown(doc, out_dir / "document.md"),
@@ -236,6 +524,51 @@ def _process(src: Path, out_root: Path, args) -> None:
         print("  출력:")
         for path in written:
             print(f"    {path}")
+        # **진행 기록이 어디 있는지 말한다** (0.4.95). 파일이 생겼는데
+        # 위치를 말하지 않으면 없는 것과 같다.
+        steps_file = getattr(args, "steps_file", None) or (out_dir / PROGRESS_FILENAME)
+        if Path(steps_file).is_file():
+            print(f"    {steps_file}   (진행 기록 · 프런트 스트리밍 원본)")
+
+
+# ═══ 구간 3 — 설정·키 적용과 점검 출력 ═══════════════════════════════════════════════
+# --set/--key/--check 처리. 키는 소스에 남기지 않는다(_apply_key).
+def _print_code_guide(query: str) -> int:
+    """`--guide` — 고치고 싶은 것이 어느 파일에 있는지 낸다.
+
+    입력: query — 키워드 (빈 문자열이면 전체 목록)
+    출력: 종료 코드 0
+    비고:
+        폴더 구조는 두 축(형식 · 인식)인데 실제 작업은 **두 축이 만나는
+        자리**에서 일어난다 — "스캔 PDF 의 표" 는 converters/pdf 와 tables 와
+        experiments 에 걸쳐 있다. 파일은 폴더 하나에만 살 수 있으니 이
+        교차는 폴더로 표현할 수 없다. 표로 잇는다(`core.guide`).
+    """
+    from docstruct.core.guide import TOPICS, find_topics, format_topic
+
+    hits = find_topics(query)
+    if not hits:
+        print(f"'{query}' 에 맞는 항목이 없습니다.\n")
+        print("찾을 수 있는 것:")
+        for topic in TOPICS:
+            print(f"  {topic.key:<16} {topic.title}")
+        print("\n예: docstruct --guide '스캔 pdf 표'")
+        return 0
+
+    if not query.strip():
+        print("고치고 싶은 것 → 갈 곳 (자세히 보려면 키워드를 주세요)\n")
+        for topic in TOPICS:
+            print(f"  {topic.key:<16} {topic.title}")
+        print("\n예: docstruct --guide '스캔 pdf 표'")
+        return 0
+
+    # 가장 잘 맞은 것은 펼쳐서, 나머지는 이름만.
+    print(format_topic(hits[0]))
+    if len(hits) > 1:
+        print("\n  이것도 맞을 수 있습니다:")
+        for topic in hits[1:5]:
+            print(f"    {topic.key:<16} {topic.title}")
+    return 0
 
 
 def _print_where() -> None:
@@ -343,6 +676,13 @@ def _apply_key(args) -> None:
         키를 인자로 직접 받지 않는다. ``--api-key sk-...`` 형태는 셸
         히스토리와 프로세스 목록(`ps`)에 그대로 남기 때문이다.
         입력받거나(``--ask-key``) 파일에서 읽는다(``--key-file``).
+
+        **키를 주면 OpenAI 만 쓴다** (0.4.59). 예전에는 키만 넣었는데,
+        사내 배치는 엔드포인트가 내장 기본값(site_defaults.py)에 들어
+        있어 주소가 늘 차 있고 `_key_for` 는 OpenAI 가 아닌 주소에
+        OpenAI 키를 붙이지 않는다 — 그래서 **키를 입력받고도 사내
+        엔드포인트로 가고 키는 버려졌다.** 키를 물어 놓고 쓰지 않는 것은
+        조용한 거짓말이다.
     """
     key = ""
     if getattr(args, "key_file", None):
@@ -361,12 +701,34 @@ def _apply_key(args) -> None:
     if key:
         import os
 
+        # **여기서 걸러야 한다.** 못 쓸 키를 들고 가면 추출을 마친 뒤에야
+        # 호출 단계에서 터진다 — 실측(행정안전부 429쪽): 6분 걸려 추출을
+        # 끝내고 나서 쪽마다 실패해 표 321개가 미판정으로 남았다. 키가
+        # 잘못된 것은 **1초 만에 알 수 있는 일**이다.
+        from docstruct.core.config import key_problem
+
+        problem = key_problem(key)
+        if problem:
+            raise ValueError(problem)
         os.environ["OPENAI_API_KEY"] = key
+        # **이 실행은 OpenAI 로 간다.** 주소·로컬 VLM 내장 기본값을 덮는다.
+        # (환경변수로 직접 지정한 주소·모델은 그대로 이긴다 — 모델을 고를
+        # 길까지 막으면 안 된다.)
+        os.environ["DOCSTRUCT_FORCE_OPENAI"] = "1"
         from docstruct.core.config import rebuild_settings
-        from docstruct.checks import invalidate_caches
+        from docstruct.core.checks import invalidate_caches
 
         rebuild_settings()
         invalidate_caches()
+        from docstruct.core.config import get_settings
+
+        endpoint = get_settings().llm
+        if endpoint:
+            print(f"  키를 받았습니다 — {endpoint.url} · {endpoint.model} "
+                  "(사내 엔드포인트·로컬 VLM 은 이 실행에서 쓰지 않습니다)")
+        else:
+            print("  키를 받았지만 쓸 엔드포인트를 세우지 못했습니다 — "
+                  "`--check` 로 확인하세요")
 
 
 def _print_check() -> int:
@@ -377,7 +739,7 @@ def _print_check() -> int:
     """
     from docstruct.core.config import get_settings
 
-    from docstruct.checks import environment
+    from docstruct.core.checks import environment
 
     print("=== 환경 ===")
     for item in environment():
@@ -388,11 +750,39 @@ def _print_check() -> int:
         print(f"  {'OK  ' if ok else 'WARN'} {label:20} {value}")
 
     print("\n=== LLM 연결 ===")
-    from docstruct.checks import check_llm_reachable
+    from docstruct.core.checks import check_llm_reachable
 
     ok, message = check_llm_reachable()
     print(("  OK   " if ok else "  WARN ") + message)
     return 0 if ok else 1
+
+
+#: `--exp` 로 켤 수 있는 VLM 손잡이. 실험 키와 이름이 겹치지 않는다.
+#: 왜 여기 두는가: A/B 를 돌릴 때 실험은 `--exp`, VLM 은 환경변수로 갈라져
+#: 있으면 판마다 두 곳을 건드려야 하고, 앞 판의 환경변수를 지우지 않으면
+#: 다음 판에 새어 들어 **비교가 조용히 망가진다.** 한 자리에서 켠다.
+#: 손잡이 설명 (`--exp list` 출력용).
+# ═══ 구간 4 — 실험 손잡이 (--exp) ═══════════════════════════════════════════════
+# 실험 키 → 환경변수. no_<키> 로 기본 켬을 끈다. 목록은 docstruct.experiments.report.
+_KNOB_HELP = {
+    "vlm": "표 재구성을 켠다 (LLM 이 있으면 이미 기본 켜짐)",
+    "vlm_hint": "지면 격자가 짚은 병합 자리를 지시문에 넣는다 (H10)",
+    "vlm_steps": "단계별 지시판을 쓴다 — 행 세기→열 세기→병합→작성 (H10)",
+    "vlm_best4": "후보 4판을 만들고 결정론 채점으로 고른다 (H12-b)",
+    "vlm_formula": "산식을 계산하지 말고 기호 그대로 옮기게 한다 (C2)",
+    "no_vlm": "표 재구성을 끈다 — A/B 의 대조군",
+    "no_vlm_hint": "힌트를 끈다 — 기본 켬(0.4.3)이므로 대조군에 쓴다",
+}
+
+_VLM_KNOBS: dict[str, tuple[str, str]] = {
+    "vlm": ("DOCSTRUCT_VLM_FIX_TABLES", "1"),
+    "vlm_hint": ("DOCSTRUCT_VLM_HINT_MISSING", "1"),
+    "vlm_steps": ("DOCSTRUCT_VLM_PROMPT", "steps"),
+    "vlm_best4": ("DOCSTRUCT_VLM_BEST_OF", "4"),
+    "vlm_formula": ("DOCSTRUCT_VLM_KEEP_FORMULA", "1"),
+    "no_vlm": ("DOCSTRUCT_VLM_FIX_TABLES", "false"),
+    "no_vlm_hint": ("DOCSTRUCT_VLM_HINT_MISSING", "false"),
+}
 
 
 def _enable_experiments(spec: str) -> list[str] | None:
@@ -406,25 +796,100 @@ def _enable_experiments(spec: str) -> list[str] | None:
         세팅해 준다 — 서버에서는 여전히 환경변수를 직접 쓴다.
     """
     from docstruct.experiments import all_experiments
-
     known = {e.key: e for e in all_experiments()}
     if spec.strip().lower() in ("list", "?"):
         from docstruct.experiments.report import lines
 
         print("\n".join(lines()))
+        print("\nVLM 손잡이 (같은 --exp 로 켭니다)")
+        print("─" * 60)
+        for name, (env, value) in sorted(_VLM_KNOBS.items()):
+            print(f"  {name:<12} {_KNOB_HELP.get(name, '')}")
+            print(f"  {'':<12} ({env}={value})")
         return None
 
     keys = [k.strip() for k in spec.split(",") if k.strip()]
+
+    # **VLM 손잡이도 같은 자리에서 켠다.** 실험은 `--exp`, VLM 은 환경변수로
+    # 갈라져 있으면 A/B 를 돌릴 때 판마다 두 곳을 건드려야 하고, cmd 에서
+    # 지우는 것을 잊으면 앞 판의 설정이 다음 판에 새어 든다 — 비교가 조용히
+    # 망가진다. 이름은 실험 키와 겹치지 않는다.
+    knobs = [k for k in keys if k in _VLM_KNOBS]
+    keys = [k for k in keys if k not in _VLM_KNOBS]
+    for knob in knobs:
+        name, value = _VLM_KNOBS[knob]
+        os.environ[name] = value
+
+    # **끄기(`no_<키>`).** 승격된 실험은 기본으로 켜져 있으므로(0.4.3),
+    # A/B 대조군을 만들려면 빼는 수단이 있어야 한다. `--exp` 에서 빼는 것
+    # 만으로는 꺼지지 않는다 — 그 점을 모르면 대조군이 조용히 실험군과
+    # 같아진다.
+    offs = [k[3:] for k in keys if k.startswith("no_") and k[3:] in known]
+    keys = [k for k in keys if not (k.startswith("no_") and k[3:] in known)]
+    for key in offs:
+        os.environ[known[key].env] = "false"
+
     unknown = [k for k in keys if k not in known]
     if unknown:
+        from docstruct.experiments import stale_modules
         print(f"모르는 실험: {', '.join(unknown)}", file=sys.stderr)
         print(f"쓸 수 있는 것: {', '.join(sorted(known))}", file=sys.stderr)
+        print(f"VLM 손잡이: {', '.join(sorted(_VLM_KNOBS))}", file=sys.stderr)
+        try:
+            from importlib.metadata import version
+
+            print(f"설치된 docstruct: {version('docstruct')}", file=sys.stderr)
+        except Exception:                        # noqa: BLE001 - 진단 보조다
+            pass
+        # 폐기된 실험 파일이 보이면 배포본이 낡은 것이다 — 새 실험이 없는
+        # 이유도 대개 그것이다 (덮어쓰기 배포는 사라진 파일을 지우지 않는다).
+        stale = stale_modules()
+        if stale:
+            print(
+                "  ⚠ 폐기된 실험 파일이 남아 있습니다: "
+                f"{', '.join(f'{s}.py' for s in stale)}\n"
+                "     배포본이 낡았을 수 있습니다. 새로 받은 폴더로 "
+                "덮어쓰고 남은 파일을 지우세요.",
+                file=sys.stderr,
+            )
         return None
 
     for key in keys:
         os.environ[known[key].env] = "true"
-    print(f"실험 켬: {', '.join(keys)}")
+    if keys or knobs:
+        parts = list(keys) + [f"{k}(VLM)" for k in knobs]
+        print(f"실험 켬: {', '.join(parts)}")
+    if offs:
+        print(f"실험 끔: {', '.join(offs)}")
     return keys
+
+
+# ═══ 구간 5 — 진입점 ══════════════════════════════════════════════════════════
+# 예외를 사람이 읽을 힌트로 바꾸고(_failure_hint) main 이 순서를 잇는다.
+def _failure_hint(exc: Exception) -> str | None:
+    """실패 메시지에 덧붙일 안내.
+
+    입력: exc — 잡힌 예외
+    출력: 안내 문자열. 짚을 것이 없으면 None
+    비고:
+        원인이 환경 설정인데 메시지만으로는 무엇을 만져야 할지 알 수 없는
+        경우가 있다. **다음 수를 알려 주는 것**이 목적이다.
+    """
+    import os
+
+    message = str(exc)
+    if "set_num_threads" in message or "positive integer" in message:
+        current = os.environ.get("OMP_NUM_THREADS", "(없음)")
+        return (
+            f"  -> 스레드 수 설정 문제입니다 (OMP_NUM_THREADS={current!r}).\n"
+            "     torch 는 양수만 받습니다. 이렇게 다시 해 보세요:\n"
+            "       --set num_threads=4\n"
+            "     또는 셸에서: set OMP_NUM_THREADS=4   (Windows)\n"
+            "                  export OMP_NUM_THREADS=4 (Linux/macOS)"
+        )
+    if "docling" in message.lower() and "install" in message.lower():
+        return "  -> docling-slim 설치가 필요합니다. `--check` 로 진단해 보세요."
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -433,12 +898,28 @@ def main(argv: list[str] | None = None) -> int:
     입력: argv — 명령행 인자 (None 이면 sys.argv)
     출력: 종료 코드 (0 성공, 1 실패)
     """
+    # **가장 먼저 한다.** cp949 콘솔(윈도우 한국어 기본)은 줄표(`—`) 하나에
+    # UnicodeEncodeError 를 내며 죽는다 — 출력·로그 96곳에 그런 문자가 있다.
+    from docstruct.core.winfix import make_console_safe
+
+    make_console_safe()
+
+    # OMP_NUM_THREADS=0 같은 값은 Docling 을 거쳐 torch 에서 죽는다
+    # (set_num_threads expects a positive integer). 여기서 바로잡는다.
+    from docstruct.core.config import sanitize_thread_env
+
+    sanitize_thread_env()
+
     args = _build_parser().parse_args(argv)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else (logging.WARNING if args.quiet else logging.INFO),
         format="%(levelname)-7s %(name)s: %(message)s",
     )
+
+    if getattr(args, "no_pyhwp", False):
+        # 코드는 그대로 두고 경로만 건너뛴다 — 켜면 다시 쓸 수 있다.
+        os.environ["DOCSTRUCT_HWP_NO_PYHWP"] = "1"
 
     if args.cpu:
         # docling 의 import 사슬이 CUDA 를 건드리기 전에 막아야 한다.
@@ -465,11 +946,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"키 설정 실패: {exc}", file=sys.stderr)
         return 1
 
+    if args.guide is not None:
+        return _print_code_guide(args.guide)
+
     if args.check:
         return _print_check()
 
     if not args.input:
         _build_parser().error("처리할 문서 파일 또는 디렉터리를 지정하세요.")
+
+    if args.align:
+        # 쪽 맞춤은 **두 결과가 모두 있어야** 되는 일이라 일괄 처리
+        # 루프(디렉터리·--glob)와 성질이 다르다. 따로 간다.
+        return _run_align(args)
 
     try:
         targets = _targets(Path(args.input).expanduser(), args.glob)
@@ -480,18 +969,46 @@ def main(argv: list[str] | None = None) -> int:
     out_root = Path(args.out).expanduser().resolve()
     failures = 0
 
-    from docstruct.progress import ProgressBar
+    from docstruct.core.progress import ProgressBar
 
     bar = ProgressBar(
         len(targets), "문서 처리", unit="건",
         enabled=args.progress and len(targets) > 1,
     )
+    # **겹치지 않는 산출 폴더를 먼저 배정한다** (0.4.92). 예전에는 파일
+    # 이름에서 바로 만들어, `성과계획서.hwpx` 와 `성과계획서.pdf` 가 같은
+    # 폴더를 써서 하나가 조용히 덮였다 — 그러고도 "n건 성공" 이라 적었다.
+    folders = assign_out_dirs([str(src) for src in targets])
+    renamed = describe_renames(folders)
+    if renamed:
+        print(f"산출 폴더 이름이 겹쳐 {len(renamed)}건을 구분했습니다:")
+        for line in renamed:
+            print(f"  {line}")
+
+    jobs = _resolve_jobs(args.jobs, len(targets))
+    if jobs > 1:
+        return _run_parallel(targets, out_root, args, jobs, bar, folders)
+
     for src in targets:
         try:
-            _process(src, out_root, args)
+            _process(src, out_root, args, folders[str(src)])
         except Exception as exc:
             failures += 1
-            print(f"\n=== {src.name} === 실패: {exc}", file=sys.stderr)
+            print(f"\n=== {src.name} === 실패: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            # **어디서 났는지** 한 줄은 항상 남긴다. 메시지만으로는 손댈
+            # 곳을 알 수 없다 (예: "cannot unpack non-iterable NoneType").
+            spot = traceback.extract_tb(exc.__traceback__)
+            if spot:
+                last = spot[-1]
+                print(f"    위치: {Path(last.filename).name}:{last.lineno} "
+                      f"({last.name}) — {(last.line or '').strip()[:70]}",
+                      file=sys.stderr)
+                print("    전체 자취를 보려면 --verbose 를 붙이세요.",
+                      file=sys.stderr)
+            hint = _failure_hint(exc)
+            if hint:
+                print(hint, file=sys.stderr)
             if args.verbose:
                 traceback.print_exc()
         bar.update(1, src.name)

@@ -1,5 +1,8 @@
 """HWP → PageContent.
 
+입력:
+    .hwp 경로
+
 역할:
     HWPML(XML) / pyhwp(HTML) / olefile(텍스트) 중 실제로 사용된 경로를
     판별해 본문 markdown 을 만들고, 표를 `<table N>` 블록으로 치환한다.
@@ -20,10 +23,46 @@ from docstruct.converters.hwp import preview
 from docstruct.converters.hwp.converter import HwpConverter
 from docstruct.converters.hwp.hwpml import is_hwpml, to_markdown as hwpml_to_markdown
 from docstruct.models import PageContent, PageTrace
+from docstruct.pipeline import HWPX_VIA_CONVERT
 from docstruct.tables.markdown import inject_table_placeholders
 from docstruct.tables.tags import make_table_id
 
 _log = logging.getLogger(__name__)
+
+
+def _as_hwpx(hwp_path: str) -> Path | None:
+    """HWP 를 HWPX 로 바꿔 본다 — 안 되면 None (0.5.1).
+
+    입력: hwp_path — .hwp 경로
+    출력: 변환된 .hwpx 경로, 변환기가 없거나 실패하면 None
+    비고:
+        **없는 것이 정상이다.** 변환기(hwp2hwpx jar)는 선택 사항이고,
+        없으면 아래 사다리가 그대로 이어받는다. 그래서 실패를 예외로
+        올리지 않고 None 으로 낸다.
+
+        HWPML 은 건너뛴다 — 이미 XML 이라 변환할 것이 없고, 변환기가
+        OLE 이진을 기대하므로 넣으면 실패한다.
+
+        끌 수 있다: `DOCSTRUCT_HWP_VIA_HWPX=false`. 변환 결과가 원본과
+        다르게 나오는 문서를 만났을 때 비교하려면 꺼야 한다.
+    """
+    import os
+
+    if is_hwpml(hwp_path):
+        return None
+    if os.getenv("DOCSTRUCT_HWP_VIA_HWPX", "").strip().lower() in (
+            "0", "false", "no", "off"):
+        _log.info("HWP→HWPX 변환을 설정으로 껐습니다 (DOCSTRUCT_HWP_VIA_HWPX)")
+        return None
+
+    from docstruct.converters.hwpx import convert
+
+    if not convert.is_available():
+        return None
+    got = convert.try_convert(hwp_path)
+    if got is None:
+        _log.info("HWP→HWPX 변환에 실패해 사다리 아래 단으로 내려갑니다")
+    return got
 
 
 def extract_hwp_pages(
@@ -40,6 +79,28 @@ def extract_hwp_pages(
         pages       PageContent 1개 (page_no=1, page_no_kind='document')
         table_html  원본 `<table>` HTML 조각. HWPML·olefile 경로에서는 빈 목록
     """
+    # ── 사다리 2단 — HWP → HWPX 변환 (0.5.1) ──────────────────────────
+    # **문서에는 있었는데 코드에는 없던 단이다.** `converters/hwpx/convert.py`
+    # 가 hwp2hwpx(jar)를 부를 준비를 갖춰 두었지만 `try_convert` 를 부르는
+    # 곳이 어디에도 없었다 — 6단 사다리라 적어 놓고 실제로는 5단이었다.
+    #
+    # 이 단이 가장 좋은 결과를 낸다. HWPX 로 바꾸면 XML 이 표 구조를 그대로
+    # 주므로 **`cells` 가 생긴다** — HWP 의 가장 큰 공백(실험_총정리 §6,
+    # 격자 검사·오염 검사·hole_fill 이 조용히 비켜 가던 그것)이 여기서 닫힌다.
+    # pyhwp(AGPL) 백엔드를 떼어낸 배포에서는 **표를 살릴 유일한 길**이기도 하다.
+    converted = _as_hwpx(hwp_path)
+    if converted is not None:
+        _log.info("HWP → HWPX 변환으로 처리합니다 — pyhwp 경로를 쓰지 않습니다")
+        from docstruct.extractors.hwpx import extract_hwpx_pages
+
+        pages = extract_hwpx_pages(str(converted), image_dir=image_dir)
+        for page in pages:
+            page.trace.extractor = HWPX_VIA_CONVERT
+            page.trace.add("converters.hwpx.convert", "HWP → HWPX 변환",
+                           f"{Path(hwp_path).name} 을 HWPX 로 바꿔 읽었습니다 — "
+                           "표 구조(cells)가 보존됩니다")
+        return pages, []
+
     table_html: list[str] = []
     page_image_path: str | None = None
     if is_hwpml(hwp_path):
@@ -60,7 +121,7 @@ def extract_hwp_pages(
         trace.add("converters.hwp.hwpml", "HWPML(XML) 직접 파싱",
                   "바이너리 HWP 가 아니라 XML — ElementTree 로 표 구조 보존")
     elif path_name == "hwp5-tree":
-        trace.add("converters.hwp.hwp5tree", "pyhwp 파서 트리 직접 읽기",
+        trace.add("converters.hwp.pyhwp_backend.hwp5tree", "pyhwp 파서 트리 직접 읽기",
                   "표·중첩표·병합 구조 보존")
     elif path_name == "pyhwp-html":
         trace.add("converters.hwp.pyhwp", "hwp5html 실행", "HWP 바이너리 → HTML")
@@ -116,7 +177,8 @@ def _split_by_page_break(
         표는 통번호를 유지한 채 해당 쪽으로 나눠 담습니다 — 번호를 다시
         매기면 본문의 `<table N>` 과 어긋납니다.
     """
-    from docstruct.converters.hwp.hwp5tree import PAGE_BREAK
+    # 표식은 백엔드와 무관한 자리에 있다 — pyhwp 를 떼어내도 쪽 나누기는 돈다.
+    from docstruct.converters.hwp.marks import PAGE_BREAK
 
     chunks = [c.strip() for c in content.split(PAGE_BREAK)]
     chunks = [c for c in chunks if c]

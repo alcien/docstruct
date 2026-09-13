@@ -38,9 +38,15 @@ SRC = ROOT / "src" / "docstruct"
 
 #: pkg 에서 최상위 패키지로 승격되는 하위 패키지.
 #: ``docstruct.converters`` → ``converters`` 처럼 접두사가 벗겨진다.
-PROMOTED = ("converters", "core", "infrastructure")
+#:
+#: ``experiments`` 가 빠져 있었다 (0.4.2 에서 고침) — 배포 트리는
+#: ``experiments/`` 를 최상위에 두고 ``python -m experiments.report`` 로
+#: 부르는데, 이 도구는 ``docstruct/experiments`` 로 내리게 돼 있어
+#: ``--check`` 가 0.4.1 트리에서 40건 불일치를 냈다. 도구가 배치를 재현하지
+#: 못하면 동기화는 손으로 하게 되고, 실제로 converter.py 전파가 빠졌다.
+PROMOTED = ("converters", "core", "infrastructure", "experiments")
 
-#: local/overlay 에만 있고 pkg 에는 없는 파일 (배포 형태 전용).
+#: pkg 에만 두고 local/overlay 로는 내보내지 않는 파일 (배포 형태 전용).
 PKG_ONLY = ("core/site_defaults.example.py",)
 
 
@@ -101,6 +107,8 @@ def build(dest: Path, *, prefix: Path = Path(".")) -> list[Path]:
 SHARED_DOCS = (
     ".env.example", ".gitignore", "API.md", "BUGFIXES.md", "CLI.md",
     "README.md", "RESTRUCTURE.md", "WINDOWS.md", "GIT.md",
+    # local 트리 전용 설치 목록 (0.4.83 — 손 관리였던 것을 pkg 로 올렸다)
+    "requirements.txt",
 )
 
 
@@ -141,6 +149,35 @@ def copy_notebooks(dest: Path) -> int:
         out = dest / "notebooks" / src.relative_to(src_dir)
         out.parent.mkdir(parents=True, exist_ok=True)
         if src.suffix in (".py", ".ipynb"):
+            out.write_text(rewrite(src.read_text(encoding="utf-8")), encoding="utf-8")
+        else:
+            shutil.copy2(src, out)
+        count += 1
+    return count
+
+
+def copy_scripts(dest: Path) -> int:
+    """scripts/ 를 임포트 치환해 트리에 넣는다 (0.4.83).
+
+    입력: dest — 트리 루트
+    출력: 쓴 파일 수
+    비고:
+        local 트리에만 넣는다 (overlay 는 서버 배치라 실험 비교 도구가
+        필요 없다). 예전에는 이 폴더가 **손 관리**였다 — 0.4.82 local 트리의
+        `scripts/` 네 파일이 pkg 에서 생성되지 않아, pkg 의 도구를 고쳐도
+        local 은 옛 판으로 남을 수 있었다. `.py` 는 임포트를 치환하고
+        `.sh` 는 그대로 복사한다.
+    """
+    src_dir = ROOT / "scripts"
+    if not src_dir.is_dir():
+        return 0
+    count = 0
+    for src in sorted(src_dir.iterdir()):
+        if not src.is_file() or src.suffix not in (".py", ".sh"):
+            continue
+        out = dest / "scripts" / src.name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if src.suffix == ".py":
             out.write_text(rewrite(src.read_text(encoding="utf-8")), encoding="utf-8")
         else:
             shutil.copy2(src, out)
@@ -268,7 +305,8 @@ def main() -> int:
     n1 += copy_docs(local, f"docstruct-local {version}")
     n1 += copy_tests(local)
     n1 += copy_notebooks(local)
-    print(f"docstruct-local : {n1}개 파일 (문서·VERSION·tests 포함)")
+    n1 += copy_scripts(local)
+    print(f"docstruct-local : {n1}개 파일 (문서·VERSION·tests·scripts 포함)")
 
     n2 = len(build(overlay, prefix=Path("app")))
     (overlay / "app" / "VERSION").write_text(
