@@ -19,7 +19,7 @@ ds.to_json("결과.json")
 ## 설치
 
 ```bash
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.5.9"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.5.63"
 ```
 
 HWP · HWPX · PDF 처리에 필요한 것이 모두 함께 설치됩니다 (약 5.6 GB —
@@ -29,14 +29,14 @@ GPU 를 쓰지 않으면 CPU 전용 torch 를 먼저 깔아 2.7 GB 를 줄일 �
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.5.9"
+pip install "docstruct @ git+https://github.com/alcien/docstruct.git@v0.5.63"
 ```
 
 사내 GitLab 에서 받을 때는 주소만 바꾸면 됩니다.
 
 ```bash
 pip install -U --force-reinstall --no-cache-dir \
-  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.5.9"
+  "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.5.63"
 ```
 
 > **노트북에서는 커널을 재시작하세요.** `pip install` 만으로는 이미 로드된
@@ -586,6 +586,42 @@ docstruct 문서.hwp -o out --slim
 ```
 
 LLM 단계는 전부 선택입니다. 끄면 파싱 결과가 그대로 나옵니다.
+
+### 쪽 번호를 인용할 때
+
+쪽 맞춤 결과의 쪽마다 **얼마나 믿을 수 있는지**가 적혀 있습니다.
+
+| 표시 | 뜻 |
+|---|---|
+| `page_no_kind: exact` | 눈금으로 잡았습니다 |
+| `page_no_kind: approximate` | 보간했습니다 |
+| `wide_gap: true` | 눈금이 멀어 ±1~2 여지가 있습니다 |
+| `page_span: [422, 423]` | **표가 두 쪽에 걸쳐 인쇄됐습니다** |
+| `blank: true` | 원래 내용이 없는 지면입니다 |
+
+`page_span` 이 있는 쪽의 표 안 문장을 인용할 때는 쪽 하나가 아니라 그
+범위를 대십시오 — 그 자리는 쪽 번호 하나로 답할 수 없습니다.
+
+### 쪽 맞춤 결과 저장
+
+```python
+import docstruct
+
+got = docstruct.align_pair("문서.hwpx", "문서.pdf", out_dir="out")
+got.save()                        # out/<문서.hwpx>/aligned.json · aligned.md
+got.save(formats="json")          # 하나만
+got.save(stem="쪽맞춤_2026")       # 이름을 골라서
+```
+
+CLI 도 같은 함수를 씁니다:
+
+```bash
+docstruct 문서.hwpx --align 문서.pdf -o out
+docstruct 문서.hwpx --align 문서.pdf -o out --align-name 쪽맞춤_2026
+```
+
+`align.json` 이 아니라 **`aligned.json`** 입니다. 판독 결과
+(`document.json`)와는 다른 파일입니다.
 
 ### 그림 구간 표기
 
@@ -1490,7 +1526,7 @@ PowerShell 기준입니다. Python 3.10~3.12 를 권장합니다.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.5.9"
+pip install "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.5.63"
 ```
 
 ### 한글이 깨져 보일 때

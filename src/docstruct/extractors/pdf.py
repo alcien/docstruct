@@ -69,6 +69,42 @@ def _table_markdown(doc, item) -> str:
         return ""
 
 
+def _all_page_numbers(doc, *buckets: dict[int, list]) -> list[int]:
+    """문서가 가진 **모든 쪽 번호**를 차례대로 (0.5.42).
+
+    입력: doc — DoclingDocument, buckets — 쪽별로 모은 것들
+    출력: 쪽 번호 오름차순
+    비고:
+        내용이 들어온 쪽만 세면 **빈 쪽이 번호째 사라진다.** 문서가 아는
+        쪽 수를 먼저 보고, 그것을 모르면 들어온 번호의 범위를 메운다.
+
+        번호를 지어내지는 않는다 — 최대 번호까지만 채운다. 마지막 쪽들이
+        통째로 비면 그건 알 길이 없고, 그때는 있는 것만 낸다.
+    """
+    seen: set[int] = set()
+    for bucket in buckets:
+        seen |= set(bucket)
+
+    total = getattr(doc, "num_pages", None)
+    if callable(total):
+        try:
+            total = total()
+        except Exception:                        # noqa: BLE001 - 못 물으면 아래로
+            total = None
+    if not isinstance(total, int) or total <= 0:
+        pages = getattr(doc, "pages", None)
+        if pages is not None:
+            try:
+                total = len(pages)
+            except TypeError:
+                total = None
+    if not isinstance(total, int) or total <= 0:
+        total = max(seen) if seen else 0
+    if seen:
+        total = max(total, max(seen))
+    return list(range(1, total + 1)) if total else sorted(seen)
+
+
 def extract_pdf_pages(
     doc,
     *,
@@ -173,7 +209,17 @@ def extract_pdf_pages(
     settings = get_settings()
     pages: list[PageContent] = []
 
-    for page_no in sorted(page_parts):
+    # **빈 쪽도 자리를 지킨다** (0.5.42). 예전에는 `page_parts` 에 들어온
+    # 쪽만 돌아, 내용이 하나도 없는 쪽이 **번호째 사라졌다.**
+    #
+    # 실측(병무청 PDF): 쪽 31·54·68 이 없어 `page_count` 가 94 인데 번호는
+    # 1~97 이었다. `failed_pages` 는 비어 있었으므로 **조용히 사라진** 것이다.
+    # 그 빈자리 때문에 쪽 맞춤이 PDF 에 없는 쪽을 만들어 냈고(align 96쪽),
+    # 표 블록이 두 쪽을 건너뛴 것처럼 보였다.
+    #
+    # 쪽은 지면의 사실이다 — 내용이 없다고 없어지지 않는다. 있는 그대로
+    # 비운 채 낸다.
+    for page_no in _all_page_numbers(doc, page_parts, page_tables, page_images):
         tables = page_tables.get(page_no, [])
         images = page_images.get(page_no, [])
         stat = (page_stats or {}).get(page_no, {})
@@ -181,13 +227,18 @@ def extract_pdf_pages(
         ratio = stat.get("ocr_ratio")
         cells = stat.get("cell_count")
 
-        body = "\n\n".join(page_parts[page_no])
+        body = "\n\n".join(page_parts.get(page_no) or [])
 
         # 셀 계측은 신뢰할 수 없을 때가 많습니다(Docling 이 셀을 버림).
         # 반면 "본문이 비었는가" 는 확실한 신호이므로, 측정이 안 된 상태에서
         # 본문까지 비어 있으면 그때만 실제 실패(empty)로 봅니다.
         if source == "unmeasured" and not body.strip():
             source = "empty"
+
+        # **빈 쪽에는 그렇게 적는다** (0.5.42). 내용이 없는 것과 판독이
+        # 실패한 것은 다르다 — 지면이 정말 비었을 수도 있고(간지), 우리가
+        # 못 읽었을 수도 있다. 어느 쪽인지 결과물이 말해야 한다.
+        blank = not body.strip() and not tables and not images
 
         trace = PageTrace(
             extractor="docling",
@@ -246,7 +297,7 @@ def extract_pdf_pages(
             )
 
         # ③ 레이아웃 요소 분류 결과
-        text_blocks = len(page_parts[page_no]) - len(tables) - len(images)
+        text_blocks = len(page_parts.get(page_no) or []) - len(tables) - len(images)
         trace.add(
             "docstruct.extractors.pdf",
             "요소 분류",
@@ -271,6 +322,11 @@ def extract_pdf_pages(
                     else " · 설명 없음"
                 ),
             )
+
+        if blank:
+            trace.add("docstruct.extractors.pdf", "빈 쪽",
+                      "본문·표·그림이 모두 없습니다 — 간지이거나 판독하지 "
+                      "못한 지면입니다", status="warn")
 
         pages.append(
             PageContent(

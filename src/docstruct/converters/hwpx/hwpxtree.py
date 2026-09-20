@@ -276,6 +276,48 @@ def _table_anchor(tbl: ET.Element) -> str:
     return "inline" if pos.get("treatAsChar") == "1" else "anchored"
 
 
+def _tbl_order(tbl) -> int:
+    """이 표가 제 부모 안에서 **몇 번째로 인쇄되는지** (0.5.55).
+
+    입력: tbl — `<hp:tbl>` 요소
+    출력: 정렬 키. 글자 취급이면 0, 매달린 표면 `vertOffset`
+    비고:
+        한글은 매달린 표에 "이 문단 기준 이만큼 아래" 를 적어 둔다.
+        **제 부모 기준**이므로 깊이가 다른 표끼리 견주면 안 된다.
+    """
+    pos = next((c for c in tbl if c.tag == _tag(HP, "pos")), None)
+    if pos is None or pos.get("treatAsChar") == "1":
+        return 0
+    try:
+        return int(pos.get("vertOffset") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _tables_in_order(node):
+    """문단 바로 아래 표들을 **지면 순서로** (0.5.55).
+
+    입력: node — 문단 요소
+    출력: `<hp:tbl>` 목록 (바깥 표만, 지면 순서)
+    비고:
+        `iter()` 는 **중첩된 안쪽 표까지** 훑는다. 실측(병무청): 한 문단의
+        표 셋이 `off=1882`(바깥) · `224`(그 안) · `424`(또 그 안)로 서로
+        다른 깊이였다. 깊이를 섞어 정렬하면 바깥 표가 안쪽 뒤로 밀려
+        **본문 17군데가 어긋났다.**
+
+        `vertOffset` 은 제 부모 기준이므로 **형제끼리만** 견준다. 안쪽
+        표는 `_read_table` 이 바깥 표를 읽을 때 함께 처리한다.
+    """
+    # **깊이별로 나누어 형제끼리만 정렬한다.** 안쪽 표는 별도 블록으로
+    # 나와야 하므로(중첩 표 계약) 빼지 않는다 — 자리만 바로잡는다.
+    depth: dict[int, int] = {}
+    for tbl in node.iter(_tag(HP, "tbl")):
+        depth[id(tbl)] = sum(1 for inner in tbl.iter(_tag(HP, "tbl"))
+                             if inner is not tbl)
+    return sorted(node.iter(_tag(HP, "tbl")),
+                  key=lambda tbl: (-depth[id(tbl)], _tbl_order(tbl)))
+
+
 def anchor_notes() -> dict[str, int]:
     """직전 변환에서 본 표 앵커 분포.
 
@@ -323,8 +365,17 @@ def _run_text(run: ET.Element) -> str:
             parts.append("".join(node.itertext()))
         elif node.tag == _tag(HP, "ctrl"):
             continue                             # 필드·컨트롤은 본문이 아니다
-        elif node.tag in (_tag(HP, "tab"), _tag(HP, "lineBreak")):
+        elif node.tag == _tag(HP, "tab"):
             parts.append(" ")
+        elif node.tag == _tag(HP, "lineBreak"):
+            # **강제 줄나눔은 줄을 나눈다** (0.5.22). 공백으로 바꾸면
+            # 원본에서 갈려 있던 줄이 한 덩어리가 된다 — `□ 임무(Mission)
+            # … ㅇ 대통령 국정운영 보좌 …` 처럼 계층이 통째로 뭉친다.
+            #
+            # 이 정보는 이미 문서에 있다(`<hp:lineBreak/>`). 마커로 다시
+            # 쪼개는 규칙을 만들기 전에, 가진 것을 버리지 않는 것이 먼저다.
+            # 실측(네 부처): 태그 75개 · 그 때문에 뭉친 본문 문단 7개.
+            parts.append("\n")
     return "".join(parts)
 
 
@@ -426,6 +477,43 @@ def _paragraph_text(para: ET.Element, bold_ids: set[str],
 
 # ═══ 구간 5 — 표 셀·세로 병합 접기 ═════════════════════════════════════════════════
 # 셀 안 블록 잇기 · 세로로 한 글자씩 놓인 칸 접기(collapse_vertical_cells) · 셀 이스케이프.
+#: 셀 안 문단을 무엇으로 이을지 (0.5.21).
+CELL_JOIN_ENV = "DOCSTRUCT_CELL_JOIN"
+
+
+def cell_line_join() -> str:
+    """셀 안 문단 사이에 넣을 글자.
+
+    입력: 없음 (`DOCSTRUCT_CELL_JOIN`)
+    출력: 이음 문자열
+    비고:
+        **기본은 줄바꿈** (0.5.21). 예전에는 공백 하나로 이어 붙여
+        항목 경계가 사라졌다:
+
+            원본 셀   ㅇ 개념 및 의미 / - (개념) … / - (의미) …   (문단 3개)
+            결과      'ㅇ 개념 및 의미 - (개념) … - (의미) …'      (한 덩어리)
+
+        같은 문서를 PDF 로 읽으면 세 줄로 나온다. 구조화가 항목을 세려면
+        경계가 있어야 하는데, 공백으로 이으면 **문단이 몇 개였는지조차**
+        알 수 없다.
+
+        실측(네 부처 HWPX, 셀 6,531개): 문단이 둘 이상인 셀 546개(8.4%),
+        그중 글머리 문단이 둘 이상인 셀 90개. 한 문단 **안에** 글머리가
+        또 있는 경우는 11개(0.17%)뿐이다 — **문단 경계만 지키면 99.8%가
+        해결된다.** 마커로 쪼개는 규칙은 나머지를 위한 보조일 뿐이고,
+        추측이 들어가므로 기본으로 두지 않는다.
+
+        `cells[].text` 는 JSON 이라 줄바꿈을 그대로 담을 수 있다. markdown
+        셀만 GFM 제약 때문에 `<br>` 로 바꾼다(`_escape_cell`).
+    """
+    import os
+
+    value = os.environ.get(CELL_JOIN_ENV, "").strip().lower()
+    if value in ("space", " "):
+        return " "
+    return "\n"
+
+
 def _join_cell_blocks(blocks: list[str]) -> str:
     """셀 안 문단들을 이어 붙이되 끊긴 굵게를 합친다.
 
@@ -452,7 +540,7 @@ def _join_cell_blocks(blocks: list[str]) -> str:
             flush()
             out.append(part)
     flush()
-    return " ".join(out)
+    return cell_line_join().join(out)
 
 
 def _escape_cell(text: str) -> str:
@@ -461,7 +549,10 @@ def _escape_cell(text: str) -> str:
     입력: text — 셀 텍스트
     출력: 표 구조를 깨지 않는 문자열
     """
-    return text.replace("|", "\\|").replace("\n", " ")
+    # **줄바꿈은 `<br>` 로** (0.5.21). GFM 셀은 줄바꿈을 담지 못하지만
+    # 항목 경계는 살려야 한다 — 공백으로 지우면 문단이 몇 개였는지 사라진다.
+    # `cells[].text` 에는 진짜 줄바꿈이 그대로 남는다.
+    return text.replace("|", "\\|").replace("\n", "<br>")
 
 
 #: 세로 배치로 볼 최소 연속 행 수. 둘은 우연일 수 있다.
@@ -729,6 +820,22 @@ def to_markdown(path: str | Path) -> str:
         archive.close()
 
 
+def _already_emitted(shape_text: str, paragraph_text: str) -> bool:
+    """이 도형 글이 문단 글에 이미 들어 있는가 (0.5.34).
+
+    입력: shape_text — 도형에서 뽑은 글, paragraph_text — 그 문단의 글
+    출력: 이미 들어 있으면 True
+    비고:
+        줄바꿈·공백만 다를 수 있으므로 **납작하게 펴서** 견준다. 도형 글이
+        문단 글의 부분집합이면 중복이다 — 문단 쪽이 더 넓게 담는다.
+    """
+    import re
+
+    squeeze = lambda value: re.sub(r"\s+", "", value or "")   # noqa: E731
+    shape = squeeze(shape_text)
+    return bool(shape) and shape in squeeze(paragraph_text)
+
+
 def _shape_text(node: ET.Element, bold_ids: set[str],
                 hidden_ids: dict[str, str] | None = None) -> str:
     """도형 묶음(container) 안의 글자를 한 줄로 모은다.
@@ -842,10 +949,24 @@ def _walk(node: ET.Element, bold_ids: set[str],
             for ref in _image_refs(child):
                 out.append(IMAGE_MARK.format(ref=ref))
             # 도형 글자 (간지 제목 등)
+            #
+            # **문단 글에 이미 담긴 도형은 건너뛴다** (0.5.34).
+            # `_paragraph_text` 가 run 을 훑을 때 도형 안 글까지 함께
+            # 걷어 오는데, 여기서 또 내보내 **같은 제목이 두 번** 나왔다:
+            #
+            #     …</table110 예산사업별성과관리현황별첨3 예산사업별성과관리현황별첨3 <table111…
+            #
+            # 실측(개인정보보호위원회): `제목+별첨N` 이 잇달아 두 번 나오는
+            # 자리가 7군데. 되풀이가 늘면 쪽 맞춤의 눈금 후보가 "너무 자주
+            # 나온다" 며 버려지고(0.5.31 이 제목 문턱을 3 으로 올린 이유가
+            # 이것이다), 본문 길이가 부풀어 보간 자리도 밀린다.
             for shape in child.iter(_tag(HP, "container")):
                 shape_text = _shape_text(shape, bold_ids, hidden_ids)
-                if shape_text:
-                    out.append(shape_text)
+                if not shape_text:
+                    continue
+                if _already_emitted(shape_text, text):
+                    continue
+                out.append(shape_text)
             # 문단 안에 표가 놓일 수 있다 (hwp5html 과 같은 구조).
             #
             # **매달린 표는 글 뒤에 놓는다** (0.4.81). `treatAsChar=0` 인
@@ -864,7 +985,7 @@ def _walk(node: ET.Element, bold_ids: set[str],
             # 네 부처 inline 표 118~141개에 걸리는 변경이라 실측과 함께
             # 별도 판에서 한다. `kind` 는 지금은 **기록(anchor_notes)에만**
             # 쓰인다.
-            for tbl in child.iter(_tag(HP, "tbl")):
+            for tbl in _tables_in_order(child):
                 kind = _table_anchor(tbl)
                 anchors = _collectors().anchors
                 anchors[kind] = anchors.get(kind, 0) + 1
@@ -966,7 +1087,11 @@ def table_grids(path: str | Path) -> list[list[dict]]:
                         "col": cell.col,
                         "rowspan": cell.rowspan,
                         "colspan": cell.colspan,
-                        "text": " ".join(cell.blocks).strip(),
+                        # **markdown 과 같은 함수로 잇는다** (0.5.21).
+                        # 여기만 `" ".join` 이라 `cells` 에는 문단 경계가
+                        # 없고 markdown 에는 있었다 — 두 필드가 다른 말을
+                        # 하는 그 계열이다(0.4.83·0.5.10·0.5.16).
+                        "text": _join_cell_blocks(cell.blocks).strip(),
                         # 이 칸에서 뺀 숨은 글. 없으면 키 자체를 넣지 않는다
                         # — 대부분의 칸에 없으므로 결과물이 부풀지 않게.
                         **({"hidden": cell.hidden} if cell.hidden else {}),

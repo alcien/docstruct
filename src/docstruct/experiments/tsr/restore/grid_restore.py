@@ -124,9 +124,19 @@ def cells_to_markdown(cells: list[dict]) -> str:
     출력: markdown 표 문자열
     비고:
         같은 규칙을 쓰는 이유: 파이프라인의 나머지(구조화·평가·검산)가
-        HWPX 표와 PDF 표를 **같은 모양**으로 받아야 한다. 세로 병합이
-        이어지는 칸은 `〃`, 앞쪽 빈 행은 지운다.
+        HWPX 표와 PDF 표를 **같은 모양**으로 받아야 한다. 앞쪽 빈 행은 지운다.
+
+        **세로 병합을 무엇으로 채울지는 여기서 정하지 않는다** (0.5.15).
+        `converters.common.table.merge_continuation` 한 곳이 정한다 — 0.5.6
+        에서 렌더러 셋을 그리로 모았는데 **이 함수를 빠뜨렸다.** 그래서
+        PDF 에서만 `〃` 가 남았다: 실측(개인정보보호위원회 0.5.13) 50표 중
+        14표에 `〃` 가 있었고 **전부 `source="grid"`** — 이 함수가 다시 쓴
+        표였다(lattice_fill 8 · lattice_restore 3 · grid_restore 3).
+
+        `lattice_fill`·`lattice_restore` 도 이 함수를 쓰므로 한 곳만 고치면
+        셋이 함께 따라온다.
     """
+    from docstruct.converters.common.table import merge_continuation
     if not cells:
         return ""
     rows = max(c["row"] + c.get("rowspan", 1) for c in cells)
@@ -136,9 +146,11 @@ def cells_to_markdown(cells: list[dict]) -> str:
         row, col = cell["row"], cell["col"]
         if not (0 <= row < rows and 0 <= col < cols):
             continue
-        grid[row][col] = _escape(cell.get("text", ""))
+        anchor = _escape(cell.get("text", ""))
+        grid[row][col] = anchor
+        filler = merge_continuation(anchor)
         for r in range(row + 1, min(row + cell.get("rowspan", 1), rows)):
-            grid[r][col] = MERGE_UP
+            grid[r][col] = filler
 
     while len(grid) > 1 and not any(c.strip() for c in grid[0]):
         grid.pop(0)

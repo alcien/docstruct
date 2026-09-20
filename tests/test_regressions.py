@@ -2528,7 +2528,8 @@ def test_hwpx_join_cell_blocks_merges_bold():
 
     assert _join_cell_blocks(["**년**", "**도**"]) == "**년 도**"
     assert _join_cell_blocks(["*****"]) == "*****"          # 원문 별표 보존
-    assert _join_cell_blocks(["**A**", "중간", "**B**"]) == "**A** 중간 **B**"
+    # 0.5.21 — 문단 경계는 줄바꿈으로 남는다 (굵게 이어붙임은 그대로)
+    assert _join_cell_blocks(["**A**", "중간", "**B**"]) == "**A**\n중간\n**B**"
 
 
 def test_hwpx_drops_field_payload():
@@ -6147,6 +6148,8 @@ def test_image_fields_documented_for_bridge():
         "chart_gate",
         # 0.4.89 — `<image N>` 블록 번호 (브릿지 반영 완료)
         "image_num",
+        # 0.5.18 — VLM 으로 읽지 않은 이유 (브릿지 반영 완료)
+        "read_skipped",
     }
     actual = set(ImageInfo(id="i", placeholder="").to_dict())
     missing = sorted(expected - actual)
@@ -8862,9 +8865,10 @@ def test_grid_gap_field_shape():
 # ────────────────────────────────────────────────────────────────────
 
 def test_grid_restore_markdown_follows_hwpx_rules():
-    """복원 markdown 이 hwpxtree 와 같은 규칙을 쓴다 (`〃`·빈 앞행 제거).
+    """복원 markdown 이 hwpxtree 와 같은 규칙을 쓴다 (병합 되풀이·빈 앞행 제거).
 
     파이프라인 나머지가 HWPX 표와 PDF 표를 같은 모양으로 받아야 한다.
+    0.5.15 부터 세로 병합은 `merge_continuation` 이 정한다 — 기본은 되풀이.
     """
     from docstruct.experiments.tsr.restore.grid_restore import cells_to_markdown
 
@@ -8878,7 +8882,8 @@ def test_grid_restore_markdown_follows_hwpx_rules():
     markdown = cells_to_markdown(cells)
     lines = markdown.splitlines()
     assert lines[0] == "| 구분 | 값 |"
-    assert "〃" in lines[3]                      # 세로 병합 이어짐 표식
+    assert "〃" not in markdown, "옛 표식이 남았다"
+    assert lines[3].startswith("| 지표 |"), "덮인 행에 값이 없다"
 
 
 def test_grid_restore_skips_low_coverage(tmp_path):
@@ -11453,9 +11458,9 @@ def test_hwpx_walk_emits_image_marker_in_place(tmp_path):
 
     md = to_markdown(_hwpx_fixture(tmp_path))
     assert "<!-- hwpx-image:image1 -->" in md
-    # 0.4.6 부터 본문 글머리는 `- ` 로 정규화된다 (format_body_text).
-    assert md.index("- \uc870\uc9c1") < md.index("<!-- hwpx-image:image1 -->")
-    assert md.index("<!-- hwpx-image:image1 -->") < md.index("- \uc778\uc6d0")
+    # 0.5.20 부터 원문 글머리 기호를 지킨다 (format_body_text).
+    assert md.index("\uc870\uc9c1") < md.index("<!-- hwpx-image:image1 -->")
+    assert md.index("<!-- hwpx-image:image1 -->") < md.index("\uc778\uc6d0")
 
 
 def test_hwpx_walk_keeps_shape_text(tmp_path):
@@ -11527,7 +11532,7 @@ def test_hwpx_restored_text_replaces_the_picture(tmp_path):
     # 별도 경로이므로, 둘을 함께 쓰면 같은 글이 두 번 들어간다.
     body = expand_tables_and_images(page.content, page.tables, page.images)
     assert body.count("### \uc870\uc9c1\ub3c4") == 1
-    assert body.index("- \uc870\uc9c1") < body.index("### \uc870\uc9c1\ub3c4")
+    assert body.index("\u25a1 \uc870\uc9c1") < body.index("### \uc870\uc9c1\ub3c4")
 
 
 def test_hwpx_without_image_dir_keeps_placeholder(tmp_path):
@@ -11626,11 +11631,11 @@ def test_notebooks_pass_source_pdf():
 
 
 def test_format_body_text_indents_by_bullet():
-    """글머리 기호가 곧 수준이다 — 스타일 정보 없이도 계층이 선다."""
+    """글머리 기호가 곧 수준이다 — 기호는 지키고 수준은 들여쓰기로 (0.5.20)."""
     from docstruct.converters.hwp.styling import format_body_text
 
-    assert format_body_text("\u25a1 \uc870\uc9c1") == "- \uc870\uc9c1"
-    assert format_body_text("\u25cb \uc6b4\uc601") == "  - \uc6b4\uc601"
+    assert format_body_text("\u25a1 \uc870\uc9c1") == "\u25a1 \uc870\uc9c1"
+    assert format_body_text("\u25cb \uc6b4\uc601") == "  \u25cb \uc6b4\uc601"
     assert format_body_text("- (\uc5ed\ud560) \uac80\ud1a0") == "    - (\uc5ed\ud560) \uac80\ud1a0"
 
 
@@ -11638,7 +11643,7 @@ def test_format_body_text_keeps_bold_around_bullet():
     """문단 전체가 굵으면 기호가 `**` 뒤에 숨는다 — 벗겨서 판단한다."""
     from docstruct.converters.hwp.styling import format_body_text
 
-    assert format_body_text("**\u25a1 \uc784\ubb34**") == "- **\uc784\ubb34**"
+    assert format_body_text("**\u25a1 \uc784\ubb34**") == "\u25a1 **\uc784\ubb34**"
 
 
 def test_format_body_text_detects_numbered_heading():
@@ -11674,8 +11679,9 @@ def test_hwpx_body_is_indented(tmp_path):
         z.writestr("Contents/section0.xml", section)
 
     md = to_markdown(path)
-    assert "- \uc870\uc9c1" in md
-    assert "  - \uc6b4\uc601" in md
+    # 0.5.20 — 기호는 지키고 수준은 들여쓰기로 남는다
+    assert "\u25a1 \uc870\uc9c1" in md
+    assert "  \u25cb \uc6b4\uc601" in md
     assert "    - \uc0c1\uc138" in md
 
 
@@ -12186,8 +12192,8 @@ def test_ieung_is_a_bullet():
     from docstruct.converters.hwp.styling import format_body_text
 
     assert format_body_text("ㅇ 본    청 : 현원 592.3명") == \
-        "  - 본    청 : 현원 592.3명"
-    assert format_body_text("○ 운영") == "  - 운영"
+        "  ㅇ 본    청 : 현원 592.3명"   # 0.5.20 — 기호를 지킨다
+    assert format_body_text("○ 운영") == "  ○ 운영"
     assert format_body_text("ㅇㅇㅇ") == "ㅇㅇㅇ"     # 기호가 아니다
 
 
@@ -18384,3 +18390,3258 @@ def test_output_marks_match_the_json_form():
 
     source = inspect.getsource(content._image_block_text)
     assert '<image {num}>' in source and '</image {num}>' in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.10 — PDF 표: markdown 과 cells 가 **다른 격자**를 보고 있었다
+#
+# `docling_table_to_markdown` 이 Docling 객체에서 따로 격자를 세우고
+# `cell_grid` 가 또 따로 세웠다. 실측(개인정보보호위 PDF): 51표 중 8표에서
+# markdown 이 cells 보다 값이 적었고, 한 표는 `신규` 하나를 잃고 `30` 이
+# '27 에서 '26 으로 한 칸 밀렸다. HWPX 는 같은 문서에서 0표 — 거기서는
+# 렌더러가 셀 목록을 그대로 읽는다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _docling_cells(spec):
+    """(row, col, rowspan, colspan, text) 튜플을 cell_grid 형태로."""
+    return [{"row": r, "col": c, "rowspan": rs, "colspan": cs, "text": t}
+            for r, c, rs, cs, t in spec]
+
+
+def test_markdown_never_carries_fewer_values_than_cells():
+    """markdown 은 cells 의 값을 하나도 잃지 않는다."""
+    from docstruct.tables.docling import grid_from_cells
+
+    cells = _docling_cells([
+        (0, 0, 1, 1, "지표"), (0, 1, 1, 1, "'23"), (0, 2, 1, 1, "'24"),
+        (0, 3, 1, 1, "'25"), (0, 4, 1, 1, "'26"), (0, 5, 1, 1, "'27"),
+        (1, 0, 1, 1, "목표"), (1, 1, 1, 1, "신규"), (1, 2, 1, 1, "신규"),
+        (1, 3, 1, 1, "신규"), (1, 4, 1, 1, "신규"), (1, 5, 1, 1, "30"),
+    ])
+    grid = grid_from_cells(cells, header_count=1)
+    values = [v for row in grid for v in row if v.strip()]
+    assert len(values) >= sum(1 for c in cells if c["text"])
+    # **자리가 밀리지 않는다** — 30 은 '27 칸에 선다
+    assert grid[0][5] == "'27" and grid[1][5] == "30"
+    assert grid[1][4] == "신규", "값이 왼쪽으로 밀렸다"
+
+
+def test_grid_size_comes_from_the_cells_not_a_declared_number():
+    """선언된 num_cols 가 작아도 바깥 셀이 잘리면 안 된다."""
+    from docstruct.tables.docling import grid_from_cells
+
+    cells = _docling_cells([(0, 0, 1, 1, "가"), (0, 7, 1, 1, "나")])
+    grid = grid_from_cells(cells)
+    assert len(grid[0]) == 8, "셀이 덮는 범위만큼 격자가 커져야 한다"
+    assert grid[0][7] == "나"
+
+
+def test_renderer_and_cell_grid_share_one_source():
+    """markdown 렌더러가 `cell_grid` 를 쓴다 — 두 벌로 세면 어긋난다."""
+    import inspect
+
+    from docstruct.tables.docling import docling_table_to_markdown
+
+    source = inspect.getsource(docling_table_to_markdown)
+    assert "cell_grid(item)" in source
+    assert "grid_from_cells" in source
+    # 옛 방식(직접 순회)이 남아 있으면 다시 갈라진다
+    assert "for cell in cells:" not in source
+
+
+def test_vertical_merge_fill_applies_to_pdf_too():
+    """세로 병합 되풀이가 PDF 경로에도 적용된다 (0.5.6 과 같은 규칙)."""
+    from docstruct.tables.docling import grid_from_cells
+
+    cells = _docling_cells([
+        (0, 0, 1, 1, "구분"), (0, 1, 1, 1, "값"),
+        (1, 0, 2, 1, "국회도서관운영"), (1, 1, 1, 1, "가"), (2, 1, 1, 1, "나"),
+    ])
+    grid = grid_from_cells(cells, header_count=1)
+    assert grid[1][0] == "국회도서관운영"
+    assert grid[2][0] == "국회도서관운영", "덮인 행이 비었다"
+    assert "〃" not in "".join(v for row in grid for v in row)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.11 — `--where` 가 **틀린 갱신 방법**을 알려주고 있었다
+#
+# local·overlay 는 pip 설치본이 아니라 폴더 배포본인데, `--where` 는 어느
+# 쪽이든 pip 명령을 냈다. 게다가 그 명령에 박힌 판이 `v0.1.46` 으로 굳어
+# 있었다 — 지금 판과 수십 판 차이라, 안내를 따르면 **옛 버전을 덮어써
+# 더 나빠진다.**
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_where_does_not_pin_an_ancient_version():
+    """설치 안내에 굳은 옛 판 번호가 남아 있으면 안 된다."""
+    import inspect
+    import re
+
+    from docstruct import cli
+
+    source = inspect.getsource(cli._print_where)
+    pinned = re.findall(r"git\.git@v([\d.]+)", source)
+    assert not pinned, f"굳은 판 번호가 있습니다: {pinned}"
+    # 실제로 확인한 판을 써야 한다 (pip 쪽 또는 폴더 쪽)
+    assert "pip_version" in source and "folder_version" in source
+
+
+def test_where_prefers_the_loaded_location_over_pip_metadata(tmp_path, capsys):
+    """**불러온 자리**의 VERSION 이 권위다 — pip 판을 대신 찍으면 안 된다.
+
+    실측 제보: 폴더 배포본 안에서 돌렸는데 화면에는 pip 의 0.4.99 가
+    나왔다. 고친 코드가 안 고쳐진 것처럼 보이는 가장 흔한 원인이다.
+    """
+    import inspect
+
+    from docstruct import cli
+
+    from docstruct.core import version as ver
+
+    # 판단은 `core.version` 한 곳이 한다 (0.5.13) — cli 는 그것을 쓴다
+    rule = inspect.getsource(ver.details)
+    assert "docstruct.__file__" in rule
+    assert 'base / "VERSION"' in rule
+    assert "pip_path" in rule, "pip 위치와 불러온 위치를 견주지 않는다"
+    assert "version_details" in inspect.getsource(cli._print_where)
+    # 둘이 함께 있으면 알린다
+    assert "pip 설치본도 있습니다" in inspect.getsource(cli._print_where)
+
+
+def test_where_tells_folder_deployments_the_right_way(tmp_path, capsys, monkeypatch):
+    """폴더 배포본에는 pip 이 아니라 폴더 교체를 안내한다."""
+    from docstruct import cli
+
+    # VERSION 이 있는 폴더 배포본을 흉내낸다
+    import docstruct
+    from docstruct.core import version as ver
+
+    here = pathlib.Path(docstruct.__file__).resolve().parent
+    marker = here / "VERSION"
+    made = not marker.exists()
+    if made:
+        marker.write_text("docstruct-local 9.9.9", encoding="utf-8")
+    ver.details.cache_clear()
+    try:
+        cli._print_where()
+        printed = capsys.readouterr().out
+        assert "폴더 배포본" in printed
+        assert "rsync -a --delete" in printed
+    finally:
+        if made:
+            marker.unlink()
+        ver.details.cache_clear()
+
+
+def test_where_reports_the_package_location():
+    """어느 파일이 실제로 실행되는지 말한다 — 판 확인의 핵심."""
+    import inspect
+
+    from docstruct import cli
+
+    from docstruct.core import version as ver
+
+    assert "sys.executable" in inspect.getsource(cli._print_where)
+    assert "docstruct.__file__" in inspect.getsource(ver.details)
+    got = ver.details()
+    assert set(got) == {"version", "source", "location", "pip_version"}
+    assert got["source"] in ("folder", "pip", "source", "unknown")
+
+
+def test_document_json_records_the_version():
+    """결과물에 **어느 판이 만들었는지** 적힌다 (0.5.13).
+
+    없으면 "이 JSON 은 몇 판이 만든 것인가" 를 `〃` 유무 같은 증상으로
+    되짚어야 한다 — 실제로 세 번 연속 그렇게 추측했다.
+    """
+    import inspect
+
+    from docstruct import pipeline
+
+    source = inspect.getsource(pipeline._pipeline_settings)
+    assert "docstruct_version" in source
+    assert "docstruct_install" in source
+
+    got = pipeline._pipeline_settings("pdf", False, False, False)
+    assert got["docstruct_version"]
+    assert got["docstruct_install"] in ("folder", "pip", "source", "unknown")
+    assert got["source_format"] == "pdf"
+
+
+def test_source_tree_identifies_itself():
+    """소스 트리에서 돌려도 판을 밝힌다 (0.5.13).
+
+    `VERSION` 파일도 pip 메타도 없는 자리다. 개발 중 만든 document.json 이
+    `unknown` 이면 나중에 또 증상으로 되짚어야 한다.
+    """
+    from docstruct.core.version import details
+
+    got = details()
+    assert got["version"] != "unknown", "소스 트리가 자기 판을 모른다"
+    assert got["source"] in ("folder", "pip", "source")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.15 — 네 번째 렌더러를 빠뜨렸다
+#
+# 0.5.6 에서 세로 병합 표기를 `merge_continuation` 한 곳으로 모을 때
+# 렌더러 **셋**(hwpxtree · hwp5tree · docling)만 옮기고
+# `grid_restore.cells_to_markdown` 을 빠뜨렸다. 그것이 복원 실험 셋
+# (grid_restore · lattice_restore · lattice_fill)의 공용 렌더러다.
+#
+# 실측(개인정보보호위원회 0.5.13): 50표 중 14표에 `〃` 가 남았고 **전부
+# source="grid"** — 이 함수가 다시 쓴 표였다. HWPX 는 0표였다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_every_markdown_writer_uses_the_shared_merge_rule():
+    """세로 병합을 스스로 정하는 렌더러가 남아 있으면 안 된다.
+
+    `MERGE_UP` 을 격자에 직접 써 넣는 곳이 있으면 그 경로만 옛 표기로
+    갈라진다 — 0.5.6 에서 한 번, 0.5.15 에서 또 한 번 겪었다.
+    """
+    import pathlib
+    import re
+
+    import docstruct
+
+    root = pathlib.Path(docstruct.__file__).parent
+    offenders = []
+    for path in root.rglob("*.py"):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.strip().startswith("#"):
+                continue
+            # `grid[...] = MERGE_UP` 꼴 — 격자에 표식을 직접 박는 자리
+            if re.search(r"\]\s*=\s*MERGE_UP\b", line):
+                offenders.append(f"{path.name}:{lineno}")
+    assert not offenders, f"공용 규칙을 안 쓰는 렌더러: {offenders}"
+
+
+def test_restore_experiments_share_one_renderer():
+    """복원 실험 셋이 같은 함수를 쓴다 — 한 곳만 고치면 셋이 따라온다."""
+    import inspect
+
+    from docstruct.experiments.tsr.restore import (grid_restore, lattice_fill,
+                                                   lattice_restore)
+
+    for module in (lattice_fill, lattice_restore):
+        assert "cells_to_markdown" in inspect.getsource(module), module.__name__
+    assert "merge_continuation" in inspect.getsource(grid_restore.cells_to_markdown)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.16 — LLM 재추출이 markdown 만 바꾸고 cells 는 옛것을 남겼다
+#
+# 세 번째 같은 계열이다. 0.4.83(오염 복원)·0.5.10(PDF 렌더러)에 이어
+# `tables.fill._apply_fill` — `vlm_rebuild` 는 이미 둘 다 갱신하는데
+# 여기만 빠져 있었다.
+#
+# 실측(개인정보보호위원회 0.5.15): lattice_fill 이 다시 세운 표를 LLM 이
+# 재추출하자 `cells` 에만 `성 과 분 야` 가 남았다 — 2표 6칸.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_refill_rebuilds_cells_from_the_new_markdown():
+    """markdown 을 바꾸면 cells 도 그 markdown 에서 다시 만든다."""
+    from docstruct.models import PageContent, PageTrace, TableInfo
+    from docstruct.tables.fill import _apply_fill
+    from docstruct.tables.tags import make_table_block
+
+    old_md = "| 가 | 나 |\n| --- | --- |\n| 1 | 2 |"
+    table = TableInfo(id="table_1", table_num=1, placeholder="<table 1>",
+                      markdown=old_md,
+                      cells=[{"row": 0, "col": 0, "rowspan": 1, "colspan": 1,
+                              "text": "옛구조"}])
+    page = PageContent(page_no=1, page_no_kind="exact", trace=PageTrace(),
+                       content=make_table_block(1, old_md))
+
+    new_md = "| 구분 | 값 | 비고 |\n| --- | --- | --- |\n| 지표 | 10 | x |"
+    _apply_fill(page, table, new_md)
+
+    assert table.markdown == new_md
+    assert table.original_markdown == old_md
+    texts = {(c.get("text") or "").strip() for c in table.cells}
+    assert "옛구조" not in texts, "옛 cells 가 그대로 남았다"
+    assert {"구분", "값", "비고", "지표", "10", "x"} <= texts
+
+
+def test_refill_empties_cells_when_markdown_is_unparsable():
+    """못 읽으면 **비운다** — 틀린 구조를 남기는 것보다 없는 편이 낫다."""
+    from docstruct.models import PageContent, PageTrace, TableInfo
+    from docstruct.tables.fill import _apply_fill
+
+    table = TableInfo(id="table_1", table_num=1, placeholder="<table 1>",
+                      markdown="| 가 |\n| --- |",
+                      cells=[{"row": 0, "col": 0, "rowspan": 1, "colspan": 1,
+                              "text": "옛구조"}])
+    page = PageContent(page_no=1, page_no_kind="exact", trace=PageTrace(),
+                       content="<table 1>\n\n| 가 |\n\n</table 1>")
+    _apply_fill(page, table, "표가 아닌 글")
+    assert table.cells == [], "읽지 못한 markdown 인데 옛 cells 를 남겼다"
+
+
+def test_every_markdown_replacement_touches_cells():
+    """markdown 을 바꾸는 자리는 cells 도 손봐야 한다 — 네 번째를 막는다."""
+    import inspect
+
+    from docstruct.tables import fill, vlm_rebuild
+
+    for module in (fill, vlm_rebuild):
+        source = inspect.getsource(module)
+        assert ".markdown = " in source
+        assert ".cells = " in source, f"{module.__name__} 이 cells 를 안 건드린다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.17 — "VLM 은 연결됐는데 적용이 안 된다" 를 가릴 수 없었다
+#
+# 표에는 LLM 이 돌았다(판정 40회 · 재추출 12표). 그림은 9장 중 0장.
+# 그런데 **로그에도 결과물에도 아무 말이 없었다** — `read_picture_regions`
+# 가 대상이 없으면 조용히 0 을 돌려줬다.
+#
+# 실측(개인정보보호위원회 PDF): `image` 5장이 면적 0.29~1.3% 로 문턱(3%)에
+# 걸렸다 — 전부 `별첨N` 번호 배지·머리 띠였다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _vlm_picture(idx, kind, bbox, path=True):
+    from docstruct.models import ImageInfo
+
+    info = ImageInfo(id=f"image_{idx}", placeholder=f"<image {idx}>")
+    info.region_kind = kind
+    info.bbox = bbox
+    info.image_path = "/x.png" if path else None
+    return info
+
+
+def test_skip_reason_names_the_actual_filter():
+    """왜 안 읽는지 한 마디로 말한다."""
+    from docstruct.images.vlm_read import _skip_reason
+
+    tiny = _vlm_picture(6, "image", {"l": 55.4, "t": 55.5, "r": 100.3, "b": 87.9})
+    assert "면적" in _skip_reason(tiny) and "문턱" in _skip_reason(tiny)
+    assert "text" in _skip_reason(_vlm_picture(2, "text", None))
+    assert "그림 파일 없음" == _skip_reason(_vlm_picture(3, "image", None, path=False))
+    big = _vlm_picture(1, "image", {"l": 60, "t": 100, "r": 520, "b": 600})
+    assert _skip_reason(big) == "", "읽을 대상인데 사유가 붙었다"
+
+
+def test_no_jobs_leaves_a_reason_in_the_trace(caplog):
+    """한 장도 안 읽었으면 로그와 trace 에 사유가 남는다."""
+    import logging
+
+    from docstruct.images.vlm_read import _report_no_jobs
+    from docstruct.models import PageContent, PageTrace
+
+    page = PageContent(page_no=1, page_no_kind="exact", content="",
+                       trace=PageTrace(),
+                       images=[_vlm_picture(6, "image", {"l": 55, "t": 55, "r": 100, "b": 88}),
+                               _vlm_picture(2, "text", None)])
+    with caplog.at_level(logging.INFO, logger="docstruct.images.vlm_read"):
+        _report_no_jobs([page])
+    assert "읽을 그림이 없습니다" in caplog.text
+    assert "면적" in caplog.text
+    steps = [s for s in page.trace.steps if s.action == "그림 판독 없음"]
+    assert len(steps) == 1, "trace 에 사유가 없다"
+    assert "면적" in steps[0].detail and "text" in steps[0].detail
+
+
+def test_no_images_means_no_noise():
+    """그림이 아예 없으면 말하지 않는다 — 건너뛴 것이 아니라 할 일이 없었다."""
+    from docstruct.images.vlm_read import _report_no_jobs
+    from docstruct.models import PageContent, PageTrace
+
+    page = PageContent(page_no=1, page_no_kind="exact", content="",
+                       trace=PageTrace(), images=[])
+    _report_no_jobs([page])
+    assert not page.trace.steps
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.18 — 빠진 이유가 **그림마다** 결과물에 남아야 한다
+#
+# 0.5.17 은 쪽 단위 요약 한 줄만 남겼다. 나중에 결과물을 보고 "이 조직도가
+# 왜 안 읽혔지" 를 물으면, 요약으로는 **어느 그림이** 왜 빠졌는지 알 수 없다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_each_image_records_why_it_was_skipped(monkeypatch):
+    """읽지 않은 그림마다 사유가 붙는다 — 읽은 그림은 None."""
+    from docstruct.images import vlm_read
+    from docstruct.models import PageContent, PageTrace
+
+    big = _vlm_picture(1, "image", {"l": 60, "t": 100, "r": 520, "b": 600})
+    tiny = _vlm_picture(6, "image", {"l": 55, "t": 55, "r": 100, "b": 88})
+    other = _vlm_picture(2, "text", None)
+    page = PageContent(page_no=1, page_no_kind="exact", content="",
+                       trace=PageTrace(), images=[big, tiny, other])
+
+    # VLM 호출은 막고 대상 고르기까지만 돌린다
+    monkeypatch.setattr(vlm_read, "llm_available", lambda: True)
+    monkeypatch.setattr(vlm_read, "llm_api_config", lambda: {"url": "x"})
+    monkeypatch.setattr(vlm_read, "_read_one", lambda page, info, cfg: "읽은 내용")
+
+    vlm_read.read_picture_regions([page])
+
+    assert big.read_skipped is None, "읽은 그림에 사유가 붙었다"
+    assert "면적" in (tiny.read_skipped or "")
+    assert "text" in (other.read_skipped or "")
+
+
+def test_skip_reason_survives_serialization():
+    """`document.json` 에 실린다 — 결과물만 보고 답할 수 있어야 한다."""
+    from docstruct.models import ImageInfo
+
+    info = ImageInfo(id="image_6", placeholder="<image 6>")
+    info.read_skipped = "면적 0.3% < 문턱 3%"
+    got = info.to_dict()
+    assert got["read_skipped"] == "면적 0.3% < 문턱 3%"
+    assert "read_skipped" in got
+
+
+def test_read_failure_is_recorded_too(monkeypatch):
+    """시도했다 못 읽은 것도 남는다 — "걸러짐" 과 구별돼야 한다.
+
+    이것이 없으면 `vlm_markdown` 이 없는 그림 앞에서 연결 문제인지 문턱
+    문제인지 결과물로 가릴 수 없다.
+    """
+    from docstruct.images import vlm_read
+    from docstruct.models import PageContent, PageTrace
+
+    big = _vlm_picture(1, "image", {"l": 60, "t": 100, "r": 520, "b": 600})
+    page = PageContent(page_no=1, page_no_kind="exact", content="<image 1>\n</image 1>",
+                       trace=PageTrace(), images=[big])
+
+    def _boom(page, info, cfg):
+        raise RuntimeError("엔드포인트 연결 불가")
+
+    monkeypatch.setattr(vlm_read, "llm_available", lambda: True)
+    monkeypatch.setattr(vlm_read, "llm_api_config", lambda: {"url": "x"})
+    monkeypatch.setattr(vlm_read, "_read_one", _boom)
+
+    assert vlm_read.read_picture_regions([page]) == 0
+    assert big.vlm_markdown is None
+    assert "읽기 실패" in (big.read_skipped or "")
+    assert "연결 불가" in big.read_skipped
+
+
+def test_empty_answer_is_recorded(monkeypatch):
+    """빈 응답도 사유로 남는다."""
+    from docstruct.images import vlm_read
+    from docstruct.models import PageContent, PageTrace
+
+    big = _vlm_picture(1, "image", {"l": 60, "t": 100, "r": 520, "b": 600})
+    page = PageContent(page_no=1, page_no_kind="exact", content="<image 1>\n</image 1>",
+                       trace=PageTrace(), images=[big])
+    monkeypatch.setattr(vlm_read, "llm_available", lambda: True)
+    monkeypatch.setattr(vlm_read, "llm_api_config", lambda: {"url": "x"})
+    monkeypatch.setattr(vlm_read, "_read_one", lambda page, info, cfg: "")
+    vlm_read.read_picture_regions([page])
+    assert "읽을 내용이 없다" in (big.read_skipped or "")
+
+
+def test_every_image_ends_with_content_or_a_reason(monkeypatch):
+    """모든 그림은 **읽은 내용이 있거나 이유가 있다** — 둘 다 없으면 안 된다."""
+    from docstruct.images import vlm_read
+    from docstruct.models import PageContent, PageTrace
+
+    imgs = [_vlm_picture(1, "image", {"l": 60, "t": 100, "r": 520, "b": 600}),
+            _vlm_picture(6, "image", {"l": 55, "t": 55, "r": 100, "b": 88}),
+            _vlm_picture(2, "text", None)]
+    page = PageContent(page_no=1, page_no_kind="exact", content="", trace=PageTrace(),
+                       images=imgs)
+    monkeypatch.setattr(vlm_read, "llm_available", lambda: True)
+    monkeypatch.setattr(vlm_read, "llm_api_config", lambda: {"url": "x"})
+    monkeypatch.setattr(vlm_read, "_read_one", lambda page, info, cfg: "내용")
+
+    vlm_read.read_picture_regions([page])
+    for info in imgs:
+        assert info.vlm_markdown or info.read_skipped, f"{info.id} 에 내용도 사유도 없다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.19 — 쪽 맞춤 결과에 **신뢰도와 그림**이 없었다
+#
+# `page_no_kind` 가 전부 None 이라 "이 쪽 번호를 믿어도 되나" 를 알 수
+# 없었고, HWPX 가 가진 그림이 통째로 사라졌다 — 조직도·별첨 상자처럼
+# **글자가 그림 안에만 있는 것**까지 함께.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _align_docs():
+    """쪽 맞춤 시험용 최소 문서 두 벌."""
+    table = {"id": "table_1", "table_num": 1, "placeholder": "<table 1>",
+             "markdown": "| 구분 | 값 |\n| --- | --- |\n| 가 | 1 |",
+             "cells": [{"row": 0, "col": 0, "rowspan": 1, "colspan": 1, "text": "구분"},
+                       {"row": 0, "col": 1, "rowspan": 1, "colspan": 1, "text": "값"},
+                       {"row": 1, "col": 0, "rowspan": 1, "colspan": 1, "text": "가"},
+                       {"row": 1, "col": 1, "rowspan": 1, "colspan": 1, "text": "1"}]}
+    hwpx = {"filename": "가.hwpx", "source_format": "hwpx", "page_count": 1,
+            "pages": [{"page_no": 1, "page_no_kind": "document",
+                       "content": "머리말입니다 여기가 첫 쪽의 본문입니다\n\n"
+                                  "<table 1>\n\n<image 1>\n</image 1>\n\n"
+                                  "둘째 쪽 본문이 여기서 시작합니다",
+                       "tables": [table],
+                       "images": [{"id": "image_1", "image_num": 1,
+                                   "placeholder": "<image 1>"}]}]}
+    pdf = {"filename": "가.pdf", "source_format": "pdf", "page_count": 2,
+           "pages": [{"page_no": 1, "page_no_kind": "exact",
+                      "content": "머리말입니다 여기가 첫 쪽의 본문입니다\n\n<table 1>",
+                      "tables": [table], "images": []},
+                     {"page_no": 2, "page_no_kind": "exact",
+                      "content": "둘째 쪽 본문이 여기서 시작합니다",
+                      "tables": [], "images": []}]}
+    return hwpx, pdf
+
+
+def test_aligned_pages_declare_their_confidence():
+    """쪽마다 `exact` | `approximate` 가 적힌다 — 비어 있으면 안 된다."""
+    from docstruct.align.documents import align_documents
+
+    hwpx, pdf = _align_docs()
+    got = align_documents(hwpx, pdf)
+    kinds = {page.get("page_no_kind") for page in got["pages"]}
+    assert None not in kinds, "종류가 없는 쪽이 있다"
+    assert kinds <= {"exact", "approximate"}
+    # 눈금으로 잡은 쪽은 exact, 보간은 approximate — `estimated` 와 짝이 맞는다
+    for page in got["pages"]:
+        expected = "approximate" if page.get("estimated") else "exact"
+        assert page["page_no_kind"] == expected, page
+
+
+def test_aligned_pages_keep_the_images():
+    """HWPX 그림이 쪽에 배정된다 — 사라지면 글자까지 함께 사라진다."""
+    from docstruct.align.documents import align_documents
+
+    hwpx, pdf = _align_docs()
+    got = align_documents(hwpx, pdf)
+    placed = [img for page in got["pages"] for img in (page.get("images") or [])]
+    assert len(placed) + len(got.get("unplaced_images") or []) == 1
+    assert placed, "그림이 어느 쪽에도 배정되지 않았다"
+    assert placed[0]["id"] == "image_1"
+
+
+def test_unplaced_images_are_reported_not_dropped():
+    """쪽을 못 찾은 그림도 버리지 않는다 — 표와 같은 원칙."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents._place_images)
+    assert "unplaced" in source
+    assert "unplaced_images" in inspect.getsource(documents.align_documents)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.20 — HWPX 가 글머리 기호를 버리고 `-` 로 바꿔 쓰고 있었다
+#
+#   원문   □ 조직 / ㅇ 개념 및 의미 / - (개념) …
+#   결과   - 조직 /   - 개념 및 의미 /     - (개념) …
+#
+# 수준은 들여쓰기에 남지만 **어느 기호였는지는 사라진다.** 표 셀 안에는
+# 들여쓰기가 없으므로 거기서는 수준마저 사라진다. 같은 문서를 PDF 로
+# 읽으면 `- ㅇ 개인정보 …` 처럼 기호가 남아 두 결과가 다른 모양이 되고,
+# 쪽 맞춤의 본문 눈금도 어긋났다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_bullet_character_is_kept_by_default(monkeypatch):
+    """원문에 있던 기호를 버리지 않는다."""
+    from docstruct.converters.hwp.styling import BULLET_STYLE_ENV, format_body_text
+
+    monkeypatch.delenv(BULLET_STYLE_ENV, raising=False)
+    assert format_body_text("□ 조직") == "□ 조직"
+    assert format_body_text("ㅇ 개념 및 의미") == "  ㅇ 개념 및 의미"
+    # 수준은 들여쓰기로 계속 남는다 — 기호가 곧 수준이다
+    assert format_body_text("- (개념) 웹").startswith("    - ")
+
+
+def test_bullet_style_can_be_switched(monkeypatch):
+    """옛 모양과 PDF 모양을 고를 수 있다."""
+    from docstruct.converters.hwp.styling import BULLET_STYLE_ENV, format_body_text
+
+    monkeypatch.setenv(BULLET_STYLE_ENV, "dash")
+    assert format_body_text("ㅇ 개념 및 의미") == "  - 개념 및 의미"
+    monkeypatch.setenv(BULLET_STYLE_ENV, "both")
+    assert format_body_text("ㅇ 개념 및 의미") == "  - ㅇ 개념 및 의미"
+    # 이미 markdown 목록 기호인 것은 겹쳐 쓰지 않는다
+    assert format_body_text("- (개념) 웹") == "    - (개념) 웹"
+
+
+def test_bold_paragraph_keeps_its_marker(monkeypatch):
+    """굵은 문단도 기호가 살아야 한다 — 기호가 `**` 뒤에 숨는 자리다."""
+    from docstruct.converters.hwp.styling import BULLET_STYLE_ENV, format_body_text
+
+    monkeypatch.delenv(BULLET_STYLE_ENV, raising=False)
+    got = format_body_text("**□ 임무(Mission)**")
+    assert got.startswith("□ "), got
+    assert "**임무(Mission)**" in got
+
+
+def test_hwpx_and_hwp_share_the_bullet_rule():
+    """두 형식이 같은 함수를 쓴다 — 한쪽만 고치면 또 갈라진다."""
+    import inspect
+
+    from docstruct.converters.hwp.pyhwp_backend import hwp5tree
+    from docstruct.converters.hwpx import hwpxtree
+
+    for module in (hwpxtree, hwp5tree):
+        assert "styling import" in inspect.getsource(module), module.__name__
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.21 — 셀 안 문단 경계가 공백으로 지워졌다
+#
+#   원본 셀   ㅇ 개념 및 의미 / - (개념) … / - (의미) …   (문단 3개)
+#   결과      'ㅇ 개념 및 의미 - (개념) … - (의미) …'      (한 덩어리)
+#
+# 실측(네 부처 HWPX, 셀 6,531개): 문단이 둘 이상인 셀 546개(8.4%), 그중
+# 글머리 문단이 둘 이상인 셀 90개. 한 문단 **안에** 글머리가 또 있는 경우는
+# 11개(0.17%)뿐 — **문단 경계만 지키면 99.8%가 해결된다.**
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_cell_paragraphs_keep_their_boundary(monkeypatch):
+    """셀 안 문단은 줄바꿈으로 갈린다 — 공백으로 지우지 않는다."""
+    from docstruct.converters.hwpx.hwpxtree import CELL_JOIN_ENV, _join_cell_blocks
+
+    monkeypatch.delenv(CELL_JOIN_ENV, raising=False)
+    got = _join_cell_blocks(["ㅇ 개념 및 의미", "- (개념) 웹", "- (의미) 제3자"])
+    assert got.split("\n") == ["ㅇ 개념 및 의미", "- (개념) 웹", "- (의미) 제3자"]
+    # 끊긴 굵게는 여전히 한 덩어리로 합쳐진다
+    assert _join_cell_blocks(["**년**", "**도**"]) == "**년 도**"
+
+
+def test_cell_join_can_go_back_to_space(monkeypatch):
+    """옛 동작으로 되돌릴 수 있다."""
+    from docstruct.converters.hwpx.hwpxtree import CELL_JOIN_ENV, _join_cell_blocks
+
+    monkeypatch.setenv(CELL_JOIN_ENV, "space")
+    assert _join_cell_blocks(["가", "나"]) == "가 나"
+
+
+def test_markdown_cell_uses_br_not_a_raw_newline():
+    """GFM 셀은 줄바꿈을 담지 못한다 — `<br>` 로 바꾸되 경계는 살린다."""
+    from docstruct.converters.hwpx.hwpxtree import _escape_cell
+
+    assert _escape_cell("가\n나") == "가<br>나"
+    assert _escape_cell("가|나") == "가\\|나"
+
+
+def test_cells_and_markdown_join_the_same_way():
+    """`cells[].text` 와 markdown 이 **같은 함수**로 이어진다.
+
+    여기만 `" ".join` 이라 cells 에는 경계가 없고 markdown 에는 있었다 —
+    0.4.83·0.5.10·0.5.16 과 같은 계열이다.
+    """
+    import inspect
+
+    from docstruct.converters.hwpx import hwpxtree
+
+    source = inspect.getsource(hwpxtree.table_grids)
+    assert "_join_cell_blocks(cell.blocks)" in source
+    assert '" ".join(cell.blocks)' not in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.22 — 강제 줄나눔(`<hp:lineBreak/>`)을 공백으로 지우고 있었다
+#
+# 원본에서 갈려 있던 줄이 한 덩어리가 됐다. 이 정보는 이미 문서에 있는데
+# (태그 75개) 버리고 있었다 — 마커로 다시 쪼개는 규칙을 만들기 전에,
+# 가진 것을 지키는 것이 먼저다. 셀 문단 경계(0.5.21)와 같은 계열이다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_forced_line_break_makes_a_new_line(tmp_path):
+    """`<hp:lineBreak/>` 는 줄을 나눈다 — 공백이 아니다."""
+    import zipfile
+
+    from docstruct.converters.hwpx.hwpxtree import to_markdown
+
+    ns = 'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"'
+    run = ("<hp:run><hp:t>앞줄</hp:t><hp:lineBreak/><hp:t>뒷줄</hp:t></hp:run>")
+    section = f"<hp:sec {ns}><hp:p>{run}</hp:p></hp:sec>"
+    path = tmp_path / "s.hwpx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Contents/section0.xml", section)
+
+    md = to_markdown(path)
+    assert "앞줄\n뒷줄" in md, md
+    assert "앞줄 뒷줄" not in md
+
+
+def test_tab_is_still_a_space(tmp_path):
+    """탭은 줄을 나누지 않는다 — 같은 줄 안의 간격이다."""
+    import zipfile
+
+    from docstruct.converters.hwpx.hwpxtree import to_markdown
+
+    ns = 'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"'
+    run = "<hp:run><hp:t>가</hp:t><hp:tab/><hp:t>나</hp:t></hp:run>"
+    section = f"<hp:sec {ns}><hp:p>{run}</hp:p></hp:sec>"
+    path = tmp_path / "s.hwpx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Contents/section0.xml", section)
+    assert "가 나" in to_markdown(path)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.23 — 잣대가 반복 제목을 오판하고 있었다
+#
+# 첫 잣대는 "PDF 쪽의 첫 줄이 어느 쪽에 들어갔나" 를 **가장 가까운 쪽**으로
+# 골라 셌다. 84% · -1 밀림 22건이 나왔고 그것을 align 의 오류율로 읽었다.
+# 틀린 읽기였다 — 밀린 23건이 **전부 반복 제목**이었고, 유일한 글은 0건.
+#
+#   2. 프로그램 분석 및 성과관리 계획   ← 프로그램마다 되풀이
+#
+# 같은 글이 여러 번 나오면 텍스트 포함만으로는 판정할 수 없다. 유일한
+# 후보로만 재면 세 부처 70건이 **전부 정확**했다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_yardstick_skips_ambiguous_keys():
+    """반복되는 후보는 **판정 불가**로 빼고 분모에 넣지 않는다."""
+    import importlib.util
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "align_yardstick", root / "scripts" / "align_yardstick.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    table = {"id": "table_1", "table_num": 1, "placeholder": "<table 1>",
+             "markdown": "| 구분 | 값 |\n| --- | --- |\n| 가 | 1 |",
+             "cells": [{"row": 0, "col": 0, "rowspan": 1, "colspan": 1, "text": "구분"},
+                       {"row": 0, "col": 1, "rowspan": 1, "colspan": 1, "text": "값"}]}
+    # `되풀이되는 표제입니다` 가 두 번 — 판정 불가여야 한다
+    hwpx = {"filename": "가.hwpx", "source_format": "hwpx", "page_count": 1,
+            "pages": [{"page_no": 1, "page_no_kind": "document", "images": [],
+                       "content": "되풀이되는 표제입니다 여기는 첫째 묶음\n\n<table 1>\n\n"
+                                  "되풀이되는 표제입니다 여기는 둘째 묶음\n\n"
+                                  "오직 한 번만 나오는 뚜렷한 문장입니다",
+                       "tables": [table]}]}
+    pdf = {"filename": "가.pdf", "source_format": "pdf", "page_count": 3,
+           "pages": [{"page_no": 1, "page_no_kind": "exact", "tables": [table],
+                      "images": [],
+                      "content": "되풀이되는 표제입니다\n\n<table 1>"},
+                     {"page_no": 2, "page_no_kind": "exact", "tables": [], "images": [],
+                      "content": "되풀이되는 표제입니다"},
+                     {"page_no": 3, "page_no_kind": "exact", "tables": [], "images": [],
+                      "content": "오직 한 번만 나오는 뚜렷한 문장입니다"}]}
+
+    got = module.measure(hwpx, pdf)
+    assert got["skipped"] >= 2, "반복 후보를 분모에 넣었다"
+    assert got["checked"] == got["exact"], got
+    # 판정 불가는 실패가 아니다 — 분모 밖이다
+    assert got["checked"] + got["skipped"] == len(pdf["pages"])
+
+
+def test_yardstick_reports_offsets_not_just_a_rate():
+    """밀린 방향을 남긴다 — 편향을 보려면 분포가 필요하다."""
+    import importlib.util
+    import inspect
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "align_yardstick", root / "scripts" / "align_yardstick.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    source = inspect.getsource(module.measure)
+    assert "offsets" in source
+    assert "seen = flat.count(key)" in source, "유일성 검사가 없다"
+    assert "if seen != 1:" in source, "유일한 후보만 쓰는 규칙이 없다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.24 — `toc_offset` 이 틀렸다 (`source_page` 를 잘못 읽었다)
+#
+#   page_offset:  item["source_page"] - item["page"]
+#                 ^^^^^^^^^^^^^^^^^^^ 그 항목이 **적힌** 쪽(목차 쪽)
+#                                     **가리키는** 쪽이 아니다
+#
+# 실측(세 부처): 목차가 5쪽에 있고 `3. 목표 및 과제현황 … 4` 항목의 차이가
+# 1 이라 `min(gaps)` 가 **1** 을 냈다. 실제 오프셋은 세 문서 모두 **5**.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _toc_pages(spec):
+    """(쪽번호, 본문) 목록을 PageContent 로."""
+    from docstruct.models import PageContent, PageTrace
+
+    return [PageContent(page_no=no, page_no_kind="exact", content=text,
+                        trace=PageTrace()) for no, text in spec]
+
+
+def test_title_offset_uses_where_the_title_actually_is():
+    """제목이 **실린 쪽**을 찾아 오프셋을 잰다."""
+    from docstruct.outline.toc import title_page_offset
+
+    items = [{"title": "1. 임무와 비전", "page": 1, "source_page": 5},
+             {"title": "2. 목표체계도", "page": 2, "source_page": 5},
+             {"title": "3. 과제현황", "page": 4, "source_page": 5}]
+    pages = _toc_pages([
+        (5, "1. 임무와 비전 2. 목표체계도 3. 과제현황"),   # 목차 쪽 — 빼야 한다
+        (6, "1. 임무와 비전 본문입니다"),
+        (7, "2. 목표체계도 본문입니다"),
+        (9, "3. 과제현황 본문입니다"),
+    ])
+    offset, samples = title_page_offset(items, pages)
+    assert offset == 5, (offset, samples)
+    assert samples == 3
+
+
+def test_title_offset_skips_ambiguous_titles():
+    """여러 쪽에 나오는 제목은 세지 않는다 — 어느 쪽인지 모른다."""
+    from docstruct.outline.toc import title_page_offset
+
+    items = [{"title": "되풀이 제목", "page": 1, "source_page": 3},
+             {"title": "고유 제목", "page": 2, "source_page": 3}]
+    pages = _toc_pages([
+        (3, "되풀이 제목 고유 제목"),
+        (8, "되풀이 제목 본문"),
+        (9, "되풀이 제목 또"),
+        (10, "고유 제목 본문"),
+    ])
+    offset, samples = title_page_offset(items, pages)
+    # 근거가 하나뿐이라 믿지 않는다
+    assert offset is None
+    assert samples == 1
+
+
+def test_old_source_page_method_is_documented_as_unreliable():
+    """옛 방법이 마지막 수단임을 코드가 밝힌다."""
+    import inspect
+
+    from docstruct.outline import toc
+
+    doc = inspect.getdoc(toc.page_offset) or ""
+    assert "믿을 것이 못 된다" in doc
+    assert "마지막 수단" in doc
+
+
+def test_pipeline_tries_title_offset_before_the_old_method():
+    """바닥글 → 제목 대조 → 옛 방법 순서."""
+    import inspect
+
+    from docstruct import pipeline
+
+    source = inspect.getsource(pipeline.build_document)
+    assert "title_page_offset" in source
+    assert source.index("printed_page_offset") < source.index("title_page_offset")
+    assert source.index("title_page_offset") < source.index("page_offset(doc.toc)")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.25 — 물리 쪽과 인쇄(논리) 쪽을 함께 낸다
+#
+# 공공문서는 표지·목차 뒤부터 1 쪽을 매긴다. 실측(세 부처): 물리 6쪽이
+# 인쇄 1쪽 — 차이 5. 사람이 "54쪽 보세요" 라고 할 때 가리키는 것은 인쇄
+# 쪽인데, 결과물에는 물리 쪽만 있었다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_printed_page_is_physical_minus_offset():
+    """인쇄 = 물리 − 오프셋."""
+    from docstruct.models import PageContent, PageTrace
+    from docstruct.pipeline import _fill_printed_pages
+
+    pages = [PageContent(page_no=n, page_no_kind="exact", content="",
+                         trace=PageTrace()) for n in range(1, 9)]
+    _fill_printed_pages(pages, 5)
+    assert [p.printed_page_no for p in pages] == [None, None, None, None, None,
+                                                  1, 2, 3]
+
+
+def test_front_matter_has_no_printed_number():
+    """표지·목차 지면은 비워 둔다 — 0 이나 음수를 적으면 없는 쪽을 가리킨다."""
+    from docstruct.models import PageContent, PageTrace
+    from docstruct.pipeline import _fill_printed_pages
+
+    pages = [PageContent(page_no=n, page_no_kind="exact", content="",
+                         trace=PageTrace()) for n in (1, 2, 3)]
+    _fill_printed_pages(pages, 5)
+    assert all(p.printed_page_no is None for p in pages)
+
+
+def test_unknown_offset_fills_nothing():
+    """오프셋을 모르면 채우지 않는다 — 틀린 번호보다 없는 편이 낫다."""
+    from docstruct.models import PageContent, PageTrace
+    from docstruct.pipeline import _fill_printed_pages
+
+    pages = [PageContent(page_no=7, page_no_kind="exact", content="",
+                         trace=PageTrace())]
+    _fill_printed_pages(pages, None)
+    assert pages[0].printed_page_no is None
+
+
+def test_printed_page_is_serialized():
+    """`document.json` 에 실린다 — 인용하는 쪽이 읽어야 한다."""
+    from docstruct.models import PageContent, PageTrace
+
+    page = PageContent(page_no=59, page_no_kind="exact", content="",
+                       trace=PageTrace(), printed_page_no=54)
+    got = page.to_dict()
+    assert got["page_no"] == 59
+    assert got["printed_page_no"] == 54
+
+
+def test_align_carries_the_printed_page():
+    """쪽 맞춤 결과에도 실린다 — PDF 가 계산한 값을 그대로 옮긴다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    assert "printed_page_no" in source
+
+
+def test_bridge_model_carries_the_printed_page():
+    """서버 결과에도 인쇄 쪽이 실린다 — 인용하는 쪽은 사람이 읽는 번호가 필요하다."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for candidate in (root / "rag" / "models" / "document.py",
+                      root.parent / "extras" / "rag" / "models" / "document.py",
+                      root / "app" / "rag" / "models" / "document.py"):
+        if candidate.is_file():
+            source = candidate.read_text(encoding="utf-8")
+            break
+    else:
+        pytest.skip("브릿지 모델이 이 트리에 없음")
+
+    # 쪽 클래스 안에 있어야 한다 (표·그림 클래스가 아니라)
+    page_cls = re.search(r"class PageContent.*?(?=\nclass |\Z)", source, re.S)
+    assert page_cls, "PageContent 를 못 찾음"
+    assert "printed_page_no" in page_cls.group(0)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.26 — 브릿지의 `to_dict` 가 **손으로 적은 목록**이라 또 어긋났다
+#
+# `printed_page_no`(0.5.25)를 dataclass 에 넣고 목록에는 빠뜨려, 서버
+# 결과에 **키 자체가 없었다**. 같은 일이 0.4.83 에도 있었다(쪽 필드 여섯).
+# 두 번 겪었으면 목록을 지키는 대신 없애는 것이 맞다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _bridge_models():
+    """브릿지 모델 모듈 — 이 트리에 없으면 None."""
+    import importlib.util
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for candidate in (root / "rag" / "models" / "document.py",
+                      root.parent / "extras" / "rag" / "models" / "document.py",
+                      root / "app" / "rag" / "models" / "document.py"):
+        if candidate.is_file():
+            spec = importlib.util.spec_from_file_location("rag_models", candidate)
+            module = importlib.util.module_from_spec(spec)
+            # **sys.modules 에 먼저 넣는다.** dataclasses 가 필드 타입을
+            # 풀 때 `sys.modules[cls.__module__]` 를 본다 — 없으면 터진다.
+            import sys as _sys
+
+            _sys.modules[spec.name] = module
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                _sys.modules.pop(spec.name, None)
+            return module
+    return None
+
+
+def test_bridge_to_dict_is_derived_from_fields():
+    """`to_dict` 가 필드에서 파생된다 — 새 필드는 적는 순간 실린다."""
+    import dataclasses
+
+    models = _bridge_models()
+    if models is None:
+        pytest.skip("브릿지 모델이 이 트리에 없음")
+
+    page = models.PageContent(page_no=1, page_no_kind="exact", content="본문")
+    got = page.to_dict()
+    want = {spec.name for spec in dataclasses.fields(models.PageContent)}
+    assert want <= set(got), f"빠진 필드: {sorted(want - set(got))}"
+    assert got["printed_page_no"] is None
+    assert "page_no" in got and got["content"] == "본문"
+
+
+def test_bridge_document_json_covers_every_field():
+    """문서 수준 `to_json` 도 필드를 빠뜨리지 않는다."""
+    import dataclasses
+
+    models = _bridge_models()
+    if models is None:
+        pytest.skip("브릿지 모델이 이 트리에 없음")
+
+    doc = models.PageDocument(filename="가.pdf", source_format="pdf", pages=[])
+    got = doc.to_json()
+    want = {spec.name for spec in dataclasses.fields(models.PageDocument)}
+    missing = want - set(got)
+    # `pages` 는 실리고, 개수는 `page_count` 로 파생된다
+    assert not missing, f"빠진 필드: {sorted(missing)}"
+
+
+def test_nested_objects_use_their_own_to_dict():
+    """중첩된 표·그림은 제 `to_dict` 를 쓴다 — 통째로 dict 화하면 규칙이 갈린다."""
+    models = _bridge_models()
+    if models is None:
+        pytest.skip("브릿지 모델이 이 트리에 없음")
+
+    table = models.TableInfo(id="table_1", table_num=1, placeholder="<table 1>",
+                             markdown="| 가 |")
+    page = models.PageContent(page_no=1, page_no_kind="exact", content="",
+                              tables=[table])
+    got = page.to_dict()
+    assert isinstance(got["tables"], list)
+    assert got["tables"][0]["id"] == "table_1"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.27 — 표 눈금이 제목을 앞 쪽에 떨어뜨렸다
+#
+# 실측(개인정보보호위원회): PDF 54쪽은 `별첨3` 으로 시작하는데 align 이
+# 53쪽에 넣었다. 표 눈금은 26,446 에 찍혔고 `별첨3` 은 26,321 — 125자 앞.
+# 그 사이에 `<일반회계>` · `(단위:백만원)` 같은 **한 칸짜리 배치용 표**가
+# 끼어 있었다.
+#
+# 0.5.11 에서 같은 것을 두 번 시도했다 되돌렸다. 그때는 정답이 없어 고쳐도
+# 나아졌는지 알 수 없었다 — 이번에는 목차로 검증한 별첨 다섯 건이 있다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_table_anchor_pulls_back_over_layout_tables():
+    """작은 배치용 표와 짧은 제목은 건너뛰고 제목 앞까지 당긴다."""
+    from docstruct.align.page_map import pull_back_to_heading
+
+    flat = ("앞절의본문이길게이어집니다" * 6
+            + "</table109<table110---</table110"
+            + "예산사업별성과관리현황별첨3"
+            + "<table111<일반회계---</table111"
+            + "<table112(단위:백만원)---</table112"
+            + "<table113")
+    anchor = flat.rindex("<table113")
+    heading = flat.index("예산사업별성과관리현황")
+    got = pull_back_to_heading(flat, anchor)
+    assert got <= heading, f"제목({heading}) 앞까지 못 당겼다: {got}"
+    assert anchor - got <= 200, "너무 멀리 당겼다"
+
+
+def test_pull_back_stops_at_a_big_table():
+    """큰 표를 만나면 멈춘다 — 그 앞은 앞 쪽의 본문이다."""
+    from docstruct.align.page_map import pull_back_to_heading
+
+    big = "<table90" + "가" * 300 + "</table90"
+    flat = big + "<table91"
+    anchor = flat.rindex("<table91")
+    assert pull_back_to_heading(flat, anchor) == anchor
+
+
+def test_pull_back_never_moves_forward():
+    """당기기는 뒤로만 간다 — 앞으로 가면 다음 쪽 내용을 삼킨다."""
+    from docstruct.align.page_map import pull_back_to_heading
+
+    for flat, pos in (("", 0), ("짧은글", 3), ("<table1가나다</table1<table2", 22)):
+        assert pull_back_to_heading(flat, pos) <= pos
+
+
+def test_pull_back_is_bounded():
+    """거리 제한이 있다 — 넓히면 앞 쪽 본문까지 삼켜 반대로 밀린다."""
+    from docstruct.align.page_map import HEADING_PULL_MAX, pull_back_to_heading
+
+    flat = "짧" * 1000 + "<table1"
+    anchor = flat.index("<table1")
+    assert anchor - pull_back_to_heading(flat, anchor) <= HEADING_PULL_MAX
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.28 — 절 표지 배지가 면적 문턱에 걸려 빠졌다
+#
+# `별첨2` 같은 배지는 45×32 · 면적 0.3% 라 문턱(3%)에 걸린다. 처음에는
+# "가로로 긴 띠만 예외" 를 생각했는데 **틀린 방향**이었다 — 긴 제목 띠
+# (`성과목표체계별 예산현황`)는 그림이 아니라 텍스트로 이미 읽히고,
+# 배지는 거의 정사각(1.4)이라 가로세로비로는 가릴 수 없다.
+#
+#   <image 6> </image 6> # 성과목표체계별 예산현황 (단위: 백만원)
+#   # 복합 프로그램 성과지표 관리 별첨8 <image 9> </image 9> # <복합…
+#
+# 배지는 **제목 바로 옆**에 붙는다. 로고는 그렇지 않다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _badge_page(num, content, bbox):
+    """작은 배지 하나가 놓인 쪽."""
+    from docstruct.models import ImageInfo, PageContent, PageTrace
+
+    info = ImageInfo(id=f"image_{num}", placeholder=f"<image {num}>")
+    info.image_num = num
+    info.region_kind = "image"
+    info.image_path = "/x.png"
+    info.bbox = bbox
+    page = PageContent(page_no=1, page_no_kind="exact", content=content,
+                       trace=PageTrace(), images=[info])
+    return info, page
+
+
+def test_small_badge_next_to_a_heading_is_read():
+    """제목 바로 옆의 작은 그림은 절 표지다 — 읽는다."""
+    from docstruct.images.vlm_read import _should_read
+
+    tiny = {"l": 55.4, "t": 55.5, "r": 100.3, "b": 87.9}     # 45×32 · 0.3%
+    info, page = _badge_page(6, "<image 6>\n</image 6>\n\n# 성과목표체계별 예산현황", tiny)
+    assert _should_read(info, page) is True
+    # 제목이 앞에 있어도 된다
+    info2, page2 = _badge_page(9, "# 복합 프로그램 관리 별첨8\n<image 9>\n</image 9>", tiny)
+    assert _should_read(info2, page2) is True
+
+
+def test_small_image_without_a_heading_is_still_skipped():
+    """제목이 없으면 로고·아이콘으로 본다 — 문턱을 통째로 낮추지 않는다."""
+    from docstruct.images.vlm_read import _should_read, _skip_reason
+
+    tiny = {"l": 55.4, "t": 55.5, "r": 100.3, "b": 87.9}
+    info, page = _badge_page(3, "<image 3>\n</image 3>\n\n본문 문단이 이어집니다", tiny)
+    assert _should_read(info, page) is False
+    assert "면적" in _skip_reason(info, page)
+
+
+def test_heading_must_be_adjacent():
+    """멀리 있는 제목은 남의 것이다."""
+    from docstruct.images.vlm_read import _beside_heading
+
+    tiny = {"l": 55.4, "t": 55.5, "r": 100.3, "b": 87.9}
+    info, page = _badge_page(
+        4, "<image 4>\n</image 4>\n\n본문이 한참 이어지고 나서\n\n# 뒤늦은 제목", tiny)
+    assert _beside_heading(info, page) is False
+
+
+def test_exception_does_not_touch_hwpx():
+    """HWPX·HWP 는 지면 좌표가 없어 면적 판정 자체가 안 걸린다."""
+    from docstruct.images.vlm_read import _area_ratio, _should_read
+    from docstruct.models import ImageInfo
+
+    info = ImageInfo(id="image_1", placeholder="<image 1>")
+    info.region_kind = "image"
+    info.image_path = "/x.png"
+    info.bbox = None                             # HWPX 는 좌표가 없다
+    assert _area_ratio(info) == 1.0
+    assert _should_read(info, None) is True
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.29 — 배지의 정답을 **우리가 버리고 있었다**
+#
+# 0.5.28 이 배지 4장을 VLM 까지 보냈는데 전부 `빈 응답` 으로 기록됐다.
+# 모델이 못 읽은 것이 아니라 `MIN_RESULT_CHARS = 20` 이 걸렀다 —
+# `별첨2` 는 세 글자이고 그것이 **정답**이다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_short_answer_survives_for_a_small_image():
+    """작은 그림에는 길이 문턱을 적용하지 않는다 — `별첨2` 가 정답이다."""
+    from docstruct.images.vlm_read import _too_short
+
+    tiny = _vlm_picture(6, "image", {"l": 55.4, "t": 55.5, "r": 100.3, "b": 87.9})
+    assert _too_short("별첨2", tiny) is False
+
+
+def test_short_answer_still_rejected_for_a_big_image():
+    """큰 그림의 짧은 답은 얼버무림이다 — 계속 버린다."""
+    from docstruct.images.vlm_read import _too_short
+
+    big = _vlm_picture(1, "image", {"l": 60, "t": 100, "r": 520, "b": 600})
+    assert _too_short("표 없음", big) is True
+    assert _too_short("가" * 40, big) is False
+
+
+def test_short_ok_threshold_is_below_the_read_threshold():
+    """짧은 답을 봐주는 크기는 읽기 문턱보다 작아야 한다.
+
+    그렇지 않으면 "읽지도 않는 크기" 에만 적용되어 뜻이 없다.
+    """
+    from docstruct.images.vlm_read import MIN_AREA_RATIO, SHORT_OK_AREA_RATIO
+
+    assert SHORT_OK_AREA_RATIO < MIN_AREA_RATIO
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.30 — 표에서 승격된 그림이 규칙 밖에 있었다
+#
+#   img_from_table_5  0×0  read_skipped=None  vlm_markdown=None
+#
+# 구간 9 에서 표가 그림으로 판정되면 그 자리에 ImageInfo 가 생기는데,
+# 그림 판독은 구간 7 — 이미 지나갔다. 그래서 **내용도 사유도 없었다**.
+# 표식도 옛 주석(`<!-- img_from_… -->`)이라 0.4.89 의 블록 규칙 밖이었다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _promotion_page(page_image=None):
+    """표 하나가 그림으로 승격되기 직전의 쪽."""
+    from docstruct.models import ImageInfo, PageContent, PageTrace, TableInfo
+    from docstruct.tables.tags import make_table_block
+
+    table = TableInfo(id="table_5", table_num=5, placeholder="<table 5>",
+                      markdown="| 가 |\n| --- |", reason="그림 판정",
+                      llm_title="조직도")
+    page = PageContent(page_no=1, page_no_kind="exact", trace=PageTrace(),
+                       content="앞\n\n" + make_table_block(5, table.markdown) + "\n\n뒤",
+                       tables=[table],
+                       images=[ImageInfo(id="image_1", image_num=1,
+                                         placeholder="<image 1>")],
+                       page_image_path=page_image)
+    return page
+
+
+def test_promoted_image_uses_the_block_format():
+    """승격된 그림도 `<image N> … </image N>` 을 쓴다 — 옛 주석이 아니라."""
+    from docstruct.tables.fill import _convert_group_to_image
+
+    page = _promotion_page()
+    info, _ = _convert_group_to_image(page, ["table_5"])
+
+    assert info.image_num == 2, "그 쪽에서 안 쓴 번호를 받아야 한다"
+    assert info.placeholder == "<image 2>"
+    assert "<image 2>" in page.content and "</image 2>" in page.content
+    assert "img_from" not in page.content, "옛 주석 표식이 본문에 남았다"
+    # 파서가 준 설명은 desc 칸에
+    assert "<image-desc 2>조직도</image-desc 2>" in page.content
+
+
+def test_promoted_image_is_read_afterwards(monkeypatch):
+    """판독 단계 뒤에 생긴 그림을 한 번 더 읽는다."""
+    from docstruct.images import vlm_read
+    from docstruct.tables.fill import _convert_group_to_image
+
+    page = _promotion_page(page_image="/tmp/p1.png")
+    info, _ = _convert_group_to_image(page, ["table_5"])
+    page.images.append(info)
+
+    monkeypatch.setattr(vlm_read, "llm_available", lambda: True)
+    monkeypatch.setattr(vlm_read, "llm_api_config", lambda: {"url": "x"})
+    monkeypatch.setattr(vlm_read, "_read_one", lambda pg, i, cfg: "조직도: 청장 → 차장")
+
+    assert vlm_read.read_new_pictures([page]) == 1
+    assert info.vlm_markdown == "조직도: 청장 → 차장"
+    assert info.read_skipped is None
+    # 판독 내용은 read 칸에 — 설명과 갈린다
+    assert "<image-read 2>" in page.content
+
+
+def test_second_pass_leaves_settled_images_alone(monkeypatch):
+    """이미 읽혔거나 사유가 붙은 그림은 다시 부르지 않는다.
+
+    실패한 그림을 다시 부르면 엔드포인트가 죽어 있을 때 호출이 두 배가 된다.
+    """
+    from docstruct.images import vlm_read
+    from docstruct.models import PageContent, PageTrace
+
+    done = _vlm_picture(1, "image", {"l": 60, "t": 100, "r": 520, "b": 600})
+    done.vlm_markdown = "이미 읽음"
+    failed = _vlm_picture(2, "image", {"l": 60, "t": 100, "r": 520, "b": 600})
+    failed.read_skipped = "읽기 실패 — 연결 불가"
+    page = PageContent(page_no=1, page_no_kind="exact", content="", trace=PageTrace(),
+                       images=[done, failed])
+
+    called = []
+    monkeypatch.setattr(vlm_read, "llm_available", lambda: True)
+    monkeypatch.setattr(vlm_read, "llm_api_config", lambda: {"url": "x"})
+    monkeypatch.setattr(vlm_read, "_read_one",
+                        lambda pg, i, cfg: called.append(i.id) or "내용")
+
+    assert vlm_read.read_new_pictures([page]) == 0
+    assert called == [], f"이미 끝난 그림을 다시 불렀다: {called}"
+
+
+def test_pipeline_runs_the_second_pass_after_table_stage():
+    """구간 9 뒤에 돈다 — 그때 그림이 생기기 때문이다."""
+    import inspect
+
+    from docstruct import pipeline
+
+    source = inspect.getsource(pipeline.build_document)
+    assert "read_new_pictures" in source
+    assert source.index('report("table_llm"') < source.index("read_new_pictures")
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.31 — 되풀이되는 **제목**이 눈금에서 버려졌다
+#
+# 공공문서는 절마다 같은 표제를 쓰고, 그 표제가 목차·본문·제목 상자
+# **세 곳**에 나온다. 문턱이 2 라 전부 버려졌고 그 쪽은 눈금이 0개가 되어
+# 보간으로 떨어졌다 — 실측(대통령비서실 쪽31·32): 별첨4·5 가 한 쪽씩 밀렸다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_heading_keys_are_collected_separately():
+    """제목 줄에서 나온 후보를 따로 모은다."""
+    from docstruct.align.page_map import _heading_keys
+
+    page = {"content": "# 신규 프로그램 성과지표 현황\n본문 문단이 여기에 이어집니다\n"
+                       "## 둘째 수준의 긴 제목 줄입니다"}
+    keys = _heading_keys(page)
+    assert any("신규프로그램성과지표현황" in k for k in keys)
+    assert any("둘째수준의긴제목줄입니다" in k for k in keys)
+    assert not any("본문문단이" in k for k in keys), "본문이 제목으로 잡혔다"
+    # 짧은 제목은 본문과 같은 길이 문턱을 받는다
+    assert _heading_keys({"content": "# 짧음"}) == set()
+
+
+def test_heading_repeats_are_tolerated_more_than_body():
+    """제목은 세 번까지, 본문 글은 두 번까지."""
+    from docstruct.align.page_map import (MAX_HEADING_REPEATS, MAX_REPEATS,
+                                          _find_unique)
+
+    assert MAX_HEADING_REPEATS > MAX_REPEATS
+    key = "되풀이되는표제입니다"
+    flat = ("앞" * 20) + key + ("가" * 30) + key + ("나" * 30) + key
+    # 본문 글로 보면 버린다
+    assert _find_unique(flat, [key], 0) is None
+    # 제목으로 보면 받는다
+    assert _find_unique(flat, [key], 0, {key}) == flat.index(key)
+
+
+def test_body_text_repeats_stay_strict():
+    """본문 글까지 풀면 연쇄로 밀린다 — 문턱을 그대로 둔다."""
+    from docstruct.align.page_map import _find_unique
+
+    key = "본문에되풀이되는문장입니다"
+    flat = key + ("가" * 30) + key + ("나" * 30) + key
+    assert _find_unique(flat, [key], 0, set()) is None
+
+
+def test_image_tags_are_never_anchor_candidates():
+    """VLM 이 읽은 그림 블록 태그가 눈금 후보로 오르면 안 된다.
+
+    태그는 HWPX 본문에 있을 리가 없어 그 쪽이 눈금을 잃는다.
+    """
+    from docstruct.align.page_map import _anchor_keys
+
+    page = {"content": "<image 9>\n<image-read 9>\n별첨4\n</image-read 9>\n</image 9>\n"
+                       "# 신규 프로그램 성과지표 현황"}
+    keys = _anchor_keys(page)
+    assert not any("image" in k for k in keys), keys
+    assert any("신규프로그램" in k for k in keys)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.32 — 절 표지(`별첨2`)를 **마지막 수단**으로 쓴다
+#
+# 병무청 PDF 88쪽은 첫 줄이 `별첨2`(3자), 둘째 줄이
+# `# 성과목표체계별 예산현황`(납작하게 11자) — **둘 다 길이 문턱(12) 미달**
+# 이라 후보가 0개였고 그 쪽은 보간으로 떨어져 별첨2 가 한 쪽 밀렸다.
+#
+# 그런데 **첫 후보로 쓰면 오히려 나빠진다** — HWPX 는 제목을 배지보다
+# 먼저 담는다:
+#
+#     …</table118 신규프로그램성과지표현황 별첨4 신규프로그램…
+#                  ↑ 제목이 앞            ↑ 배지
+#
+# 배지에 눈금을 찍으면 쪽이 제목 뒤에서 시작하고, 줄 경계로 스냅하면서
+# 배지마저 앞 쪽으로 넘어간다. 실측: 별첨4 가 **세 문서 모두** 밀렸다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_section_mark_is_a_candidate_but_last():
+    """절 표지는 후보에 들어가되 **다른 후보 뒤**에 온다."""
+    from docstruct.align.page_map import _anchor_keys
+
+    page = {"content": "별첨2\n# 성과목표체계별 예산현황을 길게 적은 제목 줄\n본문입니다"}
+    keys = _anchor_keys(page)
+    assert "별첨2" in keys, "절 표지가 후보에서 빠졌다"
+    assert keys.index("별첨2") > 0, "절 표지가 첫 후보로 올라왔다"
+
+
+def test_section_mark_is_the_only_candidate_when_nothing_else_fits():
+    """다른 후보가 없으면 절 표지가 그 쪽을 구한다."""
+    from docstruct.align.page_map import _anchor_keys
+
+    # 0.5.35 부터 제목은 8자면 받으므로 여기서는 제목이 이긴다
+    page = {"content": "별첨2\n# 성과목표체계별 예산현황\n<table 57>\n| 가 | 나 |"}
+    keys = _anchor_keys(page)
+    assert keys[0] == "성과목표체계별예산현황"
+    assert keys[-1] == "별첨2", keys
+
+    # 제목조차 없으면 절 표지가 그 쪽을 구한다
+    bare = {"content": "별첨2\n<table 57>\n| 가 | 나 |\n(단위: 백만원)"}
+    assert _anchor_keys(bare) == ["별첨2"]
+
+
+def test_only_real_section_marks_qualify():
+    """짧은 아무 줄이나 받지 않는다 — 절 표지 모양이어야 한다."""
+    from docstruct.align.page_map import _anchor_keys
+
+    for text in ("합계", "(단위: 백만원)", "3", "별첨"):
+        assert _anchor_keys({"content": text}) == [], text
+    for text in ("별첨2", "붙임 3", "참고1", "별표 2", "서식 5"):
+        assert _anchor_keys({"content": text}) == [text.replace(" ", "")], text
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.33 — 눈금 자리를 **뒤로** 물려 그 쪽의 첫 글을 앞 쪽에 넘겼다
+#
+# 실측(개인정보보호위 쪽32): 눈금은 14,346 으로 정확했는데 가장 가까운 줄
+# 경계가 그 **뒤**에 있어, 46자짜리 쪽 하나가 통째로 31쪽에 붙었다.
+#
+# 눈금 자리는 "PDF 쪽의 첫 글이 여기서 시작한다" 는 뜻이다. 뒤로 옮기면
+# 그 글이 앞 쪽으로 넘어간다 — **언제나 틀린 방향**이다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_measured_anchor_snaps_backward_only():
+    """눈금으로 잡은 자리는 앞으로만 물린다."""
+    from docstruct.align.page_map import _snap_to_line
+
+    text = "앞 문단입니다\n\n여기가 그 쪽의 첫 글입니다\n\n다음 문단입니다"
+    pos = text.index("여기가") + 3        # 줄 시작에서 살짝 뒤
+    back = _snap_to_line(text, pos, backward_only=True)
+    assert back <= text.index("여기가"), "뒤로 물렸다"
+    assert text[back:].startswith("여기가"), text[back:back + 10]
+
+
+def test_interpolated_position_still_takes_the_nearest():
+    """보간 자리는 근거가 없으므로 가까운 쪽을 쓴다."""
+    from docstruct.align.page_map import _snap_to_line
+
+    text = "가" * 10 + "\n\n" + "나" * 10 + "\n\n" + "다" * 10
+    pos = text.index("나") + 9            # 다음 경계가 더 가깝다
+    near = _snap_to_line(text, pos)
+    back = _snap_to_line(text, pos, backward_only=True)
+    assert near > back, (near, back)
+
+
+def test_split_uses_backward_only_for_measured_pages():
+    """실제로 찾은 쪽에만 적용한다 — 보간 쪽은 그대로."""
+    import inspect
+
+    from docstruct.align import page_map
+
+    source = inspect.getsource(page_map.split_text_by_page)
+    assert "backward_only=page in measured_pages" in source
+    assert "measured_pages = measured or set()" in source
+
+
+def test_snap_never_moves_past_the_anchor_text():
+    """물린 자리 뒤에 눈금 글이 그대로 있어야 한다."""
+    from docstruct.align.page_map import _snap_to_line
+
+    text = ("앞쪽 본문이 이어집니다\n"
+            "- AI기술 발전에 따라 법적 리스크가 늘어납니다\n"
+            "뒤쪽 본문입니다")
+    anchor = text.index("- AI기술")
+    got = _snap_to_line(text, anchor, backward_only=True)
+    assert "AI기술" in text[got:], "눈금 글이 앞 쪽으로 넘어갔다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.34 — 도형 글자를 **두 번** 내보내고 있었다
+#
+#   …</table110 예산사업별성과관리현황별첨3 예산사업별성과관리현황별첨3 <table111…
+#
+# `_paragraph_text` 가 run 을 훑을 때 도형(`container/rect/drawText`) 안
+# 글까지 걷어 오는데, 그 뒤 `_shape_text` 가 또 내보냈다. 실측(개인정보
+# 보호위원회): `제목+별첨N` 이 잇달아 두 번 나오는 자리가 7군데.
+#
+# 되풀이가 늘면 쪽 맞춤이 그 후보를 "너무 자주 나온다" 며 버린다 —
+# 0.5.31 이 제목 문턱을 3 으로 올린 이유가 실은 **우리가 만든 중복**이었다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_shape_text_already_in_the_paragraph_is_skipped():
+    """문단 글에 이미 담긴 도형 글은 다시 내보내지 않는다."""
+    from docstruct.converters.hwpx.hwpxtree import _already_emitted
+
+    para = "예산사업별 성과관리 현황\n별첨3"
+    assert _already_emitted("예산사업별 성과관리 현황 별첨3", para) is True
+    # 공백·줄바꿈 차이는 무시한다
+    assert _already_emitted("예산사업별성과관리현황", para) is True
+
+
+def test_shape_text_not_in_the_paragraph_is_kept():
+    """문단에 없는 도형 글은 그대로 내보낸다 — 간지 제목이 여기 든다."""
+    from docstruct.converters.hwpx.hwpxtree import _already_emitted
+
+    assert _already_emitted("제2장 재정운용 방향", "앞 문단의 다른 글") is False
+    assert _already_emitted("", "무엇이든") is False
+
+
+def test_hwpx_does_not_emit_a_title_twice(tmp_path):
+    """같은 제목이 잇달아 두 번 나오면 안 된다."""
+    import re
+    import zipfile
+
+    from docstruct.converters.hwpx.hwpxtree import to_markdown
+
+    ns = 'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"'
+    shape = ("<hp:run><hp:container><hp:rect><hp:drawText><hp:subList>"
+             "<hp:p><hp:run><hp:t>예산사업별 성과관리 현황</hp:t></hp:run></hp:p>"
+             "</hp:subList></hp:drawText></hp:rect></hp:container></hp:run>")
+    section = f"<hp:sec {ns}><hp:p>{shape}</hp:p></hp:sec>"
+    path = tmp_path / "s.hwpx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Contents/section0.xml", section)
+
+    md = to_markdown(path)
+    assert md.count("예산사업별 성과관리 현황") == 1, md
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.35 — 짧은 제목이 길이 문턱에 걸려 그 쪽이 밀렸다
+#
+#     '2. 성과계획 목표체계도'   10자
+#     '3. 목표 및 과제현황'       9자      ← 문턱 12 미달
+#     '성과목표체계별 예산현황'   11자
+#
+# 그 쪽은 눈금을 잃고 보간으로 떨어졌다. 병무청 쪽7 · 개인정보보호위 쪽9 가
+# 각각 한 쪽 앞으로 밀린 원인이다 — **목차 잣대가 아니었으면 못 봤다**
+# (본문 잣대는 두 쪽 다 판정 불가였다).
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_short_heading_is_an_anchor_candidate():
+    """제목은 8자면 눈금 후보가 된다 — 본문 글은 여전히 12자."""
+    from docstruct.align.page_map import (MIN_ANCHOR_CHARS, MIN_HEADING_CHARS,
+                                          _anchor_keys)
+
+    assert MIN_HEADING_CHARS < MIN_ANCHOR_CHARS
+    assert _anchor_keys({"content": "# 3. 목표 및 과제현황"}) == ["3.목표및과제현황"]
+    # 같은 길이라도 본문 글이면 받지 않는다
+    assert _anchor_keys({"content": "3. 목표 및 과제현황"}) == []
+
+
+def test_very_short_heading_is_still_rejected():
+    """너무 짧은 제목은 흔해서 눈금이 못 된다."""
+    from docstruct.align.page_map import _anchor_keys
+
+    assert _anchor_keys({"content": "# 개요"}) == []
+    assert _anchor_keys({"content": "# 붙임"}) == []
+
+
+def test_toc_yardstick_measures_what_the_body_one_cannot():
+    """목차 잣대는 **기대 쪽**을 알므로 반복 제목도 잰다."""
+    import importlib.util
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "align_yardstick", root / "scripts" / "align_yardstick.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    import inspect
+    source = inspect.getsource(module.measure_toc)
+    # 인쇄 쪽 + 오프셋 = 물리 쪽 — 어느 등장인지 고를 필요가 없다
+    assert "printed + offset" in source
+    assert "toc_pages" in source, "목차 쪽 자체를 빼지 않는다"
+    # 순환이 없다는 근거를 적어 둔다
+    assert "align_documents` 는 목차를 쓰지 않는다" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.36 — 오프셋이 5 인 것은 **우연**이다
+#
+# 세 부처가 전부 목차 1쪽(물리 5)이라 `toc_offset=5` 였다. 목차가 길거나
+# 짧으면 달라지는데, 시험에는 그 경우가 없었다 — 실측이 한 모양뿐이면
+# **맞는 것처럼 보이는 잘못된 규칙**도 통과한다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _offset_pages(spec):
+    """(쪽번호, 본문) 목록을 PageContent 로."""
+    from docstruct.models import PageContent, PageTrace
+
+    return [PageContent(page_no=no, page_no_kind="exact", content=text,
+                        trace=PageTrace()) for no, text in spec]
+
+
+def test_offset_follows_a_longer_table_of_contents():
+    """목차가 두 쪽이면 오프셋도 그만큼 달라진다."""
+    from docstruct.outline.toc import title_page_offset
+
+    items = [{"title": "제1장 성과계획 목표체계", "page": 1, "source_page": 4},
+             {"title": "2. 성과계획 목표체계도", "page": 2, "source_page": 4},
+             {"title": "3. 목표 및 과제현황", "page": 4, "source_page": 5},
+             {"title": "제2장 재정운용 방향", "page": 12, "source_page": 5}]
+    pages = _offset_pages([
+        (4, "제1장 성과계획 목표체계 2. 성과계획 목표체계도"),
+        (5, "3. 목표 및 과제현황 제2장 재정운용 방향"),
+        (6, "제1장 성과계획 목표체계 본문"),
+        (7, "2. 성과계획 목표체계도 본문"),
+        (9, "3. 목표 및 과제현황 본문"),
+        (17, "제2장 재정운용 방향 본문"),
+    ])
+    offset, samples = title_page_offset(items, pages)
+    assert offset == 5, (offset, samples)
+    assert samples == 4
+
+
+def test_offset_can_be_zero():
+    """표지 없이 바로 본문이면 인쇄 = 물리 다."""
+    from docstruct.outline.toc import title_page_offset
+    from docstruct.pipeline import _fill_printed_pages
+
+    items = [{"title": f"제{i}장 아주 긴 제목입니다", "page": i * 2 + 1,
+              "source_page": 1} for i in range(1, 4)]
+    pages = _offset_pages(
+        [(1, " ".join(x["title"] for x in items))]
+        + [(x["page"], x["title"] + " 본문") for x in items])
+    offset, _ = title_page_offset(items, pages)
+    assert offset == 0
+
+    _fill_printed_pages(pages, offset)
+    # **0 이어도 적는다** — 비워 두면 "모른다" 와 구별되지 않는다
+    assert [x.printed_page_no for x in pages] == [1, 3, 5, 7]
+
+
+def test_offset_needs_enough_evidence():
+    """근거가 모자라면 믿지 않는다 — 틀린 번호보다 없는 편이 낫다."""
+    from docstruct.outline.toc import title_page_offset
+
+    items = [{"title": "제1장 아주 긴 제목입니다", "page": 1, "source_page": 1},
+             {"title": "제2장 아주 긴 제목입니다", "page": 3, "source_page": 1}]
+    pages = _offset_pages([(1, "목차"), (6, "제1장 아주 긴 제목입니다"),
+                           (8, "제2장 아주 긴 제목입니다")])
+    offset, samples = title_page_offset(items, pages)
+    assert offset is None
+    assert samples == 2
+
+
+def test_scattered_evidence_is_rejected():
+    """차이가 흩어지면 다수결이 서지 않는다."""
+    from docstruct.outline.toc import title_page_offset
+
+    items = [{"title": f"제{i}장 아주 긴 제목입니다", "page": i, "source_page": 1}
+             for i in range(1, 5)]
+    pages = _offset_pages([(1, "목차"), (6, "제1장 아주 긴 제목입니다"),
+                           (7, "제2장 아주 긴 제목입니다"),
+                           (13, "제3장 아주 긴 제목입니다"),
+                           (20, "제4장 아주 긴 제목입니다")])
+    assert title_page_offset(items, pages)[0] is None
+
+
+def test_front_matter_length_follows_the_offset():
+    """인쇄 번호가 붙기 시작하는 자리는 오프셋을 따라 움직인다."""
+    from docstruct.pipeline import _fill_printed_pages
+
+    for offset in (0, 3, 8):
+        pages = _offset_pages([(n, "") for n in range(1, offset + 4)])
+        _fill_printed_pages(pages, offset)
+        blank = [x.page_no for x in pages if x.printed_page_no is None]
+        assert blank == list(range(1, offset + 1)), (offset, blank)
+        first = [x for x in pages if x.printed_page_no == 1]
+        assert first and first[0].page_no == offset + 1
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.37 — 여는 표 태그만 앞 쪽에 남았다
+#
+#     쪽6 끝   … </table 12> <table 13>
+#     쪽7 앞   | 2. 성과계획 목표체계도 | … </table 13> …
+#
+# 눈금이 표의 **첫 행**에 찍히는데(그 행이 그 쪽의 첫 글이니 눈금은 옳다),
+# 여는 태그는 그보다 앞에 있어 앞 쪽에 남는다. 블록 계약이 깨져 그 쪽만
+# 떼어 읽으면 표가 반쪽이 된다.
+#
+# 실측(세 부처): 여는 태그만 남은 80건 중 **57건이 태그만 덜렁 남은** 모양.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_boundary_moves_before_a_stranded_table_tag():
+    """자를 자리가 여는 태그 바로 뒤면 태그 앞으로 물린다."""
+    from docstruct.align.page_map import _pull_out_of_table_head
+
+    text = "앞 쪽 본문입니다\n\n<table 13>\n| 가 | 나 |\n</table 13>"
+    pos = text.index("| 가")
+    got = _pull_out_of_table_head(text, pos)
+    assert got == text.index("<table 13>"), (got, pos)
+
+
+def test_boundary_inside_a_table_is_left_alone():
+    """표 한복판은 건드리지 않는다 — 되물리면 앞 쪽 내용을 삼킨다."""
+    from docstruct.align.page_map import _pull_out_of_table_head
+
+    text = "<table 13>\n" + "| 행 | 값 |\n" * 60 + "</table 13>"
+    pos = text.index("| 행", 400)          # 태그에서 400자 넘게 떨어진 자리
+    assert _pull_out_of_table_head(text, pos) == pos
+
+
+def test_boundary_with_text_between_is_left_alone():
+    """태그와 자를 자리 사이에 글이 있으면 그 글은 앞 쪽 몫이다."""
+    from docstruct.align.page_map import _pull_out_of_table_head
+
+    text = "<table 13>\n캡션 한 줄\n| 가 |\n</table 13>"
+    pos = text.index("| 가")
+    assert _pull_out_of_table_head(text, pos) == pos
+
+
+def test_pull_is_bounded():
+    """거리 제한이 있다."""
+    from docstruct.align.page_map import TABLE_HEAD_PULL, _pull_out_of_table_head
+
+    text = "<table 13>" + "\n" * 400 + "| 가 |"
+    pos = text.index("| 가")
+    got = _pull_out_of_table_head(text, pos)
+    assert pos - got <= TABLE_HEAD_PULL
+
+
+def test_pull_never_moves_forward():
+    """되물리기는 앞으로만 간다."""
+    from docstruct.align.page_map import _pull_out_of_table_head
+
+    for text, pos in (("", 0), ("글", 1), ("<table 1>\n| 가 |", 10)):
+        assert _pull_out_of_table_head(text, pos) <= pos
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.38 — 표를 나누기 전에 **"정말 걸쳐 있나"** 를 먼저 묻는다
+#
+# 실측(세 부처, 잘린 25건): 진짜로 두 쪽에 걸친 표는 **1건**뿐이었다.
+# 11건은 앞 쪽에만, 3건은 뒤 쪽에만 온전히 있었다 — 경계가 엉뚱한 자리에
+# 떨어졌을 뿐이다. 그 자리는 블록을 통째로 옮기면 풀리고 `cells` 도
+# `markdown` 도 건드리지 않는다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_block_span_finds_the_enclosing_table():
+    """자를 자리가 표 안인지 가린다."""
+    from docstruct.align.page_map import block_span_at
+
+    text = "앞\n\n<table 13>\n| 가 |\n| 나 |\n</table 13>\n\n뒤"
+    assert block_span_at(text, text.index("| 나")) is not None
+    assert block_span_at(text, text.index("뒤")) is None
+    assert block_span_at(text, 1) is None
+
+
+def test_whole_block_goes_where_the_pdf_shows_it():
+    """PDF 가 한쪽에서만 그 표를 보여 주면 통째로 그쪽이다."""
+    from docstruct.align.page_map import whole_block_side
+
+    cells = [{"row": r, "col": c, "text": t} for r, c, t in (
+        (0, 0, "구분 이름"), (0, 1, "값입니다"),
+        (1, 0, "첫째 항목"), (1, 1, "둘째 값입니다"),
+        (2, 0, "셋째 항목"), (2, 1, "넷째 값입니다"))]
+    on = "구분이름값입니다첫째항목둘째값입니다셋째항목넷째값입니다"
+    off = "전혀다른내용입니다"
+    assert whole_block_side(cells, on, off) == "before"
+    assert whole_block_side(cells, off, on) == "after"
+
+
+def test_a_few_stray_rows_do_not_move_the_block():
+    """한두 행이 우연히 걸린 것으로 옮기지 않는다.
+
+    근거 없이 옮겼더니 다섯 쪽이 한 쪽씩 밀렸다 (본문 잣대 65/65 → 62/67).
+    """
+    from docstruct.align.page_map import whole_block_side
+
+    cells = [{"row": r, "col": 0, "text": f"행 {r} 의 내용입니다"} for r in range(6)]
+    only_one = "행 0 의 내용입니다".replace(" ", "")
+    assert whole_block_side(cells, only_one, "다른 쪽") is None
+
+
+def test_straddling_table_is_left_alone():
+    """양쪽에서 보이면 판단하지 않는다 — 걸친 것일 수도 있다."""
+    from docstruct.align.page_map import whole_block_side
+
+    cells = [{"row": r, "col": 0, "text": f"행 {r} 의 내용입니다"} for r in range(4)]
+    both = "".join(f"행{r}의내용입니다" for r in range(4))
+    assert whole_block_side(cells, both, both) is None
+
+
+def test_row_is_on_needs_substantial_cells():
+    """짧은 셀은 근거가 못 된다 — 아무 쪽에나 있다."""
+    from docstruct.align.page_map import row_is_on
+
+    assert row_is_on(["아주긴셀내용"], "앞아주긴셀내용뒤") is True
+    assert row_is_on(["1", "-", "계"], "1-계") is False
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.39 — 판정 불가와 잘린 표를 **결과물에 적는다**
+#
+# 둘 다 수치로만 있었다. "어느 쪽이 그런가" 를 보려면 결과물을 직접
+# 뒤져야 했고, 그래서 규모를 알면서도 자리를 짚지 못했다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_split_blocks_are_recorded_per_page():
+    """반쪽만 든 표 블록이 쪽마다 적힌다."""
+    from docstruct.align.documents import _mark_split_blocks
+
+    by_page = {
+        1: {"page_no": 1, "content": "앞\n\n<table 13>"},
+        2: {"page_no": 2, "content": "| 가 |\n</table 13>\n\n<table 14>\n| 나 |\n</table 14>"},
+        3: {"page_no": 3, "content": "걸린 표가 없는 쪽"},
+    }
+    _mark_split_blocks(by_page)
+    assert by_page[1]["split_blocks"] == [{"table_num": "13", "side": "open"}]
+    assert by_page[2]["split_blocks"] == [{"table_num": "13", "side": "close"}]
+    # 온전한 쪽에는 필드를 두지 않는다 — 빈 목록이 붙으면 읽는 눈이 흐려진다
+    assert "split_blocks" not in by_page[3]
+
+
+def test_split_block_count_is_summarised():
+    """문서 수준에 걸린 쪽 수가 실린다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    assert "split_block_pages" in source
+    assert "_mark_split_blocks(by_page)" in source
+
+
+def test_yardstick_lists_unjudged_pages_with_reasons():
+    """잣대가 **어느 쪽을 왜 못 쟀는지** 낸다."""
+    import importlib.util
+    import pathlib
+    import sys as _sys
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "align_yardstick", root / "scripts" / "align_yardstick.py")
+    module = importlib.util.module_from_spec(spec)
+    _sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        _sys.modules.pop(spec.name, None)
+
+    table = {"id": "table_1", "table_num": 1, "placeholder": "<table 1>",
+             "markdown": "| 구분 | 값 |\n| --- | --- |\n| 가 | 1 |",
+             "cells": [{"row": 0, "col": 0, "rowspan": 1, "colspan": 1, "text": "구분"}]}
+    hwpx = {"filename": "가.hwpx", "source_format": "hwpx", "page_count": 1,
+            "pages": [{"page_no": 1, "page_no_kind": "document", "images": [],
+                       "content": "되풀이되는 표제입니다 여기는 첫째 묶음\n\n<table 1>\n\n"
+                                  "되풀이되는 표제입니다 여기는 둘째 묶음\n\n"
+                                  "오직 한 번만 나오는 뚜렷한 문장입니다",
+                       "tables": [table]}]}
+    pdf = {"filename": "가.pdf", "source_format": "pdf", "page_count": 3,
+           "pages": [{"page_no": 1, "page_no_kind": "exact", "tables": [table],
+                      "images": [], "content": "되풀이되는 표제입니다\n\n<table 1>"},
+                     {"page_no": 2, "page_no_kind": "exact", "tables": [], "images": [],
+                      "content": "되풀이되는 표제입니다"},
+                     {"page_no": 3, "page_no_kind": "exact", "tables": [], "images": [],
+                      "content": "오직 한 번만 나오는 뚜렷한 문장입니다"}]}
+
+    got = module.measure(hwpx, pdf)
+    assert got["unjudged"], "판정 불가 목록이 없다"
+    assert {item["page_no"] for item in got["unjudged"]} <= {1, 2, 3}
+    assert all(item.get("why") for item in got["unjudged"]), "사유가 없다"
+    assert "wrong" in got
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.40 — 맞춤 결과를 저장하는 자리가 **한 곳**이어야 한다
+#
+# CLI(`--align`)는 직접 파일을 썼고, API(`align_pair`)로 맞춘 쪽은 부르는
+# 사람이 따로 썼다. 같은 일을 두 벌로 하면 반드시 어긋난다 — 이름도
+# 자리도 달라진다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _pair_for_save(tmp_path):
+    """저장 시험용 최소 AlignPair."""
+    from docstruct.align.pair import AlignPair, Prepared
+
+    result = {"filename": "가.hwpx", "page_count": 1,
+              "total_tables": 0, "matched_tables": 0, "matchable_tables": 0,
+              "matchable_matched": 0, "matched_by_text": 0,
+              "unmatched_tables": 0, "unmatched_layout_like": 0,
+              "estimated_pages": 0, "unmatched": [], "head": "", "head_chars": 0,
+              "pages": [{"page_no": 1, "page_no_kind": "exact",
+                         "content": "본문", "tables": []}]}
+    left = Prepared(document={}, source=tmp_path / "가.hwpx")
+    right = Prepared(document={}, source=tmp_path / "가.pdf")
+    return AlignPair(result=result, hwpx=left, pdf=right,
+                     out_dir=tmp_path / "out")
+
+
+def test_save_writes_the_cli_names(tmp_path):
+    """CLI 와 같은 자리에 같은 이름으로 쓴다."""
+    got = _pair_for_save(tmp_path)
+    written = got.save()
+    names = sorted(path.name for path in written)
+    assert names == ["aligned.json", "aligned.md"]
+    assert written[0].parent.name == "가.hwpx"
+    assert written[0].parent.parent == tmp_path / "out"
+
+
+def test_save_can_pick_one_format(tmp_path):
+    """한 가지만 받을 수 있다."""
+    got = _pair_for_save(tmp_path)
+    assert [p.name for p in got.save(formats="json")] == ["aligned.json"]
+    assert [p.name for p in got.save(formats="markdown")] == ["aligned.md"]
+
+
+def test_save_needs_somewhere_to_go(tmp_path):
+    """갈 곳을 모르면 조용히 버리지 않고 말한다."""
+    from docstruct.align.pair import AlignPair, Prepared
+
+    got = AlignPair(result={"filename": "가.hwpx", "page_count": 0,
+                            "total_tables": 0, "matched_tables": 0,
+                            "matchable_tables": 0, "matchable_matched": 0,
+                            "matched_by_text": 0, "unmatched_tables": 0,
+                            "unmatched_layout_like": 0, "estimated_pages": 0,
+                            "unmatched": [], "head": "", "head_chars": 0,
+                            "pages": []},
+                    hwpx=Prepared(document={}, source=tmp_path / "가.hwpx"),
+                    pdf=Prepared(document={}, source=tmp_path / "가.pdf"))
+    with pytest.raises(ValueError, match="저장할 곳"):
+        got.save()
+    # 그 자리에서 알려 주면 쓴다
+    assert got.save(tmp_path / "따로")[0].exists()
+
+
+def test_markdown_result_cannot_be_saved_as_json(tmp_path):
+    """`as_markdown=True` 로 맞춘 결과는 문자열이다 — json 을 지어내지 않는다."""
+    from docstruct.align.pair import AlignPair, Prepared
+
+    got = AlignPair(result="# 맞춘 결과\n\n본문",
+                    hwpx=Prepared(document={}, source=tmp_path / "가.hwpx"),
+                    pdf=Prepared(document={}, source=tmp_path / "가.pdf"),
+                    out_dir=tmp_path / "out")
+    with pytest.raises(ValueError, match="json"):
+        got.save(formats="json")
+    assert [p.name for p in got.save()] == ["aligned.md"]
+
+
+def test_cli_uses_the_same_save(tmp_path):
+    """CLI 가 제 손으로 쓰지 않는다 — 두 벌이면 또 어긋난다."""
+    import inspect
+
+    from docstruct import cli
+
+    source = inspect.getsource(cli)
+    assert "got.save(out_root" in source
+    assert 'path = out_dir / "aligned.json"' not in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.41 — 맞춤 결과 파일 이름을 고를 수 있다
+#
+# `aligned` 고정이라 한 폴더에 여러 번 맞춰 두거나 다른 도구가 기대하는
+# 이름을 맞출 수 없었다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_save_takes_a_name(tmp_path):
+    """이름을 고르면 그 이름으로 쓴다 — 확장자는 형식이 정한다."""
+    got = _pair_for_save(tmp_path)
+    assert [p.name for p in got.save(stem="쪽맞춤 v2")] == ["쪽맞춤_v2.json",
+                                                         "쪽맞춤_v2.md"]
+    assert [p.name for p in got.save(stem="검토용", formats="json")] == ["검토용.json"]
+
+
+def test_save_refuses_a_path_in_the_name(tmp_path):
+    """이름에 경로를 넣을 수 없다 — 자리는 out_dir 이 정한다."""
+    got = _pair_for_save(tmp_path)
+    for bad in ("a/b", "..\\\\c"):
+        with pytest.raises(ValueError, match="경로"):
+            got.save(stem=bad)
+
+
+def test_save_refuses_an_unusable_name(tmp_path):
+    """쓸 수 없는 이름은 **조용히 바꾸지 않고** 거부한다.
+
+    `safe_file_stem` 은 그런 이름에 `document` 를 돌려주는데, 그러면 부른
+    사람이 모르는 자리에 파일이 생긴다.
+    """
+    got = _pair_for_save(tmp_path)
+    for bad in ("", "   ", ".."):
+        with pytest.raises(ValueError, match="이름"):
+            got.save(stem=bad)
+    # 파일이 생기지 않았다
+    assert not (tmp_path / "out" / "가.hwpx" / "document.json").exists()
+
+
+def test_cli_exposes_the_name_option():
+    """CLI 에도 같은 선택지가 있다."""
+    import inspect
+
+    from docstruct import cli
+
+    source = inspect.getsource(cli)
+    assert "--align-name" in source
+    assert "stem=args.align_name" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.42 — 빈 쪽이 **번호째 사라졌다**
+#
+# 실측(병무청 PDF): `page_count` 가 94 인데 쪽 번호는 1~97 이고 31·54·68 이
+# 없었다. `failed_pages` 는 비어 있었으므로 **조용히 사라진** 것이다.
+#
+# 그 빈자리 때문에 쪽 맞춤이 PDF 에 없는 쪽을 만들어 냈고(align 96쪽),
+# 표 블록이 두 쪽을 건너뛴 것처럼 보였다:
+#
+#     table_85  여는쪽 51 → 닫는쪽 54   (52·53 을 건너뛴 듯)
+#
+# 쪽은 지면의 사실이다 — 내용이 없다고 없어지지 않는다.
+# ────────────────────────────────────────────────────────────────────
+
+
+class _PageCountDoc:
+    """쪽 수만 아는 문서."""
+
+    def __init__(self, total):
+        self.pages = {n: None for n in range(1, total + 1)}
+
+
+def test_empty_pages_keep_their_number():
+    """내용이 안 들어온 쪽도 번호를 지킨다."""
+    from docstruct.extractors.pdf import _all_page_numbers
+
+    assert _all_page_numbers(_PageCountDoc(5), {1: [], 3: [], 5: []}) == [1, 2, 3, 4, 5]
+
+
+def test_page_count_falls_back_to_what_arrived():
+    """문서가 쪽 수를 모르면 들어온 번호의 범위를 메운다."""
+    from docstruct.extractors.pdf import _all_page_numbers
+
+    assert _all_page_numbers(object(), {2: [], 4: []}) == [1, 2, 3, 4]
+    assert _all_page_numbers(object(), {}) == []
+
+
+def test_numbers_are_never_invented_beyond_the_last():
+    """마지막 너머로 번호를 지어내지 않는다."""
+    from docstruct.extractors.pdf import _all_page_numbers
+
+    # 문서는 3쪽인데 내용은 5쪽에서 왔다 — 더 큰 쪽을 믿는다
+    assert _all_page_numbers(_PageCountDoc(3), {5: []}) == [1, 2, 3, 4, 5]
+    # 반대로 문서가 더 크면 그쪽을 따른다
+    assert _all_page_numbers(_PageCountDoc(7), {2: []}) == list(range(1, 8))
+
+
+def test_blank_page_says_so():
+    """빈 쪽에는 그렇게 적는다 — 판독 실패와 구별되어야 한다."""
+    import inspect
+
+    from docstruct.extractors import pdf
+
+    source = inspect.getsource(pdf.extract_pdf_pages)
+    assert "blank = not body.strip()" in source
+    assert "빈 쪽" in source
+
+
+def test_extractor_does_not_iterate_only_filled_pages():
+    """`sorted(page_parts)` 로 돌면 빈 쪽이 또 사라진다."""
+    import inspect
+
+    from docstruct.extractors import pdf
+
+    source = inspect.getsource(pdf.extract_pdf_pages)
+    assert "for page_no in sorted(page_parts)" not in source
+    assert "_all_page_numbers(" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.43 — 쪽번호는 **바닥글부터** 찾는다
+#
+# 실측(병무청 원본 PDF 물리 73쪽): 본문에 `- 24 -` 라는 글머리가 있고
+# 바닥글에 `- 68 -` 이 있었다. 머리글부터 훑어 첫 일치를 쓰면 24 를 집어
+# 차이가 49 로 튄다. 뒤에서부터 보면 92쪽 전부 5 로 일치한다.
+#
+# 쪽번호는 지면 **끝**에 있다 — 뒤가 먼저다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_footer_wins_over_body_numbers():
+    """본문에 `- N -` 이 섞여 있어도 바닥글을 쓴다."""
+    from docstruct.models import PageContent, PageTrace
+    from docstruct.outline.toc import _printed_page
+
+    page = PageContent(page_no=73, page_no_kind="exact", trace=PageTrace(),
+                       content="ㅇ 반칙과 특권없는 사회분위기\n- 24 -\n"
+                               "본문이 이어집니다\n- 68 -")
+    assert _printed_page(page) == 68
+
+
+def test_header_page_number_still_works():
+    """위쪽에 쪽번호를 두는 문서도 있다 — 바닥글이 없으면 머리글을 본다."""
+    from docstruct.models import PageContent, PageTrace
+    from docstruct.outline.toc import _printed_page
+
+    page = PageContent(page_no=12, page_no_kind="exact", trace=PageTrace(),
+                       content="- 7 -\n본문이 여기서 시작합니다\n그리고 이어집니다")
+    assert _printed_page(page) == 7
+
+
+def test_offset_survives_a_few_bad_readings():
+    """몇 쪽이 어긋나도 다수결이 걸러낸다.
+
+    실측(병무청 원본 97쪽): 80쪽에서 번호를 읽었고 9쪽이 어긋났는데
+    오프셋은 5 로 바르게 나왔다(근거 71쪽).
+    """
+    from docstruct.models import PageContent, PageTrace
+    from docstruct.outline.toc import printed_page_offset
+
+    pages = [PageContent(page_no=n, page_no_kind="exact", trace=PageTrace(),
+                         content=f"본문\n- {n - 5} -") for n in range(6, 46)]
+    # 몇 쪽은 엉뚱한 숫자를 읽었다고 하자
+    for n in (10, 20, 30):
+        pages[n - 6].content = f"본문\n- {n - 1} -"
+    offset, samples = printed_page_offset(pages)
+    assert offset == 5
+    assert samples >= 30
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.44 — 빈 지면이 앞뒤의 글을 가져갔다
+#
+# HWP 는 쪽을 저장하지 않는다 — 인쇄할 때 구역을 홀수 쪽에서 시작시키려
+# 간지를 끼운다. 원본 확인(병무청 물리 31·54·68): 쪽번호 `- 26 -` 만 찍힌
+# 빈 지면이었고 HWPX 에는 **대응하는 내용이 없다.**
+#
+# 그런데 보간이 글자 수로 고르게 나누어 그 세 쪽이 504·1015·978자를
+# 받았고, **바로 그 자리에서 표가 갈렸다**(table_47·49·85·109).
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_interpolation_gives_blank_pages_no_length():
+    """빈 쪽은 다음 쪽과 같은 자리에서 시작한다 — 길이 0."""
+    from docstruct.align.page_map import interpolate
+
+    got = dict((page, pos) for pos, page in
+               interpolate([(0, 30), (1000, 32)], 40, 5000, {31}))
+    assert got[31] == got[32], (got[31], got[32])
+    # 빈 쪽이 없으면 예전처럼 고르게 나눈다
+    plain = dict((page, pos) for pos, page in
+                 interpolate([(0, 30), (1000, 32)], 40, 5000, set()))
+    assert plain[31] < plain[32]
+
+
+def test_blank_page_at_the_end_of_a_gap():
+    """구간 끝이 빈 쪽이어도 길이 0 이다."""
+    from docstruct.align.page_map import interpolate
+
+    got = dict((page, pos) for pos, page in
+               interpolate([(0, 30), (1000, 33)], 40, 5000, {32}))
+    assert got[32] == got[33]
+
+
+def test_blank_pages_are_drained_after_splitting():
+    """잘라 낸 뒤에도 남은 글은 **앞 쪽으로** 되돌린다.
+
+    자르는 자리를 얼리는 것만으로는 부족하다 — 줄 경계 스냅과 블록 이동이
+    그 자리를 다시 움직여 글이 끼어든다(실측: 보간 0자 → 최종 883자).
+    """
+    from docstruct.align.page_map import _drain_blank_pages
+
+    chunks = [{"page_no": 30, "content": "앞 쪽 본문"},
+              {"page_no": 31, "content": "끼어든 글"},
+              {"page_no": 32, "content": "뒤 쪽 본문"}]
+    _drain_blank_pages(chunks, {31})
+    assert chunks[1]["content"] == ""
+    assert chunks[1]["blank"] is True
+    assert "끼어든 글" in chunks[0]["content"], "앞 쪽으로 돌아가지 않았다"
+    assert chunks[2]["content"] == "뒤 쪽 본문", "뒤 쪽이 밀렸다"
+
+
+def test_draining_handles_a_leading_blank():
+    """앞에 되돌릴 쪽이 없으면 그냥 버린다 — 뒤로 밀지 않는다."""
+    from docstruct.align.page_map import _drain_blank_pages
+
+    chunks = [{"page_no": 1, "content": "무언가"},
+              {"page_no": 2, "content": "뒤 쪽"}]
+    _drain_blank_pages(chunks, {1})
+    assert chunks[0]["content"] == ""
+    assert chunks[1]["content"] == "뒤 쪽"
+
+
+def test_align_passes_blank_pages_through():
+    """PDF 가 빈 지면이라 한 쪽을 쪽 맞춤이 그대로 받는다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    assert "blank_pages = {" in source
+    assert "blank_pages=blank_pages" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.45 — 빈 쪽이 결과에서 통째로 빠졌다
+#
+# 0.5.44 가 빈 지면을 0자로 만들자 그 쪽들이 사라졌다 — align 94쪽 ·
+# PDF 97쪽. `blank: true` 표시도 함께 없어져, "이 쪽엔 원래 내용이 없다"
+# 를 알릴 수 없었다.
+#
+# 판독 쪽에서 같은 잘못을 0.5.42 에 고쳤다. **쪽은 지면의 사실이다.**
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_blank_page_keeps_its_slot():
+    """글이 없어도 조각을 만든다 — 빈 쪽으로 알려진 자리라면."""
+    from docstruct.align.page_map import split_text_by_page
+
+    from docstruct.align.page_map import _flatten
+
+    text = "첫 쪽 본문입니다\n\n둘째 쪽 본문입니다\n\n셋째 쪽 본문입니다"
+    # **눈금은 납작하게 편 좌표다** — 원문 좌표를 주면 엉뚱한 데서 잘린다
+    flat = _flatten(text)
+    second = flat.index("둘째")
+    third = flat.index("셋째")
+    # 쪽3 은 빈 지면이므로 쪽4 와 같은 자리에서 시작한다 (0.5.44)
+    anchors = [(0, 1), (second, 2), (third, 3), (third, 4)]
+    got = split_text_by_page(text, anchors, measured={1, 2, 4},
+                             blank_pages={3})
+    assert [c["page_no"] for c in got] == [1, 2, 3, 4]
+    assert got[2]["content"] == ""
+    assert got[2]["blank"] is True
+    assert "셋째" in got[3]["content"], "빈 쪽이 뒤 쪽의 글을 가져갔다"
+
+
+def test_unknown_empty_chunk_is_still_dropped():
+    """빈 쪽으로 알려지지 않은 빈 조각은 예전처럼 버린다.
+
+    자르는 자리가 겹쳐 생긴 빈 조각까지 남기면 쪽이 늘어난다.
+    """
+    from docstruct.align.page_map import split_text_by_page
+
+    from docstruct.align.page_map import _flatten
+
+    text = "첫 쪽 본문입니다\n\n둘째 쪽 본문입니다\n\n셋째 쪽 본문입니다"
+    flat = _flatten(text)
+    anchors = [(0, 1), (flat.index("둘째"), 2),
+               (flat.index("셋째"), 3), (flat.index("셋째"), 4)]
+    got = split_text_by_page(text, anchors, measured={1, 2, 4})
+    # 빈 쪽으로 알려지지 않았으면 그 자리는 조각을 만들지 않는다
+    assert 3 not in [c["page_no"] for c in got]
+
+
+def test_align_carries_the_blank_flag():
+    """쪽 맞춤 결과에 `blank` 가 실린다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    assert 'if chunk.get("blank")' in source
+    assert 'slot["blank"] = True' in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.46 — `page_count` 가 **우리가 낸 쪽 수**였다
+#
+# 실측(병무청): 97쪽 문서인데 align 결과는 96. 표지(PDF 1쪽)는 HWPX 에
+# 대응이 없어 자리를 못 만들었고, 그만큼 합계가 줄었다.
+#
+# 쪽 번호는 PDF 것을 그대로 쓰고 `printed_page_no` 도 PDF 와 한 칸도 다르지
+# 않은데 **합계만 어긋나 틀린 것처럼 보인다.** 보는 사람은 "쪽 수가 안
+# 맞네" 로 읽는다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _align_docs_with_cover():
+    """표지가 있어 한 쪽이 대응되지 않는 문서 두 벌."""
+    table = {"id": "table_1", "table_num": 1, "placeholder": "<table 1>",
+             "markdown": "| 구분 | 값 |\n| --- | --- |\n| 가 | 1 |",
+             "cells": [{"row": 0, "col": 0, "rowspan": 1, "colspan": 1, "text": "구분"},
+                       {"row": 0, "col": 1, "rowspan": 1, "colspan": 1, "text": "값"}]}
+    hwpx = {"filename": "가.hwpx", "source_format": "hwpx", "page_count": 1,
+            "pages": [{"page_no": 1, "page_no_kind": "document", "images": [],
+                       "content": "본문이 여기서 길게 시작합니다 첫 묶음\n\n<table 1>\n\n"
+                                  "둘째 묶음의 본문이 여기서 이어집니다",
+                       "tables": [table]}]}
+    pdf = {"filename": "가.pdf", "source_format": "pdf", "page_count": 3,
+           "pages": [{"page_no": 1, "page_no_kind": "exact", "tables": [], "images": [],
+                      "printed_page_no": None, "content": "# 표지"},
+                     {"page_no": 2, "page_no_kind": "exact", "tables": [table],
+                      "images": [], "printed_page_no": 1,
+                      "content": "본문이 여기서 길게 시작합니다 첫 묶음\n\n<table 1>"},
+                     {"page_no": 3, "page_no_kind": "exact", "tables": [], "images": [],
+                      "printed_page_no": 2,
+                      "content": "둘째 묶음의 본문이 여기서 이어집니다"}]}
+    return hwpx, pdf
+
+
+def test_page_count_comes_from_the_pdf():
+    """문서의 쪽 수는 PDF 가 정한다 — 우리가 채운 쪽 수가 아니다."""
+    from docstruct.align.documents import align_documents
+
+    hwpx, pdf = _align_docs_with_cover()
+    got = align_documents(hwpx, pdf)
+    assert got["page_count"] == pdf["page_count"]
+    assert got["aligned_pages"] <= got["page_count"]
+
+
+def test_unaligned_pages_are_named():
+    """못 채운 쪽은 숨기지 않고 번호로 적는다."""
+    from docstruct.align.documents import align_documents
+
+    hwpx, pdf = _align_docs_with_cover()
+    got = align_documents(hwpx, pdf)
+    covered = {page["page_no"] for page in got["pages"]}
+    assert got["unaligned_pages"] == sorted({1, 2, 3} - covered)
+    assert got["aligned_pages"] + len(got["unaligned_pages"]) == got["page_count"]
+
+
+def test_summary_mentions_unaligned_pages():
+    """요약이 그 사실을 말한다 — 수치만 보면 틀린 것처럼 읽힌다."""
+    from docstruct.align.documents import align_documents, summary_lines
+
+    hwpx, pdf = _align_docs_with_cover()
+    got = align_documents(hwpx, pdf)
+    text = "\n".join(summary_lines(got))
+    if got["unaligned_pages"]:
+        assert "대응 못 찾은 쪽" in text
+        assert "표지" in text
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.47 — 잣대가 쪽 맞춤보다 **눈이 어두웠다**
+#
+# `measure` 는 `keys[0]` 하나만 보고 그것이 HWPX 에 없으면 판정을 포기했다.
+# 그런데 쪽 맞춤 자신은(`_find_unique`) 후보를 **차례로** 훑는다.
+#
+# 실측(병무청 61·74·82쪽): 첫 후보는 0회인데 둘째·셋째가 1회로 멀쩡히
+# 있었다. PDF 가 낱말 사이에 공백을 넣어 조각낸 줄이 첫 후보로 잡힌
+# 탓이다(`은 행연합회` · `측 정수행기관`) — 문서에 306곳.
+#
+# 그리고 목차 대조는 제목을 **통째로** 찾았는데, PDF 는 장 번호를 뒤로
+# 돌려 내놓는다(`성과계획 목표체계 제1장`). 16항목 중 13개가 그래서
+# "본문에 없다" 로 판정됐다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _yardstick():
+    """잣대 모듈."""
+    import importlib.util
+    import pathlib
+    import sys as _sys
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "align_yardstick", root / "scripts" / "align_yardstick.py")
+    module = importlib.util.module_from_spec(spec)
+    _sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        _sys.modules.pop(spec.name, None)
+    return module
+
+
+def test_yardstick_tries_every_candidate():
+    """첫 후보가 안 맞으면 다음 후보를 본다."""
+    import inspect
+
+    source = inspect.getsource(_yardstick().measure)
+    assert "for key in keys:" in source, "후보를 차례로 보지 않는다"
+    # 고른 후보(`chosen`)로 재야 한다 — 첫 후보는 사유를 적을 때만 쓴다
+    assert "key = chosen" in source
+    assert "hits = [n for n, body in text.items() if key in body]" in source
+
+
+def test_toc_title_core_strips_numbering():
+    """목차 제목에서 번호를 뗀다 — PDF 는 장 번호를 뒤로 돌린다."""
+    module = _yardstick()
+
+    assert module._title_core("제1장 성과계획 목표체계") == "성과계획 목표체계"
+    assert module._title_core("2. 성과목표체계별 예산현황") == "성과목표체계별 예산현황"
+    assert module._title_core("1. 프로그램 성과지표 현황········· 84") == \
+        "프로그램 성과지표 현황"
+    assert module._title_core("【별첨】") == ""
+
+
+def test_toc_skips_titles_too_short_to_judge():
+    """`전략목표Ⅱ` 처럼 짧은 표제는 어느 것인지 가릴 수 없다."""
+    import inspect
+
+    module = _yardstick()
+    assert module.MIN_TOC_CORE >= 6
+    source = inspect.getsource(module.measure_toc)
+    assert "핵심어가 너무 짧다" in source
+    assert "곳에 나온다" in source, "여러 곳에 있는 제목을 그냥 센다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.49 — 한 번의 먼 눈금이 스무 쪽을 무너뜨렸다
+#
+# 실측(문체부 쪽144): 후보 둘째가 문서에 유일해서 147,868 에 눈금이
+# 찍혔는데 앞 눈금은 81,868 이었다 — **66,000자(90여 쪽) 점프.**
+# 셋째 후보가 82,552 로 바로 뒤에 있었는데 보지 못했다.
+#
+# 커서는 앞으로만 가므로 145~165쪽이 제 자리를 영영 못 찾았다. "후보가
+# 유일한데 눈금이 안 된 쪽" 이 256개였던 까닭이다.
+#
+#     문체부 본문 잣대   52% → **98%**   (세 부처는 100% 그대로)
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_far_candidate_yields_to_a_near_one():
+    """멀리 뛰는 후보보다 가까운 후보를 먼저 쓴다."""
+    from docstruct.align.page_map import MAX_ANCHOR_LEAP, _find_unique
+
+    near = "가까운자리의뚜렷한문장입니다"
+    far = "멀리떨어진자리의뚜렷한문장입니다"
+    flat = ("앞" * 100) + far + ("중" * MAX_ANCHOR_LEAP) + near
+    # 후보 순서는 먼 것이 앞 — 그래도 가까운 쪽을 골라야 한다
+    got = _find_unique(flat, [near, far], cursor=100 + len(far))
+    assert got == flat.index(near), got
+
+
+def test_far_candidate_used_when_nothing_is_near():
+    """가까운 후보가 없으면 멀더라도 쓴다 — 없는 것보다 낫다."""
+    from docstruct.align.page_map import MAX_ANCHOR_LEAP, _find_unique
+
+    far = "멀리떨어진자리의뚜렷한문장입니다"
+    flat = ("앞" * 100) + ("중" * (MAX_ANCHOR_LEAP + 500)) + far
+    assert _find_unique(flat, [far], cursor=100) == flat.index(far)
+
+
+def test_leap_guard_does_not_apply_at_the_start():
+    """첫 눈금에는 걸지 않는다 — 앞 눈금이 없으니 잴 기준이 없다."""
+    from docstruct.align.page_map import MAX_ANCHOR_LEAP, _find_unique
+
+    key = "문서뒤쪽의뚜렷한문장입니다"
+    flat = ("앞" * (MAX_ANCHOR_LEAP + 1000)) + key
+    assert _find_unique(flat, [key], cursor=0) == flat.index(key)
+
+
+def test_goal_marker_is_an_anchor_candidate():
+    """`프로그램 목표 Ⅰ-7` 은 절마다 다른 표식이다 — 절 이름은 되풀이된다."""
+    from docstruct.align.page_map import _anchor_keys, _is_marker
+
+    assert _anchor_keys({"content": "프로그램 목표 Ⅰ-7"}) == ["프로그램목표Ⅰ-7"]
+    assert _anchor_keys({"content": "전략목표Ⅱ"}) == ["전략목표Ⅱ"]
+    assert _is_marker("프로그램목표Ⅰ-7") is True
+    assert _is_marker("별첨2") is True
+    assert _is_marker("전략목표와의부합성") is False
+
+
+def test_markers_tolerate_more_repeats():
+    """표식은 여러 번 나와도 가리는 힘을 잃지 않는다.
+
+    실측(문체부): `프로그램목표Ⅰ-7` 이 정확히 3회 — 첫 번째가 본문 간지,
+    나머지 둘은 뒤쪽 별첨 표 안이다.
+    """
+    from docstruct.align.page_map import (MAX_MARKER_REPEATS, MAX_REPEATS,
+                                          _find_unique)
+
+    assert MAX_MARKER_REPEATS > MAX_REPEATS
+    key = "프로그램목표Ⅰ-7"
+    flat = key + ("가" * 50) + key + ("나" * 50) + key
+    assert _find_unique(flat, [key], 0) == 0
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.50 — `<br>` 때문에 같은 표가 서로 다른 글로 보였다
+#
+#     HWPX  |투입<br>(input)|⇒|활동<br>(activities)|…
+#     PDF   |투입(input)|활동(activities)|…
+#
+# 셀 안 문단 경계를 살리려고 0.5.21 이 넣은 표시인데, **비교할 때는 글자가
+# 아니다.** 실측(문체부): `프로그램 논리` 표가 HWPX 에 33개 다 있는데 본문
+# 대조에서는 1회로 보였다 — `<br>` 없이 이어진 한 곳만 걸린 것이다.
+# 그 한 자리로 쪽 144·180·365 가 몰려 ±100쪽씩 튀었다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_line_breaks_are_dropped_before_comparing():
+    """`<br>` 을 진짜 줄바꿈으로 되돌린다."""
+    from docstruct.align.documents import _drop_line_breaks
+    from docstruct.align.page_map import _flatten
+
+    hwpx = "|투입<br>(input)|활동<br>(activities)|"
+    pdf = "|투입(input)|활동(activities)|"
+    assert _flatten(_drop_line_breaks(hwpx)) == _flatten(pdf)
+    # 지우지 않으면 서로 다른 글이 된다
+    assert _flatten(hwpx) != _flatten(pdf)
+    # 대소문자·자체닫기도 받는다
+    assert "<" not in _drop_line_breaks("가<BR>나<br/>다")
+
+
+def test_line_break_becomes_a_newline_not_a_space():
+    """공백이 아니라 개행이다 — 뒤의 `- ` 가 줄머리 기호이기 때문이다."""
+    from docstruct.align.documents import _drop_line_breaks
+    from docstruct.align.page_map import _flatten
+
+    assert _flatten(_drop_line_breaks("가<br>- 나")) == "가나"
+
+
+def test_flatten_itself_is_left_alone():
+    """`_flatten` 은 건드리지 않는다 — `_raw_positions` 가 그 규칙을 따라 밟는다.
+
+    한쪽만 고치면 납작한 자리와 원문 자리가 어긋나 전부 밀린다
+    (실측: 잣대 98% → 15%).
+    """
+    import inspect
+
+    from docstruct.align import page_map
+
+    assert "<br" not in inspect.getsource(page_map._flatten)
+    assert "<br" not in inspect.getsource(page_map._raw_positions)
+
+
+def test_align_strips_breaks_from_both_sides():
+    """HWPX 본문과 PDF 쪽·표에서 모두 없앤다 — 한쪽만 하면 또 어긋난다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    # 0.5.56 — 지우지 않고 **가린다**(길이 보존). 산출에는 그대로 남는다.
+    assert "_mask_line_breaks(raw_body)" in source
+    assert source.count("_mask_line_breaks(") >= 3
+    assert "_restore_line_breaks(text_pages" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.51 — 남은 2% 의 정체와, 그것을 결과에 적기
+#
+# `-57` 밀림 하나는 **잣대의 오판**이었다. `실적치 집계 완료 시점 :
+# '28. 2월 예정` 이 PDF 313·370 두 쪽에 있는데, HWPX 기준으로만 유일성을
+# 따져 370 을 기대했다 — align 은 313 에 넣었고 그것이 맞다.
+#
+# 남은 4건은 전부 ±1~2 로, 눈금이 먼 구간의 잔여 오차다. 실측(네 문서):
+#
+#     2쪽 구간 100% · 3~4쪽 95% · 5~8쪽 100% · **9쪽 이상 57%**
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_yardstick_requires_pdf_side_uniqueness():
+    """PDF 여러 쪽에 같은 글이 있으면 잣대가 판정을 포기한다."""
+    import inspect
+
+    source = inspect.getsource(_yardstick().measure)
+    assert "pdf_bodies" in source
+    assert "PDF 여러 쪽" in source
+
+
+def test_wide_gap_pages_are_marked():
+    """눈금이 먼 구간의 쪽에 표시가 붙는다."""
+    from docstruct.align.documents import WIDE_GAP_PAGES, _mark_wide_gaps
+
+    by_page = {n: {"page_no": n} for n in range(1, 21)}
+    measured = {1, 3, 3 + WIDE_GAP_PAGES}
+    marked = _mark_wide_gaps(by_page, measured)
+
+    # 1~3 은 가까우므로 표시 없음
+    assert "wide_gap" not in by_page[2]
+    # 3~12 는 멀다
+    assert by_page[4]["wide_gap"] is True
+    assert by_page[4]["gap_pages"] == WIDE_GAP_PAGES
+    assert marked == list(range(4, 3 + WIDE_GAP_PAGES))
+
+
+def test_wide_gap_needs_two_anchors():
+    """눈금이 하나뿐이면 잴 구간이 없다."""
+    from docstruct.align.documents import _mark_wide_gaps
+
+    assert _mark_wide_gaps({1: {"page_no": 1}}, {1}) == []
+    assert _mark_wide_gaps({1: {"page_no": 1}}, None) == []
+
+
+def test_wide_gap_is_reported_at_document_level():
+    """문서 수준에도 어느 쪽들인지 실린다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    assert "wide_gap_pages" in source
+    assert "_mark_wide_gaps(by_page, measured)" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.52 — 잣대가 align 과 **다른 글**을 보고 있었다
+#
+# align 은 `<br>` 을 없앤 뒤 비교하는데(0.5.50) 잣대는 그대로 봤다.
+# 그래서 멀쩡한 쪽이 "후보가 HWPX 에 없다" 로 판정됐다 — 실측(문체부
+# 쪽3): 후보가 HWPX 자리 111 에 **글자 하나 다르지 않게** 있었다.
+#
+#     병무청  71/71 → 73/73 · 문체부 379/383 → 382/386
+#
+# 유사도(difflib)로 판정 불가를 더 줄여 보았지만 **되돌렸다** — 커버리지는
+# 늘었으나 밀림이 쏟아졌다(병무청 0건 → 6건 · 문체부 4건 → 35건).
+# 닮은 자리는 **같은 자리가 아니다.**
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_yardstick_sees_the_same_text_as_align():
+    """잣대와 align 이 같은 재료를 본다 — 다르면 멀쩡한 쪽이 실패로 잡힌다."""
+    import inspect
+
+    module = _yardstick()
+    source = inspect.getsource(module.measure)
+    assert "_drop_line_breaks" in source, "잣대가 `<br>` 을 그대로 본다"
+    # 본문·PDF 쪽·맞춤 결과 세 군데 모두
+    assert source.count("_drop_line_breaks(") >= 3
+
+
+def test_yardstick_does_not_guess_with_similarity():
+    """닮은 자리를 정답으로 삼지 않는다.
+
+    실측: 95% 겹침으로 받아들였더니 병무청이 0건 → 6건, 문체부가 4건 →
+    35건으로 무너졌다. 잣대가 틀린 자리를 정답으로 삼으면 **안 재느니만
+    못하다.**
+    """
+    import inspect
+
+    module = _yardstick()
+    source = inspect.getsource(module.measure)
+    assert "difflib" not in source
+    assert "_fuzzy" not in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.53 — 표가 두 쪽에 걸친 자리는 **범위**로 답한다
+#
+# PDF 가 한 표를 두 쪽에 인쇄하면 HWPX 블록 하나와 1:2 로 대응한다. 그
+# 표 안의 문장을 인용하면서 "423쪽" 이라고 하는 것은 틀린 것이 아니라
+# **부정확한 질문에 억지로 답한 것**이다 — 우리 오류가 아니라 문서의 구조다.
+#
+# 실측(문체부 613쪽): 좌표로 49건 · 걸친 쪽 86개. 병무청은 0개.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _span_pdf(pages):
+    """(쪽번호, [(t, b), …]) 목록을 PDF 쪽 구조로."""
+    return [{"page_no": no, "content": "", "images": [],
+             "tables": [{"id": f"table_{no}_{i}", "table_num": i,
+                         "placeholder": "", "markdown": "",
+                         "bbox": {"l": 58.0, "t": top, "r": 533.0, "b": bottom}}
+                        for i, (top, bottom) in enumerate(boxes)]}
+            for no, boxes in pages]
+
+
+def test_geometry_finds_tables_that_continue():
+    """아래끝에서 끝나고 다음 쪽 위끝에서 시작하면 이어지는 표다."""
+    from docstruct.align.documents import continued_tables
+
+    pdf = _span_pdf([(1, [(100.0, 780.0)]),      # 아래끝까지
+                     (2, [(56.0, 300.0)]),       # 위끝에서 시작
+                     (3, [(300.0, 500.0)])])     # 가운데 — 이어지지 않는다
+    spans = continued_tables(pdf)
+    assert spans.get(1) == [1, 2]
+    assert spans.get(2) == [1, 2]
+    assert 3 not in spans
+
+
+def test_tables_in_the_middle_are_not_spans():
+    """지면 가운데서 끝나면 이어진 것이 아니다."""
+    from docstruct.align.documents import continued_tables
+
+    pdf = _span_pdf([(1, [(100.0, 400.0)]), (2, [(56.0, 300.0)])])
+    assert continued_tables(pdf) == {}
+
+
+def test_span_is_recorded_on_the_page():
+    """그 쪽에 범위와 까닭이 적힌다."""
+    from docstruct.align.documents import _mark_page_spans
+
+    by_page = {1: {"page_no": 1}, 2: {"page_no": 2}, 3: {"page_no": 3}}
+    pdf = _span_pdf([(1, [(100.0, 780.0)]), (2, [(56.0, 300.0)]),
+                     (3, [(300.0, 500.0)])])
+    marked = _mark_page_spans(by_page, pdf)
+
+    assert marked == [1, 2]
+    assert by_page[1]["page_span"] == [1, 2]
+    assert "두 쪽에 걸쳐" in by_page[1]["span_reason"]
+    # 걸친 표가 없는 쪽에는 붙이지 않는다
+    assert "page_span" not in by_page[3]
+
+
+def test_span_pages_are_summarised():
+    """문서 수준에 어느 쪽들인지 실린다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    assert "page_span_pages" in source
+    assert "_mark_page_spans(by_page, pdf_pages)" in source
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.54 — markdown 에도 **쪽 번호를 얼마나 믿을지** 적는다
+#
+# json 에는 `printed_page_no` · `wide_gap` · `page_span` · `blank` 가 다
+# 있는데 markdown 에는 `*(추정)*` 하나뿐이었다. 근거를 인용하는 사람이
+# md 를 읽는다면 거기서도 보여야 한다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_page_note_shows_the_printed_number():
+    """인쇄 쪽을 괄호로 먼저 — 사람이 말하는 번호다."""
+    from docstruct.align.documents import _page_note
+
+    assert _page_note({"page_no": 54, "printed_page_no": 49}) == " (인쇄 49)"
+    # 표지·간지처럼 인쇄 번호가 없으면 붙이지 않는다
+    assert _page_note({"page_no": 2}) == ""
+
+
+def test_page_note_gathers_the_warnings():
+    """믿을 만한 정도를 한 덩어리로 묶는다."""
+    from docstruct.align.documents import _page_note
+
+    got = _page_note({"page_no": 434, "printed_page_no": 429,
+                      "estimated": True, "page_span": [433, 434]})
+    assert got == " (인쇄 429) *(추정 · 표가 433~434쪽에 걸침)*"
+
+    wide = _page_note({"page_no": 527, "estimated": True,
+                       "wide_gap": True, "gap_pages": 35})
+    assert "눈금이 35쪽 떨어짐" in wide
+
+    assert "빈 지면" in _page_note({"page_no": 31, "blank": True})
+
+
+def test_page_note_stays_quiet_when_nothing_to_say():
+    """붙일 것이 없으면 아무것도 붙이지 않는다.
+
+    모든 제목에 꼬리가 달리면 읽는 눈이 흐려진다 — 있다는 것 자체가
+    신호여야 한다.
+    """
+    from docstruct.align.documents import _page_note
+
+    assert _page_note({"page_no": 7}) == ""
+    assert _page_note({"page_no": 7, "printed_page_no": 2}) == " (인쇄 2)"
+
+
+def test_markdown_uses_the_note():
+    """쪽 제목이 그 표시를 쓴다."""
+    from docstruct.align.documents import to_markdown
+
+    result = {"filename": "가.hwpx", "page_count": 2, "total_tables": 0,
+              "matched_tables": 0, "matchable_tables": 0, "matchable_matched": 0,
+              "matched_by_text": 0, "unmatched_tables": 0,
+              "unmatched_layout_like": 0, "estimated_pages": 1, "unmatched": [],
+              "head": "", "head_chars": 0,
+              "pages": [{"page_no": 1, "page_no_kind": "exact",
+                         "printed_page_no": None, "content": "첫 쪽", "tables": []},
+                        {"page_no": 2, "page_no_kind": "approximate",
+                         "printed_page_no": 1, "estimated": True,
+                         "page_span": [2, 3], "content": "둘째 쪽", "tables": []}]}
+    md = to_markdown(result)
+    assert "## 페이지 1\n" in md
+    assert "## 페이지 2 (인쇄 1) *(추정 · 표가 2~3쪽에 걸침)*" in md
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.55 — 매달린 표가 **지면 순서와 다르게** 나왔다
+#
+# 실측(병무청 10쪽): 한 문단에 표가 둘인데
+#
+#     위원 명단  treatAsChar=0 · vertOffset=23,871   ← 84mm 아래에 그려진다
+#     조직도     treatAsChar=1 · vertOffset=0        ← 글자처럼 제자리
+#
+# XML 순서만 따르니 아래에 인쇄될 위원 명단이 먼저 나왔다:
+#
+#     본문   □ 성과목표관리 추진체계 · 위원명단 · 조직도 · □ 자체평가…
+#     지면   □ 성과목표관리 추진체계 · 조직도 · □ 자체평가… · 위원명단
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_anchored_table_sorts_by_offset():
+    """매달린 표는 `vertOffset` 이 지면 순서다."""
+    from xml.etree import ElementTree as ET
+
+    from docstruct.converters.hwpx.hwpxtree import _tbl_order
+
+    def tbl(as_char, offset):
+        ns = 'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"'
+        return ET.fromstring(
+            f'<hp:tbl {ns}><hp:pos treatAsChar="{as_char}" '
+            f'vertOffset="{offset}"/></hp:tbl>')
+
+    assert _tbl_order(tbl(0, 23871)) == 23871
+    # 글자 취급은 문단 흐름 그대로 — 키를 0 으로 두어 제자리를 지킨다
+    assert _tbl_order(tbl(1, 23871)) == 0
+
+
+def test_nested_tables_are_not_mixed_across_depths():
+    """깊이가 다른 표끼리 견주지 않는다.
+
+    `vertOffset` 은 **제 부모 기준**이다. 실측(병무청): 한 문단의 표 셋이
+    `off=1882`(바깥) · `224`(그 안) · `424`(또 그 안)로 깊이가 달랐고,
+    섞어 정렬하니 바깥 표가 안쪽 뒤로 밀려 **본문 17군데가 어긋났다.**
+    """
+    from xml.etree import ElementTree as ET
+
+    from docstruct.converters.hwpx.hwpxtree import _tables_in_order
+
+    ns = 'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"'
+    xml = (f'<hp:p {ns}>'
+           '<hp:tbl><hp:pos treatAsChar="0" vertOffset="1882"/>'
+           '<hp:tr><hp:tc><hp:subList>'
+           '<hp:tbl><hp:pos treatAsChar="0" vertOffset="224"/></hp:tbl>'
+           '</hp:subList></hp:tc></hp:tr></hp:tbl>'
+           '</hp:p>')
+    got = _tables_in_order(ET.fromstring(xml))
+    # 바깥 표가 먼저 — 안쪽이 offset 은 작지만 깊이가 다르다
+    assert len(got) == 2
+    outer = got[0]
+    assert len(list(outer.iter())) > len(list(got[1].iter()))
+
+
+def test_nested_tables_still_come_out():
+    """안쪽 표를 빼지 않는다 — 별도 블록으로 나오는 계약이 있다."""
+    from xml.etree import ElementTree as ET
+
+    from docstruct.converters.hwpx.hwpxtree import _tables_in_order
+
+    ns = 'xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"'
+    xml = (f'<hp:p {ns}><hp:tbl><hp:pos treatAsChar="1" vertOffset="0"/>'
+           '<hp:tr><hp:tc><hp:subList><hp:tbl/></hp:subList></hp:tc></hp:tr>'
+           '</hp:tbl></hp:p>')
+    assert len(_tables_in_order(ET.fromstring(xml))) == 2
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.56 — 같은 표가 두 번 실렸다
+#
+# 0.5.50 이 비교를 위해 `<br>` 을 **개행으로 바꿨는데**, 그 본문이 그대로
+# 잘려 산출물이 됐다. 두 가지가 깨졌다:
+#
+#   ① 셀 안에 진짜 개행이 들어가 **GFM 표가 깨진다**
+#   ② 표 markdown 과 달라져 `to_markdown` 의 중복 검사
+#      (`markdown not in body`)가 빗나가 **같은 표가 두 번** 실린다
+#
+# 실측(병무청 6쪽): `<table 13>` 의 내용이 두 번 나왔다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_line_breaks_are_masked_not_removed():
+    """`<br>` 을 **같은 길이의 빈칸**으로 가린다 — 자리가 어긋나면 안 된다."""
+    from docstruct.align.documents import _mask_line_breaks
+
+    raw = "| ㅇ가<br>-나 |"
+    masked = _mask_line_breaks(raw)
+    assert len(masked) == len(raw), "길이가 달라졌다 — 눈금 자리가 어긋난다"
+    assert "<br>" not in masked
+    assert masked == "| ㅇ가    -나 |"
+
+
+def test_masked_text_compares_equal():
+    """가린 글과 PDF 글이 납작하게 펴면 같아진다."""
+    from docstruct.align.documents import _mask_line_breaks
+    from docstruct.align.page_map import _flatten
+
+    assert _flatten(_mask_line_breaks("|투입<br>(input)|")) == _flatten("|투입(input)|")
+
+
+def test_original_text_is_restored_after_splitting():
+    """자른 뒤 원본으로 되돌린다 — 산출에는 `<br>` 이 남아야 한다."""
+    from docstruct.align.documents import _mask_line_breaks, _restore_line_breaks
+
+    raw = "앞 쪽입니다\n\n| 가<br>나 |\n\n뒤 쪽입니다"
+    masked = _mask_line_breaks(raw)
+    cut = masked.index("|")            # 표는 한 조각 안에 온전히 둔다
+    chunks = [{"page_no": 1, "content": masked[:cut].strip()},
+              {"page_no": 2, "content": masked[cut:].strip()}]
+    _restore_line_breaks(chunks, raw, masked)
+    assert "<br>" in chunks[1]["content"], "원본으로 돌아오지 않았다"
+    assert chunks[0]["content"] == "앞 쪽입니다"
+
+
+def test_restore_is_skipped_when_lengths_differ():
+    """길이가 다르면 손대지 않는다 — 자리가 맞지 않는다."""
+    from docstruct.align.documents import _restore_line_breaks
+
+    chunks = [{"page_no": 1, "content": "그대로"}]
+    _restore_line_breaks(chunks, "짧음", "더 긴 글입니다")
+    assert chunks[0]["content"] == "그대로"
+
+
+def test_markdown_does_not_repeat_a_table():
+    """본문에 이미 있는 표를 또 싣지 않는다."""
+    from docstruct.align.documents import to_markdown
+
+    table = {"id": "table_1", "table_num": 1, "placeholder": "<table 1>",
+             "markdown": "| 가<br>나 |\n| --- |"}
+    result = {"filename": "가.hwpx", "page_count": 1, "total_tables": 1,
+              "matched_tables": 1, "matchable_tables": 1, "matchable_matched": 1,
+              "matched_by_text": 0, "unmatched_tables": 0,
+              "unmatched_layout_like": 0, "estimated_pages": 0, "unmatched": [],
+              "head": "", "head_chars": 0,
+              "pages": [{"page_no": 1, "page_no_kind": "exact",
+                         "content": "앞글\n\n| 가<br>나 |\n| --- |",
+                         "tables": [table]}]}
+    md = to_markdown(result)
+    assert md.count("| 가<br>나 |") == 1, "같은 표가 두 번 실렸다"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.57 — 쪽 **안에서** 순서를 PDF 에 맞춘다
+#
+# HWP 는 매달린 표를 `vertOffset` 만큼 아래에 그린다. 그 값이 문단을 넘으면
+# (실측: 매달린 표 1,006개 중 **35개**) 표가 뒤따르는 글보다 아래에
+# 인쇄되는데, 판독은 표를 문단 끝에 붙이므로 순서가 꼬인다:
+#
+#     지면   □추진체계 · 조직도 · □자체평가위원회 · ㅇ구성 · 명단
+#     판독   □추진체계 · 조직도 · 명단 · □자체평가위원회 · ㅇ구성
+#
+# 고치려면 한글의 조판을 재현해야 한다 — 그런데 **PDF 가 답을 안다.**
+# **쪽 배정은 건드리지 않는다**: 그 쪽에 이미 배정된 조각들끼리만 바꾼다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_pieces_are_ordered_by_pdf_position():
+    """표와 글을 함께 PDF 순서로 늘어놓는다."""
+    import re
+
+    from docstruct.align.documents import _reorder_page
+
+    # 조각은 납작하게 편 뒤 8자 이상이어야 자리를 잰다
+    content = ("□ 성과목표관리 추진체계입니다\n\n"
+               "<table 1>\n| 재정성과책임관 조직도입니다 |\n</table 1>\n\n"
+               "<table 2>\n| 자체평가위원 명단입니다 |\n</table 2>\n\n"
+               "□ 자체평가위원회 운영 계획입니다")
+    blocks = list(re.finditer(r"<table (\d+)>.*?</table \1>", content, re.DOTALL))
+    pdf = ("□ 성과목표관리 추진체계입니다 | 재정성과책임관 조직도입니다 | "
+           "□ 자체평가위원회 운영 계획입니다 | 자체평가위원 명단입니다 |")
+    by_id = {"table_1": {"markdown": "| 재정성과책임관 조직도입니다 |"},
+             "table_2": {"markdown": "| 자체평가위원 명단입니다 |"}}
+
+    got, moved = _reorder_page(content, blocks, pdf, by_id)
+    assert moved > 0
+    assert got.index("자체평가위원회 운영") < got.index("자체평가위원 명단"), got
+
+
+def test_trailing_prose_is_a_piece_too():
+    """마지막 표 뒤의 글도 조각이다 — 빼면 늘 맨 뒤로 간다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents._reorder_page)
+    assert "tail = content[last:]" in source
+    assert "pieces.append((tail, spot))" in source
+
+
+def test_nothing_moves_when_a_piece_is_unknown():
+    """조각 하나라도 PDF 에서 못 찾으면 아무것도 옮기지 않는다."""
+    import re
+
+    from docstruct.align.documents import _reorder_page
+
+    content = ("□ 성과목표관리 추진체계입니다\n\n"
+               "<table 1>\n| 재정성과책임관 조직도입니다 |\n</table 1>\n\n"
+               "<table 2>\n| 자체평가위원 명단입니다 |\n</table 2>")
+    blocks = list(re.finditer(r"<table (\d+)>.*?</table \1>", content, re.DOTALL))
+    by_id = {"table_1": {"markdown": "| 재정성과책임관 조직도입니다 |"},
+             "table_2": {"markdown": "| 자체평가위원 명단입니다 |"}}
+    # PDF 에 명단이 없다
+    got, moved = _reorder_page(
+        content, blocks, "□ 성과목표관리 추진체계입니다 | 재정성과책임관 조직도입니다 |",
+        by_id)
+    assert moved == 0
+    assert got == content
+
+
+def test_reorder_never_touches_page_numbers():
+    """쪽 배정은 건드리지 않는다 — 쪽 안에서만 바꾼다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents._reorder_by_pdf)
+    assert 'slot["content"]' in source
+    # 쪽 번호를 옮기는 코드가 없어야 한다
+    assert 'slot["page_no"]' not in source
+    assert "by_page[" not in source.split("for page_no, slot")[1]
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.58 — 쪽이 갈린 표는 **범위로 적는다**
+#
+# 표의 쪽은 두 갈래로 정해진다: 본문 자르기(눈금)와 표 짝짓기(PDF 대조).
+# 둘이 1쪽 차이로 다른 답을 내는 일이 있다 — 실측(병무청 79표 중 11건 ·
+# 조달청 63표 중 4건 · 문체부 66건).
+#
+# **짝이 부실해서가 아니다**: 닮음 1.0 인 표도 갈렸다(table_63 · table_110).
+# 그 표들은 대개 쪽 경계에 걸쳐 있어 "어느 쪽" 이라는 질문에 답이 없다.
+# 어느 하나를 고르지 않고 두 답을 범위로 남긴다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_disputed_table_gets_a_span():
+    """본문과 표 짝이 다른 쪽을 가리키면 범위를 적는다."""
+    from docstruct.align.documents import _mark_disputed_tables
+
+    by_page = {
+        10: {"page_no": 10, "content": "앞글\n\n<table 22>\n| 가 |\n</table 22>",
+             "tables": []},
+        11: {"page_no": 11, "content": "뒷글",
+             "tables": [{"id": "table_22", "table_num": 22,
+                         "markdown": "| 성명 | 소속 | 직위(직급) | 주요경력 |"}]},
+    }
+    # PDF 에 그 표가 두 조각으로 있다 = 진짜 걸침 (머리행을 다시 찍는다)
+    pdf_tables = [(10, {"markdown": "| 성명 | 소속 | 직위(직급) | 주요경력 |"}),
+                  (11, {"markdown": "| 성명 | 소속 | 직위(직급) | 주요경력 |"})]
+    marked = _mark_disputed_tables(by_page, pdf_tables)
+    assert marked == ["table_22"]
+    table = by_page[11]["tables"][0]
+    assert table["page_span"] == [10, 11]
+    assert "두 쪽에 걸쳐" in table["span_reason"]
+
+
+def test_agreeing_table_is_left_alone():
+    """두 답이 같으면 아무것도 붙이지 않는다."""
+    from docstruct.align.documents import _mark_disputed_tables
+
+    by_page = {
+        10: {"page_no": 10, "content": "<table 22>\n| 가 |\n</table 22>",
+             "tables": [{"id": "table_22", "table_num": 22, "markdown": "| 가 |"}]},
+    }
+    assert _mark_disputed_tables(by_page, []) == []
+    assert "page_span" not in by_page[10]["tables"][0]
+
+
+def test_table_missing_from_body_is_not_disputed():
+    """본문에 없는 표는 견줄 상대가 없다 — 판단하지 않는다."""
+    from docstruct.align.documents import _mark_disputed_tables
+
+    by_page = {
+        10: {"page_no": 10, "content": "글만 있다",
+             "tables": [{"id": "table_9", "table_num": 9, "markdown": "| 가 |"}]},
+    }
+    assert _mark_disputed_tables(by_page, []) == []
+
+
+def test_mispaired_table_is_not_called_a_span():
+    """PDF 에 없는 표는 **걸친 것이 아니다** (0.5.59).
+
+    실측(병무청): 조직도(table_22)가 명단 조각과 0.57 로 짝지어져 11쪽에
+    실렸다. 범위를 적으면 걸치지도 않은 표에 걸렸다고 말하는 것이 된다.
+    """
+    from docstruct.align.documents import _mark_disputed_tables
+
+    by_page = {
+        10: {"page_no": 10, "content": "<table 22>\n| 조직도입니다 |\n</table 22>",
+             "tables": []},
+        11: {"page_no": 11, "content": "뒷글",
+             "tables": [{"id": "table_22", "table_num": 22,
+                         "markdown": "| 조직도입니다 |"}]},
+    }
+    # PDF 에는 그 표가 없다
+    _mark_disputed_tables(by_page, [(11, {"markdown": "| 전혀 다른 표입니다 |"})])
+    table = by_page[11]["tables"][0]
+    assert "page_span" not in table, "걸치지 않은 표에 범위를 적었다"
+    assert table["pairing_doubt"] is True
+
+
+def test_pdf_parts_counts_repeated_headers():
+    """머리행이 여러 PDF 표에 있으면 걸친 표다 — 머리행 반복은 중복이 아니다."""
+    from docstruct.align.documents import _pdf_parts
+
+    md = ("| 성명 | 소속 | 직위(직급) | 주요경력 |\n| --- | --- | --- | --- |\n"
+          "| 가 | 나 | 다 | 라 |")
+    head = "| 성명 | 소속 | 직위(직급) | 주요경력 |"
+    assert _pdf_parts(md, [(10, {"markdown": head}), (11, {"markdown": head})]) == 2
+    assert _pdf_parts(md, [(10, {"markdown": "| 전혀 다른 표입니다 |"})]) == 0
+
+
+def test_markdown_explains_a_disputed_table():
+    """md 로 낼 때 같은 표임을 알 수 있어야 한다."""
+    from docstruct.align.documents import to_markdown
+
+    table = {"id": "table_22", "table_num": 22, "placeholder": "<table 22>",
+             "markdown": "| 조직도 |", "page_span": [10, 11],
+             "span_reason": "본문 위치와 표 짝이 다른 쪽을 가리킴"}
+    result = {"filename": "가.hwpx", "page_count": 1, "total_tables": 1,
+              "matched_tables": 1, "matchable_tables": 1, "matchable_matched": 1,
+              "matched_by_text": 0, "unmatched_tables": 0,
+              "unmatched_layout_like": 0, "estimated_pages": 0, "unmatched": [],
+              "head": "", "head_chars": 0,
+              "pages": [{"page_no": 11, "page_no_kind": "exact",
+                         "content": "뒷글\n\n<table 22>\n| 조직도 |\n</table 22>",
+                         "tables": [table]}]}
+    md = to_markdown(result)
+    # 0.5.59 — 본문 문장이 아니라 **표 블록 태그에 붙은 주석**으로 적는다
+    assert "<table 22><!--" in md, "블록 태그 옆에 붙지 않았다"
+    assert "10~11쪽에 걸친 표" in md
+
+
+def test_note_goes_on_the_block_tag():
+    """주석은 **표 블록 태그 옆**에 붙는다 — 본문 문장이 되면 안 된다."""
+    from docstruct.align.documents import _annotate_blocks
+
+    body = "앞글입니다\n\n<table 22>\n| 가 |\n</table 22>\n\n뒷글입니다"
+    page = {"page_no": 10,
+            "tables": [{"id": "table_22", "table_num": 22,
+                        "page_span": [10, 11], "span_reason": "표가 두 쪽에 걸쳐 인쇄됨"}]}
+    got = _annotate_blocks(body, page)
+    assert "<table 22><!--" in got
+    # 본문 글은 그대로다
+    assert got.startswith("앞글입니다")
+    assert got.endswith("뒷글입니다")
+
+
+def test_unmatched_span_is_counted_at_build_time():
+    """짝을 못 지은 표의 조각 수를 만들 때 적어 둔다.
+
+    `to_markdown` 은 PDF 원본을 받지 않으므로 나중에는 셀 수 없다 —
+    실측(병무청 `table_23` 명단): 짝은 하나만 지어지고 나머지가 여기로 온다.
+    """
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    assert 'note["pdf_parts"] = parts' in source
+    collect = inspect.getsource(documents._collect_notes)
+    assert 'align_note' in collect
+
+
+def test_header_match_tolerates_pdf_noise():
+    """PDF 가 글자를 더해도 걸친 표를 알아본다.
+
+    실측(병무청 10쪽): 머리행이 `직위(직급))주요경력` 으로 닫는 괄호가 하나
+    더 붙어 있었다. 그 한 자 때문에 놓치면 안 된다.
+    """
+    from docstruct.align.documents import _pdf_parts
+
+    md = "| 성명 | 소속 | 직위(직급) | 주요경력 | 비고 |\n| --- | --- |"
+    noisy = "| 성명 | 소속 | 직위(직급)) | 주요경력 | 비고 |"
+    clean = "| 성명 | 소속 | 직위(직급) | 주요경력 | 비고 |"
+    assert _pdf_parts(md, [(10, {"markdown": noisy}),
+                           (11, {"markdown": clean})]) == 2
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.61 — 그림이 캡션 쪽에 붙어 있었다
+#
+# 자리표시자(`<image 1>`)는 본문에 붙어 있어 본문 경계를 따라간다. 그런데
+# 그림은 캡션보다 **다음 쪽**에 인쇄되는 일이 있다 — 실측(병무청):
+#
+#     캡션 `<전년도 대비 전략목표별 재원배분 변화>`   PDF 27쪽(인쇄 22)
+#     그래프                                        PDF 28쪽(인쇄 23)
+#
+# 그림이 실제로 어디 있는지는 PDF 가 안다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_image_moves_to_the_pdf_page():
+    """PDF 에 읽을 만한 그림이 이웃 쪽에 딱 하나면 그쪽으로 옮긴다."""
+    from docstruct.align.documents import _image_page_from_pdf
+
+    big = {"bbox": {"l": 50.0, "t": 100.0, "r": 500.0, "b": 300.0}}
+    pdf_images = {28: [big]}
+    assert _image_page_from_pdf({}, 27, pdf_images) == 28
+
+
+def test_image_stays_when_several_candidates():
+    """이웃에 그림이 둘 이상이면 가릴 수 없다 — 움직이지 않는다."""
+    from docstruct.align.documents import _image_page_from_pdf
+
+    big = {"bbox": {"l": 50.0, "t": 100.0, "r": 500.0, "b": 300.0}}
+    assert _image_page_from_pdf({}, 27, {27: [big], 28: [big]}) is None
+    assert _image_page_from_pdf({}, 27, {}) is None
+
+
+def test_small_images_are_not_counted():
+    """아이콘·글머리 기호는 근거가 못 된다 — 어느 쪽에나 있다."""
+    from docstruct.align.documents import _image_page_from_pdf
+
+    tiny = {"bbox": {"l": 50.0, "t": 100.0, "r": 90.0, "b": 130.0}}
+    assert _image_page_from_pdf({}, 27, {28: [tiny]}) is None
+
+
+def test_moved_image_says_where_it_came_from():
+    """옮겼으면 그 사실을 남긴다 — 조용히 바꾸지 않는다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents._place_images)
+    assert '"page_moved_from"' in source
+    assert '"move_reason"' in source
+
+
+def test_image_block_moves_with_the_field():
+    """`images` 필드만 옮기면 반쪽이다 — 본문 블록도 함께 간다.
+
+    markdown 은 본문을 따라가므로, 필드만 바꾸면 그림이 여전히 캡션 쪽에
+    찍힌다(0.5.61 첫 판이 그랬다).
+    """
+    from docstruct.align.documents import _move_image_block
+
+    source = {"page_no": 27,
+              "content": "**<캡션입니다>**\n\n<image 1>\n<image-read 1>\n읽은 글\n"
+                         "</image-read 1>\n</image 1>"}
+    target = {"page_no": 28, "content": "다음 쪽 본문"}
+    assert _move_image_block(source, target, "<image 1>") is True
+
+    assert "<image 1>" not in source["content"]
+    assert "캡션입니다" in source["content"], "캡션은 그 쪽의 글이다"
+    assert target["content"].startswith("<image 1>")
+    assert "읽은 글" in target["content"]
+    assert "다음 쪽 본문" in target["content"]
+
+
+def test_move_is_refused_when_block_is_absent():
+    """본문에 그 블록이 없으면 옮기지 않는다."""
+    from docstruct.align.documents import _move_image_block
+
+    source = {"page_no": 27, "content": "그림이 없는 쪽"}
+    target = {"page_no": 28, "content": "다음 쪽"}
+    assert _move_image_block(source, target, "<image 9>") is False
+    assert source["content"] == "그림이 없는 쪽"
+    assert target["content"] == "다음 쪽"
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.63 — 그림 판독의 수치를 **그 쪽에서** 대조한다
+#
+# VLM 이 그래프 숫자를 잘못 읽는 일이 있다 — 실측(병무청):
+# `89.7% → 90.2%` 를 **`69.7% → 80.2%`** 로 읽었다.
+#
+# 문서 전체에서 찾으면 뜻이 없다: 잘못 읽은 `69.7%` 가 90,000자 어딘가에
+# 우연히 있어 **전부 확인으로 통과했다.** 그림이 실린 쪽과 그 이웃으로
+# 좁혀야 한다 — 좁히니 `partial (2/6)` 으로 잡혔다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_image_numbers_are_checked_against_the_page():
+    """판독 수치가 그 쪽에 있는지 본다."""
+    from docstruct.align.documents import _check_image_numbers
+
+    by_page = {10: {"page_no": 10,
+                    "images": [{"id": "image_1", "image_num": 1,
+                                "vlm_markdown": "비중이 89.7%에서 90.2%로 늘었습니다"}]}}
+    pdf = [{"page_no": 10, "content": "표에 89.7% 와 90.2% 가 적혀 있다", "tables": []}]
+    _check_image_numbers(by_page, pdf)
+    image = by_page[10]["images"][0]
+    assert image["number_check"] == "verified"
+    assert image["numbers_found"] == 2
+
+
+def test_misread_numbers_are_flagged():
+    """잘못 읽은 수치는 그 쪽에 없다 — 표시가 붙는다."""
+    from docstruct.align.documents import _check_image_numbers
+
+    by_page = {10: {"page_no": 10,
+                    "images": [{"id": "image_1", "image_num": 1,
+                                "vlm_markdown": "69.7%에서 80.2%로 늘었습니다"}]}}
+    pdf = [{"page_no": 10, "content": "표에 89.7% 와 90.2% 가 적혀 있다", "tables": []}]
+    _check_image_numbers(by_page, pdf)
+    assert by_page[10]["images"][0]["number_check"] == "unseen"
+
+
+def test_short_numbers_are_not_counted():
+    """연도나 한두 자리 숫자는 근거가 못 된다 — 어느 쪽에나 있다."""
+    from docstruct.align.documents import _check_image_numbers
+
+    by_page = {10: {"page_no": 10,
+                    "images": [{"id": "image_1", "image_num": 1,
+                                "vlm_markdown": "2026년과 2027년을 비교한 그림 3개"}]}}
+    _check_image_numbers(by_page, [{"page_no": 10, "content": "", "tables": []}])
+    assert by_page[10]["images"][0]["number_check"] == "none"
+
+
+def test_verified_images_get_no_note():
+    """확인된 것이 보통이다 — 표시가 있다는 것 자체가 신호여야 한다."""
+    from docstruct.align.documents import _image_note
+
+    assert _image_note({"number_check": "verified"}) == ""
+    assert "일부만" in _image_note({"number_check": "partial",
+                                  "numbers_found": 2, "numbers_checked": 6})
+    assert "옮김" in _image_note({"number_check": "verified",
+                                "page_moved_from": 27,
+                                "move_reason": "PDF 에서 그림이 실린 쪽"})

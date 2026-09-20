@@ -132,13 +132,23 @@ def _convert_group_to_image(
     if first is None:
         return None, set()
 
-    placeholder = f"<!-- img_from_{first.id} -->"
+    # **`<image N>` 블록을 쓴다** (0.5.30). 여기만 옛 주석 표식
+    # (`<!-- img_from_… -->`)이 남아 0.4.89 의 규칙 밖에 있었다 — 본문
+    # 펼치기(`output.content`)도 그림 구간 표시(0.5.9)도 이 자리를
+    # 비켜 갔다. 번호는 그 쪽에서 쓰지 않은 가장 큰 번호 다음을 쓴다.
+    from docstruct.images.tags import make_image_block, open_tag
+
+    used = [n for n in (getattr(i, "image_num", None) for i in page.images)
+            if isinstance(n, int)]
+    image_num = (max(used) + 1) if used else 1
+    placeholder = open_tag(image_num)
+    block = make_image_block(image_num, first.llm_title or first.reason)
 
     span = block_span(page.content, first.table_num)
     if span:
-        page.content = page.content[: span[0]] + placeholder + page.content[span[1]:]
+        page.content = page.content[: span[0]] + block + page.content[span[1]:]
     else:
-        page.content = page.content.replace(first.placeholder, placeholder)
+        page.content = page.content.replace(first.placeholder, block)
 
     for tid in group_ids[1:]:
         tbl = table_map.get(tid)
@@ -156,6 +166,7 @@ def _convert_group_to_image(
 
     return ImageInfo(
         id=f"img_from_{first.id}",
+        image_num=image_num,
         placeholder=placeholder,
         description=first.llm_title or first.reason,
         image_path=page.page_image_path,
@@ -338,7 +349,24 @@ def _apply_fill(page: PageContent, table: TableInfo, md: str) -> None:
     table.original_markdown = table.markdown   # 비교용으로 원본 보존
     table.markdown = md
     page.content = sync_table_block(page.content, table.table_num, md)
-    _log.debug("표 재추출 완료: id=%s (%d자)", table.id, len(md))
+
+    # **cells 도 함께 간다** (0.5.16). markdown 만 바꾸면 `cells` 는 앞
+    # 단계(격자 복원·파서)의 것이 남아 **둘이 다른 표를 말한다.** 구조화
+    # 전개·⑧ 검산·채점기가 전부 `cells` 를 읽으므로 조용히 옛 구조로
+    # 계산한다 — 0.4.83(오염 복원)·0.5.10(PDF 렌더러)과 같은 계열이고,
+    # VLM 경로(`vlm_rebuild`)는 이미 둘 다 갱신하는데 여기만 빠져 있었다.
+    #
+    # 실측(개인정보보호위원회 0.5.15): `lattice_fill` 이 다시 세운 표를
+    # LLM 이 재추출하자 `cells` 에만 `성 과 분 야` 가 남고 markdown 에는
+    # 없었다 — 2표 6칸.
+    #
+    # 못 읽으면 **비운다.** 틀린 구조를 남기는 것보다 없는 편이 낫다 —
+    # 없으면 쓰는 쪽이 건너뛰지만, 틀린 것은 그대로 계산에 들어간다.
+    from docstruct.tables.grade import cells_from_markdown
+
+    table.cells = cells_from_markdown(md) or []
+    _log.debug("표 재추출 완료: id=%s (%d자, 셀 %d개)",
+               table.id, len(md), len(table.cells))
 
 
 def process_tables(

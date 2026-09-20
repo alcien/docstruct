@@ -404,6 +404,693 @@ def layout_hint(table: dict) -> dict:
     }
 
 
+#: 눈금 사이가 이보다 벌어지면 그 사이 쪽들을 "먼 구간" 으로 표시한다.
+#: 실측(네 문서): 8쪽 이내는 거의 100%, 9쪽 넘으면 57%.
+WIDE_GAP_PAGES = 9
+
+
+def _mark_wide_gaps(by_page: dict, measured: set[int] | None) -> list[int]:
+    """**눈금이 먼 구간**의 쪽에 표시를 남긴다 (0.5.51).
+
+    입력: by_page — 쪽별 슬롯 (제자리 갱신), measured — 눈금을 잡은 쪽
+    출력: 표시한 쪽 번호 목록
+    비고:
+        보간은 눈금 사이가 벌어질수록 오차가 커진다. 실측(네 문서):
+
+            2쪽 구간   100%      5~8쪽    100%
+            3~4쪽       95%      9쪽 이상  **57%**
+
+        `page_no_kind: approximate` 만으로는 "조금 추정" 과 "많이 추정" 이
+        구별되지 않는다. 근거를 인용하는 쪽이 쪽 번호를 얼마나 믿을지
+        정하려면 그 차이가 보여야 한다.
+
+        `gap_pages` 로 그 구간이 몇 쪽인지도 함께 적는다.
+    """
+    anchored = sorted(measured or set())
+    if len(anchored) < 2:
+        return []
+    marked: list[int] = []
+    for start, end in zip(anchored, anchored[1:]):
+        if end - start < WIDE_GAP_PAGES:
+            continue
+        for page_no in range(start + 1, end):
+            slot = by_page.get(page_no)
+            if slot is None:
+                continue
+            slot["wide_gap"] = True
+            slot["gap_pages"] = end - start
+            marked.append(page_no)
+    return marked
+
+
+#: 표가 지면 **아래끝**에 닿았다고 볼 좌표(pt). A4 높이는 842pt.
+SPAN_BOTTOM = 760.0
+#: 표가 지면 **위끝**에서 시작했다고 볼 좌표(pt).
+SPAN_TOP = 110.0
+
+
+def continued_tables(pdf_pages: list[dict]) -> dict[int, list[int]]:
+    """PDF **좌표로** 쪽을 넘는 표를 짚는다 (0.5.53).
+
+    입력: pdf_pages — PDF 판독 결과의 쪽 목록
+    출력: {쪽 번호: 그 표가 걸친 쪽 범위}
+    비고:
+        표가 지면 아래끝에서 끝나고 다음 쪽 위끝에서 시작하면 **한 표가
+        두 쪽에 인쇄된 것**이다. 실측(문체부 613쪽): 49건 · 걸친 쪽 87개.
+
+        **왜 좌표인가** — 이 자리는 쪽 번호 하나로 답할 수 없다. 표 안
+        문장을 인용하면서 "423쪽" 이라고 하면 틀린 것이 아니라 **부정확한
+        질문에 억지로 답한 것**이다. 우리 오류가 아니라 문서의 구조다.
+
+        텍스트로 찾으려 해도 그 문장은 HWPX 에서 표 블록 안에 있고, 블록은
+        통째로 앞 쪽에 배정된다 — 뒤쪽 조각이 갈 데가 없다(0.5.38 에서 본
+        구조적 한계). 좌표는 그 사실을 **추정 없이** 말해 준다.
+
+        PDF 표는 `bbox` 를 모두 갖는다(실측: 475/475).
+    """
+    by_page = {page.get("page_no"): (page.get("tables") or [])
+               for page in pdf_pages}
+    spans: dict[int, list[int]] = {}
+    for page_no in sorted(n for n in by_page if isinstance(n, int)):
+        here, after = by_page.get(page_no) or [], by_page.get(page_no + 1) or []
+        if not here or not after:
+            continue
+        lowest = max(((t.get("bbox") or {}).get("b") or 0) for t in here)
+        highest = min(((t.get("bbox") or {}).get("t") or 9999) for t in after)
+        if lowest >= SPAN_BOTTOM and highest <= SPAN_TOP:
+            for member in (page_no, page_no + 1):
+                spans.setdefault(member, [page_no, page_no + 1])
+                spans[member] = [min(spans[member][0], page_no),
+                                 max(spans[member][1], page_no + 1)]
+    return spans
+
+
+#: 쪽 안에서 블록을 옮길 때 표가 이만큼은 닮아야 한다.
+MIN_REORDER_MATCH = 0.5
+
+
+def _reorder_by_pdf(by_page: dict, pdf_pages: list[dict],
+                    hwpx_tables: list) -> int:
+    """쪽 **안에서** 블록 순서를 PDF 에 맞춘다 (0.5.57).
+
+    입력: by_page — 쪽별 슬롯 (제자리 갱신), pdf_pages — PDF 쪽 목록,
+          hwpx_tables — (쪽, 표) 목록
+    출력: 자리를 바꾼 표 수
+    비고:
+        HWP 는 매달린 표(`treatAsChar=0`)를 `vertOffset` 만큼 아래에
+        그린다. 그 값이 문단을 넘으면(실측: 1,006개 중 **35개**) 표가
+        뒤따르는 문단 글보다 아래에 인쇄되는데, 판독은 표를 문단 끝에
+        붙이므로 순서가 꼬인다:
+
+            지면   □추진체계 · 조직도 · □자체평가위원회 · ㅇ구성 · 명단
+            판독   □추진체계 · 조직도 · 명단 · □자체평가위원회 · ㅇ구성
+
+        고치려면 한글의 조판(글꼴·줄간격으로 문단 높이 계산)을 재현해야
+        한다. 그런데 **PDF 가 답을 안다** — 같은 쪽을 인쇄해 두었다.
+
+        **쪽 배정은 건드리지 않는다.** 그 쪽에 이미 배정된 블록들끼리만
+        자리를 바꾸므로, 잘못돼도 쪽 번호는 그대로다.
+
+        PDF 에서 그 표를 못 찾으면 움직이지 않는다 — 근거 없이 옮기지
+        않는다.
+    """
+    by_id = {}
+    for _page_no, table in hwpx_tables:
+        tid = table.get("id") if isinstance(table, dict) else None
+        if tid:
+            by_id[tid] = table
+
+    pdf_order = {}
+    for page in pdf_pages:
+        text = page.get("content") or ""
+        order = []
+        for match in re.finditer(r"<(?:table|image) \d+>", text):
+            order.append((match.start(), match.group(0)))
+        pdf_order[page.get("page_no")] = (text, order)
+
+    moved = 0
+    for page_no, slot in by_page.items():
+        content = slot.get("content") or ""
+        blocks = list(re.finditer(r"<table (\d+)>.*?</table \1>", content, re.DOTALL))
+        if len(blocks) < 2:
+            continue
+        pdf_text = (pdf_order.get(page_no) or ("", []))[0]
+        if not pdf_text:
+            continue
+        rebuilt, changed = _reorder_page(content, blocks, pdf_text, by_id)
+        if changed:
+            slot["content"] = rebuilt
+            slot["reordered_by_pdf"] = True
+            moved += changed
+    return moved
+
+
+def _rank_blocks(blocks: list, pdf_text: str, by_id: dict) -> list[int] | None:
+    """PDF 본문에서 각 표가 **몇 번째로 나오는지** (0.5.57).
+
+    입력: blocks — 쪽 안의 표 블록들, pdf_text — 그 PDF 쪽 내용,
+          by_id — 표 id → 표
+    출력: 블록마다의 자리. 하나라도 못 찾으면 None
+    비고:
+        표의 첫 행 글자를 PDF 쪽에서 찾는다. 하나라도 못 찾으면 **아무것도
+        옮기지 않는다** — 일부만 아는 채로 섞으면 더 나빠진다.
+    """
+    from docstruct.align.page_map import _flatten
+
+    flat_pdf = _flatten(pdf_text)
+    spots: list[int] = []
+    for block in blocks:
+        table = by_id.get(f"table_{block.group(1)}")
+        markdown = (table or {}).get("markdown") or block.group(0)
+        first = next((line for line in markdown.splitlines()
+                      if line.strip() and "---" not in line), "")
+        key = _flatten(first)[:40]
+        if len(key) < 8:
+            return None
+        at = flat_pdf.find(key)
+        if at < 0:
+            # 앞부분이 안 맞으면 조금 짧게 한 번 더 — PDF 가 글자를 쪼갠다
+            at = flat_pdf.find(key[:16]) if len(key) >= 16 else -1
+        if at < 0:
+            return None
+        spots.append(at)
+    return spots
+
+
+def _reorder_page(content: str, blocks: list, pdf_text: str,
+                  by_id: dict) -> tuple[str, int]:
+    """쪽 안의 **표와 글을 함께** PDF 순서로 (0.5.57).
+
+    입력: content — 쪽 내용, blocks — 표 블록들, pdf_text — PDF 쪽 내용,
+          by_id — 표 id → 표
+    출력: (바뀐 내용, 옮긴 조각 수)
+    비고:
+        표끼리만 맞추면 부족하다 — 실측(병무청 10쪽): 표 둘은 이미 순서가
+        맞았고, 문제는 **표가 뒤따르는 글보다 앞에 있는 것**이었다.
+
+            지면   □추진체계 · 조직도 · □자체평가위원회 · ㅇ구성 · 명단
+            판독   □추진체계 · 조직도 · 명단 · □자체평가위원회 · ㅇ구성
+
+        그래서 표 블록과 그 사이 글을 **모두 조각으로 보고** PDF 안에서
+        각자 몇 번째로 나오는지 재어 다시 늘어놓는다.
+
+        조각 하나라도 PDF 에서 못 찾으면 **아무것도 옮기지 않는다** — 일부만
+        아는 채로 섞으면 더 나빠진다.
+    """
+    from docstruct.align.page_map import _flatten
+
+    flat_pdf = _flatten(pdf_text)
+    pieces: list[tuple[str, int]] = []
+    last = 0
+    for block in blocks:
+        gap = content[last:block.start()]
+        if gap.strip():
+            spot = _spot_of(_flatten(gap), flat_pdf)
+            if spot is None:
+                return content, 0
+            pieces.append((gap, spot))
+        table = by_id.get(f"table_{block.group(1)}")
+        markdown = (table or {}).get("markdown") or block.group(0)
+        first = next((line for line in markdown.splitlines()
+                      if line.strip() and "---" not in line), "")
+        spot = _spot_of(_flatten(first), flat_pdf)
+        if spot is None:
+            return content, 0
+        pieces.append((block.group(0), spot))
+        last = block.end()
+
+    # **마지막 표 뒤의 글도 조각이다** — 빼 두면 늘 맨 뒤로 가서, 표가 그
+    # 글보다 앞에 있는 바로 그 경우를 고칠 수 없다(실측: 병무청 10쪽의
+    # `□ 자체평가위원회 운영…`).
+    tail = content[last:]
+    if tail.strip():
+        spot = _spot_of(_flatten(tail), flat_pdf)
+        if spot is None:
+            return content, 0
+        pieces.append((tail, spot))
+
+    order = sorted(range(len(pieces)), key=lambda i: pieces[i][1])
+    if order == list(range(len(pieces))):
+        return content, 0
+    joined = "\n\n".join(pieces[i][0].strip() for i in order if pieces[i][0].strip())
+    return joined, sum(1 for i, j in enumerate(order) if i != j)
+
+
+def _spot_of(flat_piece: str, flat_pdf: str) -> int | None:
+    """이 조각이 PDF 쪽에서 **몇 번째 글자에** 나오는지.
+
+    입력: flat_piece — 납작하게 편 조각, flat_pdf — 납작하게 편 PDF 쪽
+    출력: 자리. 못 찾으면 None
+    비고:
+        앞부분 40자로 찾고, 안 되면 16자로 한 번 더 본다 — PDF 가 낱말
+        사이에 공백을 넣어 조각내는 일이 잦다(0.5.47).
+    """
+    key = flat_piece[:40]
+    if len(key) < 8:
+        return None
+    at = flat_pdf.find(key)
+    if at < 0 and len(key) >= 16:
+        at = flat_pdf.find(key[:16])
+    return at if at >= 0 else None
+
+
+def _rebuild(content: str, blocks: list, spots: list[int]) -> tuple[str, int]:
+    """블록을 PDF 순서로 바꿔 끼운다 (0.5.57).
+
+    입력: content — 쪽 내용, blocks — 표 블록들, spots — PDF 안 자리
+    출력: (바뀐 내용, 옮긴 수)
+    비고:
+        **블록이 있던 자리는 그대로 두고 알맹이만 바꾼다.** 사이의 글은
+        건드리지 않으므로 본문 흐름이 깨지지 않는다.
+    """
+    order = sorted(range(len(blocks)), key=lambda i: spots[i])
+    if order == list(range(len(blocks))):
+        return content, 0
+    texts = [block.group(0) for block in blocks]
+    out, last = [], 0
+    for slot, source in enumerate(order):
+        out.append(content[last:blocks[slot].start()])
+        out.append(texts[source])
+        last = blocks[slot].end()
+    out.append(content[last:])
+    return "".join(out), sum(1 for i, j in enumerate(order) if i != j)
+
+
+def _pdf_parts(markdown: str, pdf_tables: list) -> int:
+    """이 표가 PDF 에 **몇 조각으로** 실렸는지 (0.5.59).
+
+    입력: markdown — HWPX 표의 markdown, pdf_tables — (쪽, 표) 목록
+    출력: 조각 수
+    비고:
+        쪽을 넘는 표는 새 쪽에서 **머리행을 다시 찍는다** — 인쇄의 사실이지
+        중복이 아니다. 그래서 머리행이 PDF 표 여럿에 나타나면 그 표는
+        걸친 것이다.
+    """
+    from docstruct.align.page_map import _flatten
+
+    first = next((line for line in (markdown or "").splitlines()
+                  if line.strip() and "---" not in line), "")
+    head = _flatten(first)
+    if len(head) < 8:
+        return 0
+    # **PDF 는 글자를 더하거나 뺀다.** 실측(병무청 10쪽): 머리행이
+    # `직위(직급))주요경력` 으로 닫는 괄호가 하나 더 붙어 있었다. 그 한 자
+    # 때문에 걸친 표를 못 알아보면 안 되므로, 앞부분 여러 길이로 본다.
+    count = 0
+    for _page_no, table in pdf_tables:
+        flat = _flatten(table.get("markdown") or "")
+        if any(head[:size] in flat for size in (16, 12, 8) if len(head) >= size):
+            count += 1
+    return count
+
+
+def _mark_disputed_tables(by_page: dict, pdf_tables: list,
+                          hwpx_tables: list | None = None) -> list[str]:
+    """**두 방법이 다른 쪽을 가리킨 표**에 범위를 적는다 (0.5.58).
+
+    입력: by_page — 쪽별 슬롯 (제자리 갱신)
+    출력: 범위가 붙은 표 id 목록
+    비고:
+        표의 쪽은 두 갈래로 정해진다:
+
+            본문 자르기   눈금으로 HWPX 본문을 쪽 경계에서 자른다
+            표 짝짓기     PDF 표와 셀 내용을 대조한다
+
+        둘이 **1쪽 차이로 다른 답**을 내는 일이 있다 — 실측(병무청 79표
+        중 11건 · 조달청 63표 중 4건). 짝이 부실해서가 아니다: 닮음이
+        1.0 인 것도 갈렸다(`table_63` · `table_110`).
+
+        그 표들은 대개 **쪽 경계에 걸쳐 있다.** 표 짝짓기는 PDF 조각이
+        시작된 쪽을, 본문 자르기는 HWPX 블록이 눈금 사이 어디에 떨어지는지를
+        말한다 — 걸친 표에서는 둘 다 맞고 둘 다 부족하다.
+
+        그래서 **어느 하나를 고르지 않는다.** 두 답을 범위로 적어 두면
+        인용하는 쪽이 "10~11쪽의 표" 라고 답할 수 있다(0.5.53 의
+        `page_span` 과 같은 뜻이다).
+    """
+    body_at: dict[str, int] = {}
+    field_at: dict[str, int] = {}
+    for page_no, slot in by_page.items():
+        for num in re.findall(r"<table (\d+)>", slot.get("content") or ""):
+            body_at[num] = page_no
+        for table in (slot.get("tables") or []):
+            num = str(table.get("table_num") or "")
+            if num:
+                field_at[num] = page_no
+
+    marked: list[str] = []
+
+    # **본문에만 있는 표도 본다** (0.5.59). 쪽 맞춤이 두 답을 내지 않아도
+    # PDF 가 두 조각으로 갖고 있으면 그 표는 걸친 것이다 — 실측(병무청
+    # `table_23` 명단): 본문 10쪽 하나뿐인데 PDF 는 10·11쪽에 나눠 인쇄했다.
+    by_num: dict[str, dict] = {}
+    for slot in by_page.values():
+        for table in (slot.get("tables") or []):
+            num = str(table.get("table_num") or "")
+            if num:
+                by_num[num] = table
+    # **짝을 못 지은 표도 본다.** 쪽을 넘는 표는 조각 하나만 짝지어지므로
+    # 남은 것이 `unmatched` 로 간다 — 실측: `table_23`(명단)이 그랬다.
+    for _page_no, table in (hwpx_tables or []):
+        num = str(table.get("table_num") or "")
+        if num and num not in by_num:
+            by_num[num] = table
+    for num, at_body in body_at.items():
+        if num in field_at or num not in by_num:
+            continue
+        table = by_num[num]
+        if _pdf_parts(table.get("markdown") or "", pdf_tables) >= 2:
+            table["page_span"] = [at_body, at_body + 1]
+            table["span_reason"] = "표가 두 쪽에 걸쳐 인쇄됨"
+            marked.append(f"table_{num}")
+
+    for num, at_field in field_at.items():
+        at_body = body_at.get(num)
+        if at_body is None or at_body == at_field:
+            continue
+        span = [min(at_body, at_field), max(at_body, at_field)]
+        for slot in by_page.values():
+            for table in (slot.get("tables") or []):
+                if str(table.get("table_num") or "") != num:
+                    continue
+                # **왜 갈렸는지 가린다** (0.5.59). 셋은 성격이 다르다 —
+                # 실측(병무청 11건): 진짜 걸침 3 · 짝 오인 6 · 경계 차이 2.
+                parts = _pdf_parts(table.get("markdown") or "", pdf_tables)
+                if parts >= 2:
+                    table["page_span"] = span
+                    table["span_reason"] = "표가 두 쪽에 걸쳐 인쇄됨"
+                elif parts == 0:
+                    # PDF 에 이 표가 없다 — 짝이 엉뚱한 것을 집었다.
+                    # 범위를 적으면 **걸치지도 않은 표에 걸렸다고 말하는 것**
+                    # 이 된다. 실측: 조직도(table_22)가 명단 조각과 0.57 로
+                    # 짝지어져 11쪽에 실렸다.
+                    table["pairing_doubt"] = True
+                    table["doubt_reason"] = "PDF 에 대응 표가 없는데 짝이 잡힘"
+                else:
+                    table["page_span"] = span
+                    table["span_reason"] = "본문 위치와 표 짝이 한 쪽 다름"
+        marked.append(f"table_{num}")
+    return sorted(marked)
+
+
+def _mark_page_spans(by_page: dict, pdf_pages: list[dict]) -> list[int]:
+    """쪽을 넘는 표가 있는 쪽에 **범위**를 적는다 (0.5.53).
+
+    입력: by_page — 쪽별 슬롯 (제자리 갱신), pdf_pages — PDF 쪽 목록
+    출력: 범위가 붙은 쪽 번호 목록
+    비고:
+        `page_span` 은 "이 쪽의 표가 이 범위에 걸쳐 인쇄됐다" 는 뜻이다.
+        근거를 인용하는 쪽이 표 안 문장을 만나면 쪽 하나가 아니라 이
+        범위를 대면 된다 — **±1 이 틀림이 아니라 범위가 된다.**
+
+        쪽을 넘는 표가 없는 쪽에는 붙이지 않는다. 모든 쪽에 달면 읽는 눈이
+        흐려지고, 있다는 것 자체가 신호가 되지 못한다.
+    """
+    spans = continued_tables(pdf_pages)
+    marked: list[int] = []
+    for page_no, span in spans.items():
+        slot = by_page.get(page_no)
+        if slot is None:
+            continue
+        slot["page_span"] = span
+        slot["span_reason"] = "표가 두 쪽에 걸쳐 인쇄됨"
+        marked.append(page_no)
+    return sorted(marked)
+
+
+def _mark_split_blocks(by_page: dict) -> None:
+    """쪽 경계에 걸려 **반쪽만 든 표 블록**을 쪽마다 적는다 (0.5.39).
+
+    입력: by_page — 쪽별 슬롯 (제자리 갱신)
+    출력: 없음 (`split_blocks` 필드 추가)
+    비고:
+        `<table N> … </table N>` 이 쪽을 넘으면 한쪽에는 여는 태그만,
+        다른 쪽에는 닫는 태그만 남는다. 그 쪽만 떼어 읽으면 표가 반쪽이다.
+
+        예전에는 이 사실이 **어디에도 없었다** — 세어 보려면 결과물을
+        직접 뒤져야 했다. 실측(세 부처): 190쪽 중 112쪽이 여기 해당했고
+        (0.5.37·0.5.38 로 줄었다), 그 규모를 사람이 알 길이 없었다.
+
+        쪽마다 `split_blocks` 로 적는다:
+
+            {"table_num": "13", "side": "open"}    여는 태그만 있다
+            {"table_num": "13", "side": "close"}   닫는 태그만 있다
+
+        걸린 표가 없는 쪽에는 필드를 두지 않는다 — 빈 목록이 모든 쪽에
+        붙으면 읽는 눈이 흐려진다.
+    """
+    import re
+
+    for slot in by_page.values():
+        content = slot.get("content") or ""
+        opened = set(re.findall(r"<table (\d+)>", content))
+        closed = set(re.findall(r"</table (\d+)>", content))
+        marks = ([{"table_num": num, "side": "open"} for num in sorted(opened - closed)]
+                 + [{"table_num": num, "side": "close"} for num in sorted(closed - opened)])
+        if marks:
+            slot["split_blocks"] = marks
+
+
+def _restore_line_breaks(chunks: list[dict], raw: str, masked: str) -> None:
+    """가린 본문으로 자른 조각을 **원본 글로 바꿔 놓는다** (0.5.56).
+
+    입력: chunks — 쪽별 조각 (제자리 갱신), raw — 원본 본문,
+          masked — `<br>` 을 가린 본문 (길이가 같다)
+    출력: 없음
+    비고:
+        `_mask_line_breaks` 가 길이를 지키므로 자리가 1:1 로 대응한다.
+        조각의 글을 가린 본문에서 찾아 같은 자리의 원본으로 바꾼다.
+
+        못 찾으면 그대로 둔다 — 조각은 `strip()` 된 것이라 자리가 조금
+        어긋날 수 있고, 그때는 가린 글이라도 있는 편이 낫다.
+    """
+    if len(raw) != len(masked):
+        return
+    cursor = 0
+    for chunk in chunks:
+        body = chunk.get("content") or ""
+        if not body:
+            continue
+        at = masked.find(body, cursor)
+        if at < 0:
+            at = masked.find(body)
+        if at < 0:
+            continue
+        chunk["content"] = raw[at:at + len(body)]
+        cursor = at + len(body)
+
+
+def _mask_line_breaks(text: str) -> str:
+    """`<br>` 을 **같은 길이의 빈칸**으로 가린다 (0.5.56).
+
+    입력: text — markdown
+    출력: `<br>` 이 공백으로 바뀐 글 (길이 그대로)
+    비고:
+        비교에서는 `<br>` 이 걸리적거리지만(0.5.50) **자리는 지켜야 한다** —
+        눈금은 글자 수로 재므로 길이가 달라지면 자르는 자리가 어긋난다.
+
+        그리고 산출에는 `<br>` 이 그대로 남아야 한다. 진짜 개행으로 바꾸면
+        GFM 표가 깨지고, 표 markdown 과 달라져 중복 검사가 빗나가 같은 표가
+        두 번 실린다 — 실측(병무청 6쪽): `<table 13>` 이 두 번 나왔다.
+    """
+    import re as _re
+
+    return _re.sub(r"<br\s*/?>", lambda m: " " * len(m.group(0)), text or "",
+                   flags=_re.IGNORECASE)
+
+
+def _drop_line_breaks(text: str) -> str:
+    """`<br>` 을 진짜 줄바꿈으로 되돌린다 (0.5.50).
+
+    입력: text — markdown
+    출력: `<br>` 이 개행으로 바뀐 글
+    비고:
+        셀 안 문단 경계를 살리려고 0.5.21 이 넣은 표시다. 저장할 때는
+        맞지만 **비교할 때는 글자가 아니다** — 같은 표가 서로 다른 글로
+        보인다.
+
+        공백이 아니라 개행으로 바꾼다: `<br>` 뒤의 `- ` 는 줄머리 기호이고,
+        공백으로 두면 줄머리로 보이지 않아 그대로 남는다.
+    """
+    import re as _re
+
+    return _re.sub(r"<br\s*/?>", "\n", text or "", flags=_re.IGNORECASE)
+
+
+#: 그림을 옮길 때 볼 이웃 쪽 범위. 캡션과 그림이 갈리는 것은 한 쪽 차이다.
+IMAGE_MOVE_SPAN = 1
+#: 이만큼은 되어야 "읽을 만한 그림" 으로 센다(pt). 아이콘·글머리 기호는
+#: 어느 쪽에나 있어 근거가 못 된다.
+MIN_MOVE_IMAGE_SIDE = 100.0
+
+
+#: 검산에 쓸 수치의 모양 — 소수점이 있거나 다섯 자리 이상.
+#: 연도(2026·2027)와 한두 자리 숫자는 어디에나 있어 근거가 못 된다.
+_CHECK_NUMBER = re.compile(r"\d[\d,]*\.\d+%?|\d[\d,]{4,}")
+
+
+def _check_image_numbers(by_page: dict, pdf_pages: list[dict]) -> None:
+    """그림 판독의 **수치를 그 쪽 PDF 와 대조**한다 (0.5.63).
+
+    입력: by_page — 쪽별 슬롯 (제자리 갱신), pdf_pages — PDF 쪽 목록
+    출력: 없음 (`number_check` 필드 추가)
+    비고:
+        VLM 이 그래프의 숫자를 잘못 읽는 일이 있다 — 실측(병무청):
+        `89.7% → 90.2%` 를 **`69.7% → 80.2%`** 로 읽었다. 판독 자체는
+        모델의 한계이지만, **틀렸을 수 있다는 사실은 알릴 수 있다.**
+
+        문서 전체에서 찾으면 안 된다. 실측: 잘못 읽은 `69.7%` 가 90,000자
+        어딘가에 우연히 있어 **전부 확인으로 통과했다.** 그림이 실린 쪽과
+        그 이웃으로 좁혀야 뜻이 있다.
+
+        연도(2026)나 한두 자리 숫자는 세지 않는다 — 어느 쪽에나 있다.
+
+            verified   판독한 수치가 모두 그 쪽에 있다
+            partial    일부만 있다 — 잘못 읽었을 수 있다
+            unseen     하나도 없다
+            none       견줄 수치가 판독문에 없다
+    """
+    text_at: dict[int, str] = {}
+    for page in pdf_pages:
+        page_no = page.get("page_no")
+        body = (page.get("content") or "") + "".join(
+            (t.get("markdown") or "") for t in (page.get("tables") or []))
+        text_at[page_no] = re.sub(r"[\s,]+", "", body)
+
+    for page_no, slot in by_page.items():
+        near = "".join(text_at.get(no, "")
+                       for no in (page_no - 1, page_no, page_no + 1))
+        for image in (slot.get("images") or []):
+            read = image.get("vlm_markdown") or image.get("description") or ""
+            numbers = _CHECK_NUMBER.findall(read)
+            if not numbers:
+                image["number_check"] = "none"
+                continue
+            hits = sum(1 for number in numbers
+                       if number.replace(",", "") in near)
+            image["number_check"] = ("verified" if hits == len(numbers)
+                                     else "partial" if hits else "unseen")
+            image["numbers_checked"] = len(numbers)
+            image["numbers_found"] = hits
+
+
+def _move_image_block(source: dict, target: dict, marker: str) -> bool:
+    """그림 블록을 **본문에서** 옮긴다 (0.5.61).
+
+    입력: source — 지금 쪽, target — 갈 쪽, marker — `<image N>`
+    출력: 옮겼으면 True
+    비고:
+        `<image N> … </image N>` 과 그 안의 판독(`<image-read N>`)을 한
+        덩어리로 떼어 다음 쪽 **맨 앞**에 놓는다. 캡션은 그대로 둔다 —
+        캡션은 그 쪽의 글이고, 옮겨야 할 것은 그림이다.
+    """
+    num = marker.strip("<>").split()[-1]
+    body = source.get("content") or ""
+    pattern = re.compile(
+        rf"<image {num}>.*?(?:</image {num}>|(?=\n\n)|$)", re.DOTALL)
+    match = pattern.search(body)
+    if not match:
+        return False
+    block = match.group(0).strip()
+    if not block:
+        return False
+    source["content"] = (body[:match.start()] + body[match.end():]).strip()
+    after = (target.get("content") or "").strip()
+    target["content"] = f"{block}\n\n{after}" if after else block
+    return True
+
+
+def _image_page_from_pdf(image: dict, at: int, pdf_images: dict) -> int | None:
+    """이 그림이 **PDF 에서 실린 쪽** (0.5.61).
+
+    입력: image — HWPX 그림, at — 본문이 가리키는 쪽, pdf_images — 쪽 → 그림들
+    출력: 쪽 번호. 가릴 수 없으면 None
+    비고:
+        캡션과 그림이 다른 쪽에 인쇄되는 일이 있다. 자리표시자는 본문을
+        따라가므로 캡션 쪽에 붙는다 — 그림이 실제로 어디 있는지는 PDF 가
+        안다. 실측(병무청): `<전년도 대비 …>` 캡션은 PDF 27쪽(인쇄 22)에,
+        그래프는 28쪽(인쇄 23)에 있었다.
+
+        **HWPX 그림에는 크기가 없다**(bbox·width 모두 None). 그래서 크기로
+        견주지 못하고, 이웃 한 쪽까지 훑어 **읽을 만한 그림이 딱 하나**일
+        때만 옮긴다. 둘 이상이면 어느 것인지 가릴 수 없으므로 그대로 둔다.
+
+        작은 조각(아이콘·글머리 기호)은 세지 않는다 — 어느 쪽에나 있다.
+    """
+    hits: list[int] = []
+    for page_no in range(at - IMAGE_MOVE_SPAN, at + IMAGE_MOVE_SPAN + 1):
+        for other in pdf_images.get(page_no) or []:
+            if (_bbox_width(other) >= MIN_MOVE_IMAGE_SIDE
+                    and _bbox_height(other) >= MIN_MOVE_IMAGE_SIDE):
+                hits.append(page_no)
+    if len(hits) != 1:
+        return None
+    return hits[0]
+
+
+def _bbox_width(image: dict) -> float:
+    box = image.get("bbox") or {}
+    return max(0.0, (box.get("r") or 0) - (box.get("l") or 0))
+
+
+def _bbox_height(image: dict) -> float:
+    box = image.get("bbox") or {}
+    return max(0.0, (box.get("b") or 0) - (box.get("t") or 0))
+
+
+def _place_images(hwpx: dict, by_page: dict,
+                  pdf_images: dict | None = None) -> list[dict]:
+    """HWPX 그림을 본문 블록 자리로 쪽에 배정한다 (0.5.19).
+
+    입력: hwpx — HWPX 판독 결과, by_page — 쪽별 슬롯 (제자리 갱신)
+    출력: 쪽을 못 찾은 그림 목록
+    비고:
+        `<image N>` 블록이 어느 쪽 본문에 들어갔는지로 정한다. 본문이
+        이미 쪽으로 잘려 있으므로 추가 추정이 필요 없다 — **자리를
+        지어내지 않는다.**
+    """
+    import re
+
+    images = [img for page in (hwpx.get("pages") or [])
+              for img in (page.get("images") or [])]
+    if not images:
+        return []
+
+    pdf_images = pdf_images or {}
+    unplaced: list[dict] = []
+    for image in images:
+        num = image.get("image_num")
+        marker = f"<image {num}>" if num is not None else (image.get("placeholder") or "")
+        found = None
+        if marker:
+            for page_no, slot in by_page.items():
+                if marker in (slot.get("content") or ""):
+                    found = page_no
+                    break
+        if found is None:
+            unplaced.append(image)
+            continue
+
+        # **그림이 실린 쪽은 PDF 가 안다** (0.5.61). 자리표시자는 본문에
+        # 붙어 있어 본문 경계를 따라가는데, 그림은 캡션보다 **다음 쪽**에
+        # 인쇄되는 일이 있다 — 실측(병무청): `<전년도 대비 …>` 캡션은 PDF
+        # 27쪽(인쇄 22)에, 그래프는 28쪽(인쇄 23)에 있었다.
+        #
+        # PDF 에 크기가 비슷한 그림이 **그 쪽 언저리에 딱 하나** 있으면
+        # 그쪽을 쓴다. 여럿이거나 없으면 움직이지 않는다 — 근거 없이 옮기지
+        # 않는다.
+        moved = _image_page_from_pdf(image, found, pdf_images)
+        if moved is not None and moved != found and moved in by_page:
+            # **본문 블록도 함께 옮긴다.** `images` 필드만 바꾸면 반쪽이다 —
+            # markdown 은 본문을 따라가므로 그림이 여전히 캡션 쪽에 찍힌다.
+            if _move_image_block(by_page[found], by_page[moved], marker):
+                image = {**image, "page_moved_from": found,
+                         "move_reason": "PDF 에서 그림이 실린 쪽"}
+                found = moved
+        by_page[found].setdefault("images", []).append(image)
+    return unplaced
+
+
 def align_documents(hwpx: dict, pdf: dict, *,
                     as_markdown: bool = False) -> Any:
     """HWPX 결과를 PDF 쪽에 맞춰 나눈다.
@@ -424,9 +1111,37 @@ def align_documents(hwpx: dict, pdf: dict, *,
     # **본문 눈금이 주력이다.** 표 정렬은 서식이 같은 표가 많은 문서에서
     # 흔들리지만(행안부 317표 중 230표), 본문 글은 순서가 바뀌지 않는다 —
     # 실측: 눈금 231개가 예외 없이 차례대로 증가했다(230/230).
-    hwpx_body = "\n\n".join(
+    # **`<br>` 은 줄바꿈 표시이지 글자가 아니다** (0.5.50). 셀 안 문단
+    # 경계를 살리려고 0.5.21 이 넣은 것인데, 비교하기 전에 실제 줄바꿈으로
+    # 되돌리지 않으면 같은 표가 서로 다른 글이 된다:
+    #
+    #     HWPX  |투입<br>(input)|⇒|활동<br>(activities)|…
+    #     PDF   |투입(input)|활동(activities)|…
+    #
+    # 실측(문체부): `프로그램 논리` 표가 HWPX 에 33개 다 있는데 본문
+    # 대조에서는 **1회로 보였다** — `<br>` 없이 이어진 한 곳만 걸린 것이다.
+    # 그 한 자리로 쪽 144·180·365 가 몰려 ±100쪽씩 튀었다.
+    #
+    # **`_flatten` 이 아니라 여기서 없앤다.** `_raw_positions` 가 납작한
+    # 자리를 원문 자리로 되돌릴 때 `_flatten` 의 규칙을 손으로 다시
+    # 밟으므로, 한쪽만 고치면 두 계산이 어긋나 자리가 통째로 밀린다
+    # (실측: 잣대가 98% → 15%). 재료를 먼저 다듬는 편이 안전하다.
+    # **비교용과 산출용을 가른다** (0.5.56). `<br>` 은 비교할 때만 거치적
+    # 거리고(0.5.50), 산출에는 **그대로 있어야 한다** — 셀 안 줄바꿈을
+    # 진짜 개행으로 바꾸면 GFM 표가 깨지고, 표 markdown 과도 달라져
+    # `to_markdown` 의 중복 검사(`markdown not in body`)가 빗나가
+    # **같은 표가 두 번** 실린다.
+    #
+    # 길이가 달라지면 눈금 자리가 어긋나므로, `<br>` 을 **같은 길이의
+    # 빈칸**으로 바꾼다. 자리는 그대로 두고 글자만 지우는 셈이다.
+    raw_body = "\n\n".join(
         (page.get("content") or "") for page in (hwpx.get("pages") or []))
-    pdf_pages = pdf.get("pages") or []
+    hwpx_body = _mask_line_breaks(raw_body)
+    pdf_pages = [{**page,
+                  "content": _mask_line_breaks(page.get("content") or ""),
+                  "tables": [{**t, "markdown": _mask_line_breaks(t.get("markdown") or "")}
+                             for t in (page.get("tables") or [])]}
+                 for page in (pdf.get("pages") or [])]
     # **본문 눈금과 표 눈금을 함께 쓴다.** 본문이 있는 쪽은 본문이,
     # 표만 있는 쪽은 표가 맡아 서로를 보완한다 — 실측(행안부): 본문만
     # 쓰면 닮음 중앙 78%·0.6↑ 67%, 표를 더하면 **83%·73%** 다.
@@ -438,9 +1153,32 @@ def align_documents(hwpx: dict, pdf: dict, *,
     # **눈금 사이를 비례로 채운다.** 놓친 쪽의 대부분은 표만 있어 본문
     # 글로는 잡을 수 없다 — 실측(행안부): 163쪽 중 112쪽이 그렇다.
     last = max((p.get("page_no") or 0) for p in pdf_pages) if pdf_pages else 0
-    filled = interpolate(anchors, last, len(_flatten(hwpx_body)))
-    text_pages = (split_text_by_page(hwpx_body, filled, measured)
+    # PDF 가 빈 지면이라고 말하는 쪽 — 거기엔 HWPX 대응 내용이 없다 (0.5.44).
+    blank_pages = {
+        page.get("page_no") for page in pdf_pages
+        if not (page.get("content") or "").strip()
+        and not (page.get("tables") or [])
+        and not (page.get("images") or [])
+    }
+    filled = interpolate(anchors, last, len(_flatten(hwpx_body)), blank_pages)
+    # 경계가 표 블록 안일 때 PDF 에게 물을 재료를 넘긴다 (0.5.38).
+    hwpx_blocks = {str(t.get("table_num")): (t.get("cells") or [])
+                   for _page_no, t in tables_of(hwpx)}
+    pdf_page_text = {
+        page.get("page_no"): _flatten(
+            (page.get("content") or "")
+            + "".join((t.get("markdown") or "") for t in (page.get("tables") or [])))
+        for page in pdf_pages
+    }
+    text_pages = (split_text_by_page(hwpx_body, filled, measured,
+                                     blocks=hwpx_blocks, page_text=pdf_page_text,
+                                     blank_pages=blank_pages)
                   if filled else [])
+    # **자른 뒤 원본으로 되돌린다** (0.5.56). 가린 본문은 자리를 재기 위한
+    # 것이지 산출물이 아니다 — `<br>` 이 공백으로 남으면 GFM 표가 깨지고,
+    # 표 markdown 과 달라져 같은 표가 두 번 실린다. 길이를 지켰으므로
+    # 잘린 조각의 자리도 그대로다.
+    _restore_line_breaks(text_pages, raw_body, hwpx_body)
 
     hwpx_tables = tables_of(hwpx)
     pdf_tables = tables_of(pdf)
@@ -483,7 +1221,31 @@ def align_documents(hwpx: dict, pdf: dict, *,
         slot = by_page.setdefault(
             page_no, {"page_no": page_no, "tables": [], "similarity": []})
         slot["content"] = chunk.get("content", "")
-        slot["estimated"] = bool(chunk.get("estimated"))
+        if chunk.get("blank"):
+            slot["blank"] = True
+        estimated = bool(chunk.get("estimated"))
+        slot["estimated"] = estimated
+        # **쪽 번호를 믿어도 되는지 결과물에 적는다** (0.5.19). 예전에는
+        # `estimated` 만 있고 `page_no_kind` 는 비어 있었다 — 판독 결과와
+        # 같은 이름의 필드가 align 결과에서만 None 이라, 쓰는 쪽이 분기해야
+        # 했고 브릿지(`_PAGE_KIND`)도 값을 못 찾았다.
+        #
+        #   exact        본문·표 눈금으로 **잡은** 쪽
+        #   approximate  앞뒤 눈금 사이를 비례로 **채운** 쪽
+        slot["page_no_kind"] = "approximate" if estimated else "exact"
+
+    # **그림도 쪽에 배정한다** (0.5.19). 예전에는 align 결과에 그림이
+    # 하나도 없었다 — HWPX 가 가진 그림이 통째로 사라졌고, 조직도·별첨
+    # 상자처럼 **글자가 그림 안에만 있는 것**까지 함께 없어졌다.
+    #
+    # 자리는 본문이 말해 준다: 그림은 `<image N>` 블록으로 본문에 박혀
+    # 있으므로, 그 블록을 담은 쪽이 그 그림의 쪽이다. 쪽을 못 찾은 그림은
+    # 버리지 않고 `unplaced_images` 로 낸다 — 표와 같은 원칙이다.
+    unplaced_images = _place_images(
+        hwpx, by_page,
+        pdf_images={page.get("page_no"): (page.get("images") or [])
+                    for page in pdf_pages})
+
 
     # **표 짝짓기가 실패한 표에 본문으로 쪽을 준다** (0.4.76 · 2차 경로).
     # HWPX 가 서술 상자로 그린 것을 PDF 가 본문으로 풀어낸 경우가 많아,
@@ -524,6 +1286,13 @@ def align_documents(hwpx: dict, pdf: dict, *,
         # 표가 아예 없는 경우가 많다 — "맞추기 실패" 와 "맞출 것이 없음"
         # 은 다르고, 결과물이 둘을 구분하지 못하면 수치가 나쁘게만 보인다.
         note = layout_hint(table)
+        # **쪽을 넘는 표인지 여기서 적어 둔다** (0.5.59). `to_markdown` 은
+        # PDF 원본을 받지 않으므로 나중에는 셀 수 없다. 조각이 둘 이상이면
+        # 그 표는 쪽을 넘어 인쇄된 것이다 — 짝은 하나만 지어지고 나머지가
+        # 여기로 온다(실측: 병무청 `table_23` 명단).
+        parts = _pdf_parts(table.get("markdown") or "", pdf_tables)
+        if parts >= 2:
+            note["pdf_parts"] = parts
         # **쪼개진 표인지 함께 잰다** (0.4.75). 큰 표가 PDF 에서 여러 조각이
         # 되면 Jaccard 가 크기 차이에 끌려 전부 버린다 — 그 유형이 얼마나
         # 되는지 알아야 짝짓기를 고칠지 정할 수 있다.
@@ -542,6 +1311,31 @@ def align_documents(hwpx: dict, pdf: dict, *,
                 note["ditto"] = True
         unmatched.append({**table, "align_note": note})
 
+    # **모든 쪽에 종류를 적는다** (0.5.19). 본문 없이 표 짝짓기만으로
+    # 생긴 쪽은 쪽 번호는 얻었지만 본문 경계가 없으므로 `exact` 라 할 수
+    # 없다 — 비어 있는 것보다 "확실하지 않다" 고 적는 편이 정직하다.
+    # **슬롯은 여러 단계에서 생기므로 마지막에 한 번 채운다.**
+    for slot in by_page.values():
+        slot.setdefault("page_no_kind", "approximate")
+        slot.setdefault("estimated", True)
+
+    # **인쇄 쪽번호도 함께 간다** (0.5.25). 쪽 맞춤 결과를 인용하는 쪽은
+    # 사람이 읽는 번호를 필요로 한다 — "PDF 59번째 장" 이 아니라 "54쪽".
+    # PDF 판독이 이미 쪽마다 계산해 두었으므로 그대로 옮긴다.
+    printed = {page.get("page_no"): page.get("printed_page_no")
+               for page in (pdf.get("pages") or [])}
+    for page_no, slot in by_page.items():
+        if printed.get(page_no) is not None:
+            slot["printed_page_no"] = printed[page_no]
+
+    _check_image_numbers(by_page, pdf_pages)
+    _reorder_by_pdf(by_page, pdf_pages, hwpx_tables=tables_of(hwpx))
+    disputed = _mark_disputed_tables(by_page, pdf_tables=tables_of(pdf),
+                                     hwpx_tables=tables_of(hwpx))
+    _mark_split_blocks(by_page)
+    wide_gap_pages = _mark_wide_gaps(by_page, measured)
+    span_pages = _mark_page_spans(by_page, pdf_pages)
+
     pages = [by_page[key] for key in sorted(by_page)]
     layout_like = sum(1 for t in unmatched
                       if t["align_note"]["layout_like"])
@@ -554,9 +1348,41 @@ def align_documents(hwpx: dict, pdf: dict, *,
     result = {
         "filename": hwpx.get("filename"),
         "source": "hwpx+pdf 쪽 맞춤",
-        "page_count": len(pages),
+        # **문서의 쪽 수는 PDF 가 정한다** (0.5.46). `len(pages)` 는 *우리가
+        # 낸 쪽* 수여서, 표지처럼 HWPX 대응이 없어 자리를 못 만든 쪽이
+        # 있으면 실제보다 적게 보인다 — 실측(병무청): 97쪽 문서인데 96.
+        #
+        # 보는 사람은 "쪽 수가 안 맞네" 로 읽는다. 쪽 번호는 PDF 것을 그대로
+        # 쓰고 `printed_page_no` 도 PDF 와 한 칸도 다르지 않은데, 합계만
+        # 어긋나 틀린 것처럼 보인다.
+        #
+        # 몇 쪽을 못 채웠는지는 따로 적는다 — 숨기는 것이 아니라 나누는 것이다.
+        "page_count": len(pdf_pages) or len(pages),
+        #: 쪽 맞춤이 내용을 채운 쪽 수 (표지 등은 빠질 수 있다).
+        "aligned_pages": len(pages),
+        #: PDF 에는 있으나 대응 내용을 못 찾은 쪽 — 대개 표지·간지다.
+        "unaligned_pages": sorted(
+            {page.get("page_no") for page in pdf_pages}
+            - {page.get("page_no") for page in pages}),
         "text_anchors": len(anchors),
         "estimated_pages": sum(1 for c in text_pages if c.get("estimated")),
+        "unplaced_images": unplaced_images,
+        #: **눈금 사이가 먼 쪽들** (0.5.51). 보간은 눈금 사이가 벌어질수록
+        #: 오차가 커진다 — 실측(네 문서): 8쪽 이내 구간은 거의 100%,
+        #: 9쪽 넘는 구간은 57% 였다. 어느 쪽이 그런 자리인지 적어 두면
+        #: 인용하는 쪽이 "±1 여지가 있다" 를 알 수 있다.
+        "wide_gap_pages": wide_gap_pages,
+        #: **표가 두 쪽에 걸쳐 인쇄된 쪽들** (0.5.53). 그 표 안의 글을
+        #: 인용할 때는 쪽 하나가 아니라 `page_span` 을 대야 한다.
+        "page_span_pages": span_pages,
+        #: **쪽이 갈린 표** (0.5.58, 0.5.59 에서 갈래를 나눔). 본문 위치와
+        #: 표 짝이 다른 쪽을 가리킨 표들이다. 까닭이 셋으로 갈린다:
+        #:   `page_span` + "표가 두 쪽에 걸쳐 인쇄됨"  — 진짜 걸침
+        #:   `page_span` + "…한 쪽 다름"              — 경계 차이
+        #:   `pairing_doubt`                          — 짝이 엉뚱한 것을 집음
+        "disputed_tables": disputed,
+        #: 쪽 경계에 걸린 표 블록 수 — 자세한 자리는 각 쪽의 `split_blocks`.
+        "split_block_pages": sum(1 for page in pages if page.get("split_blocks")),
         "matched_tables": matched,
         "total_tables": len(hwpx_tables),
         "unmatched_tables": len(unmatched),
@@ -586,6 +1412,171 @@ def align_documents(hwpx: dict, pdf: dict, *,
     return to_markdown(result) if as_markdown else result
 
 
+def _pdf_tables_of(result: dict) -> list:
+    """맞춤 결과에 실린 표들을 `(쪽, 표)` 목록으로 (0.5.59).
+
+    입력: result — 맞춤 결과
+    출력: `_pdf_parts` 가 받는 모양
+    비고:
+        `to_markdown` 은 PDF 원본을 받지 않으므로, 결과에 실린 표로 대신
+        센다. 쪽을 넘는 표는 조각 하나가 쪽에 실리고 나머지가 `unmatched`
+        에 있으니 둘을 합쳐야 조각 수가 맞는다.
+    """
+    out = [(page.get("page_no"), table)
+           for page in result.get("pages") or []
+           for table in (page.get("tables") or [])]
+    out += [(None, table) for table in (result.get("unmatched") or [])]
+    return out
+
+
+#: 검산 결과를 사람 말로.
+_CHECK_WORDS = {
+    "verified": "판독 수치가 그 쪽에서 모두 확인됨",
+    "partial": "판독 수치 일부만 확인됨 — 잘못 읽었을 수 있음",
+    "unseen": "판독 수치를 그 쪽에서 찾지 못함",
+}
+
+
+def _image_note(image: dict) -> str:
+    """그림에 붙일 **검산 한 줄** (0.5.63).
+
+    입력: image — 그림 dict
+    출력: `" · 판독 수치 일부만 확인됨 (2/6)"` 꼴. 붙일 것이 없으면 ""
+    비고:
+        `verified` 에는 붙이지 않는다 — 확인된 것이 보통이고, 표시가 있다는
+        것 자체가 신호여야 한다. 옮긴 그림은 그 사실도 함께 적는다.
+    """
+    parts: list[str] = []
+    check = image.get("number_check")
+    if check in ("partial", "unseen"):
+        found = image.get("numbers_found")
+        total = image.get("numbers_checked")
+        count = f" ({found}/{total})" if total else ""
+        parts.append(f"{_CHECK_WORDS[check]}{count}")
+    if image.get("page_moved_from"):
+        parts.append(f"{image['page_moved_from']}쪽에서 옮김 "
+                     f"({image.get('move_reason') or ''})")
+    return (" · " + " · ".join(parts)) if parts else ""
+
+
+def _table_note(table: dict) -> str:
+    """표에 붙일 **한 줄 주석** (0.5.59).
+
+    입력: table — 표 dict
+    출력: `" · 10~11쪽에 걸친 표"` 꼴. 붙일 것이 없으면 ""
+    """
+    span = table.get("page_span")
+    if span:
+        return (f" · {span[0]}~{span[1]}쪽에 걸친 표"
+                f" ({table.get('span_reason') or ''})")
+    if table.get("pairing_doubt"):
+        return f" · 이 쪽에 실린 근거가 약함 ({table.get('doubt_reason') or ''})"
+    return ""
+
+
+def _collect_notes(result: dict, pdf_tables: list | None = None) -> dict[str, str]:
+    """표마다의 주석을 **문서 전체에서** 모은다 (0.5.59).
+
+    입력: result — 맞춤 결과
+    출력: {표 번호: 주석}
+    비고:
+        쪽을 넘는 표는 조각 하나만 짝지어지므로 나머지가 `unmatched` 로
+        간다. 본문에는 그 블록이 있는데 그 쪽 `tables` 에는 없으므로,
+        쪽별로 모으면 놓친다.
+    """
+    notes: dict[str, str] = {}
+    for page in result["pages"]:
+        for table in (page.get("tables") or []):
+            note = _table_note(table)
+            if note:
+                notes[str(table.get("table_num") or "")] = note
+    # **짝을 못 지은 표는 여기서 잰다** (0.5.59). `unmatched` 항목은 쪽
+    # 슬롯과 다른 dict 이므로 `_mark_disputed_tables` 가 적어 둔 표시가
+    # 실리지 않는다. 그 대신 `fragment_note` 가 이미 재어 둔 **쪼개진
+    # 조각 수**를 쓴다 — 쪽을 넘는 표는 조각 하나만 짝지어지고 나머지가
+    # 여기로 온다(실측: 병무청 `table_23` 명단).
+    for table in (result.get("unmatched") or []):
+        num = str(table.get("table_num") or "")
+        if not num or num in notes:
+            continue
+        parts = (table.get("align_note") or {}).get("pdf_parts") or 0
+        if parts >= 2:
+            notes[num] = f" · {parts}조각으로 나뉘어 인쇄됨 (쪽을 넘는 표)"
+    return notes
+
+
+def _annotate_blocks(body: str, page: dict,
+                     notes: dict[str, str] | None = None) -> str:
+    """본문의 `<table N>` 태그 옆에 주석을 붙인다 (0.5.59).
+
+    입력: body — 쪽 본문, page — 그 쪽
+    출력: 주석이 붙은 본문
+    비고:
+        주석을 **본문 문장으로 끼워 넣으면 읽는 글이 되어 버린다.** 표에
+        딸린 것임이 보이도록 블록 태그 줄에 붙인다.
+    """
+    if notes is None:
+        notes = {}
+        for table in (page.get("tables") or []):
+            note = _table_note(table)
+            if note:
+                notes[str(table.get("table_num") or "")] = note
+    if not notes:
+        return body
+
+    def mark(match):
+        note = notes.get(match.group(1))
+        return f"{match.group(0)}<!--{note} -->" if note else match.group(0)
+
+    body = re.sub(r"<table (\d+)>", mark, body)
+
+    # **그림 판독의 검산 결과도 붙인다** (0.5.63). 판독문은 본문에 그대로
+    # 실리므로, 그것이 확인된 것인지 아닌지가 보여야 한다.
+    shots = {}
+    for image in (page.get("images") or []):
+        note = _image_note(image)
+        if note:
+            shots[str(image.get("image_num") or "")] = note
+
+    def mark_image(match):
+        note = shots.get(match.group(1))
+        return f"{match.group(0)}<!--{note} -->" if note else match.group(0)
+
+    return re.sub(r"<image (\d+)>", mark_image, body)
+
+
+def _page_note(page: dict) -> str:
+    """쪽 제목에 붙일 **믿을 만한 정도** (0.5.54).
+
+    입력: page — 맞춘 결과의 쪽 하나
+    출력: `" (인쇄 49) *(추정 · 표가 433~434쪽에 걸침)*"` 꼴. 붙일 것이 없으면 ""
+    비고:
+        json 에는 `printed_page_no` · `wide_gap` · `page_span` · `blank` 가
+        다 있는데 markdown 에는 `*(추정)*` 하나뿐이었다. 근거를 인용하는
+        사람이 md 를 읽는다면 **거기서도 쪽 번호를 얼마나 믿을지** 보여야
+        한다.
+
+        인쇄 쪽은 괄호로 먼저 — 사람이 "54쪽" 이라 말할 때 가리키는 번호다.
+        나머지는 기울임 한 덩어리로 묶는다. 붙일 것이 없으면 아무것도
+        붙이지 않는다 — 모든 제목에 꼬리가 달리면 읽는 눈이 흐려진다.
+    """
+    printed = page.get("printed_page_no")
+    head = f" (인쇄 {printed})" if printed else ""
+
+    notes: list[str] = []
+    if page.get("blank"):
+        notes.append("빈 지면")
+    if page.get("estimated"):
+        notes.append("추정")
+    if page.get("wide_gap"):
+        gap = page.get("gap_pages")
+        notes.append(f"눈금이 {gap}쪽 떨어짐" if gap else "눈금이 멂")
+    span = page.get("page_span")
+    if span:
+        notes.append(f"표가 {span[0]}~{span[1]}쪽에 걸침")
+    return head + (f" *({' · '.join(notes)})*" if notes else "")
+
+
 def to_markdown(result: dict) -> str:
     """쪽으로 나뉜 결과를 markdown 으로.
 
@@ -597,7 +1588,12 @@ def to_markdown(result: dict) -> str:
     """
     lines = [f"# {result.get('filename') or '문서'}", ""]
     layout_like = result.get("unmatched_layout_like", 0)
-    lines.append(f"쪽 {result['page_count']} · 본문 눈금 "
+    notes = _collect_notes(result)
+    unaligned = result.get("unaligned_pages") or []
+    lines.append(f"쪽 {result['page_count']}"
+                 + (f" (대응 {result.get('aligned_pages', 0)}쪽 · "
+                    f"못 찾음 {len(unaligned)}쪽)" if unaligned else "")
+                 + " · 본문 눈금 "
                  f"{result.get('text_anchors', 0)}"
                  f"(추정 {result.get('estimated_pages', 0)}) · 표 "
                  f"{result['matched_tables']}/{result['total_tables']} 배정"
@@ -610,15 +1606,22 @@ def to_markdown(result: dict) -> str:
         # 쪽을 모른다는 사실을 제목에 적는다 — 1쪽인 것처럼 보이면 안 된다.
         lines += ["---", "", "## (쪽 미상 — 첫 눈금 앞 머리말)", "", head, ""]
     for page in result["pages"]:
-        mark = " *(추정)*" if page.get("estimated") else ""
-        lines += ["---", "", f"## 페이지 {page['page_no']}{mark}", ""]
+        lines += ["---", "", f"## 페이지 {page['page_no']}{_page_note(page)}", ""]
         body = (page.get("content") or "").strip()
         if body:
-            lines += [body, ""]
+            # **표 블록 태그 옆에 적는다** (0.5.59). 본문 한복판에 문장으로
+            # 끼워 넣으면 읽는 글이 되어 버린다 — 표에 붙은 주석이어야 한다.
+            lines += [_annotate_blocks(body, page, notes), ""]
         for table in page["tables"]:
             markdown = (table.get("markdown") or "").strip()
-            if markdown and markdown not in body:
-                lines += [markdown, ""]
+            if not markdown or markdown in body:
+                continue
+            # **쪽이 갈린 표에는 범위를 적는다** (0.5.58). 본문 위치와 표
+            # 짝이 다른 쪽을 가리킨 표는 대개 쪽 경계에 걸쳐 있다 — 표만
+            # 덩그러니 실으면 읽는 사람이 앞 쪽에서 본 것과 같은 표인지
+            # 알 수 없다.
+            lines += [f"<!-- {table.get('id') or 'table'}{_table_note(table)} -->",
+                      markdown, ""]
 
     # **짝을 못 지은 표도 싣는다** (0.4.64). 본문에 `<table 46>` 자리표시자가
     # 남아 있는데 그 표가 어디에도 없으면 하류가 빈손이 된다.
@@ -717,7 +1720,10 @@ def summary_lines(result: dict) -> list[str]:
     estimated = result.get("estimated_pages", 0)
     lines = [
         f"쪽: {pages}개 (본문 눈금 {result.get('text_anchors', 0)}개 · "
-        f"보간 추정 {estimated}쪽)",
+        f"보간 추정 {estimated}쪽)"
+        + (f" · 대응 못 찾은 쪽 {len(result['unaligned_pages'])}개 "
+           f"{result['unaligned_pages']} — 대개 표지·간지입니다"
+           if result.get("unaligned_pages") else ""),
         f"표 배정: {matched}/{total} ({ratio:.0f}%) — 맞출 수 있는 표 기준"
         f" (전체 {result['total_tables']}표 중 지면 장식 "
         f"{result['total_tables'] - total}개 제외)",

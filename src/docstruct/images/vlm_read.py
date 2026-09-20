@@ -41,6 +41,25 @@ MIN_AREA_RATIO = 0.03
 
 #: 응답이 이보다 짧으면 실패로 본다 ("표를 읽을 수 없습니다" 류).
 MIN_RESULT_CHARS = 20
+#: **이보다 작은 그림에는 길이 문턱을 걸지 않는다** (0.5.29).
+#:
+#: 20자는 큰 그림에서 모델이 얼버무린 답을 거르려고 둔 것이다. 그런데 절
+#: 표지 배지는 `별첨2` **세 글자가 정답**이다 — 0.5.28 이 배지 넷을 VLM
+#: 까지 보냈지만 전부 여기서 버려져 `빈 응답` 으로 기록됐다. 모델이 못
+#: 읽은 것이 아니라 우리가 버렸다.
+SHORT_OK_AREA_RATIO = 0.01
+
+
+def _too_short(text: str, info) -> bool:
+    """이 응답을 길이 때문에 버릴 것인가.
+
+    입력: text — 다듬은 응답, info — 대상 그림
+    출력: 버릴 것이면 True
+    비고:
+        작은 그림은 원래 글자가 몇 자 없으므로 길이로 거르지 않는다.
+    """
+    return (len(text) < MIN_RESULT_CHARS
+            and _area_ratio(info) >= SHORT_OK_AREA_RATIO)
 
 _PROMPT = """\
 첨부한 그림의 **내용을 텍스트로 옮기세요.** 그림에 대한 설명이 아니라 안에 적힌 내용 자체가 필요합니다.
@@ -83,13 +102,27 @@ def read_picture_regions(
         _log.info("LLM 미설정 — 그림 내용 읽기를 건너뜁니다")
         return 0
 
-    jobs = [
-        (page, info)
-        for page in pages
-        for info in (page.images or [])
-        if _should_read(info)
-    ]
+    # **그림마다 사유를 적는다** (0.5.18). 일부만 읽은 경우에도 빠진
+    # 그림이 왜 빠졌는지 결과물에 남아야 한다 — 로그는 흘러가고, 쪽 단위
+    # 요약만으로는 **어느 그림이** 왜 빠졌는지 알 수 없다.
+    jobs = []
+    for page in pages:
+        for info in (page.images or []):
+            reason = _skip_reason(info, page)
+            if reason:
+                info.read_skipped = reason
+            else:
+                info.read_skipped = None
+                jobs.append((page, info))
     if not jobs:
+        # **왜 한 장도 안 읽었는지 남긴다** (0.5.17). 예전에는 조용히 0 을
+        # 돌려줘, 그림이 있는데도 판독 기록이 아예 없었다 — "VLM 은
+        # 연결됐는데 적용이 안 된다" 를 로그로도 결과물로도 가릴 수 없었다.
+        #
+        # 실측(개인정보보호위원회 PDF): 그림 9장 중 5장이 `image` 인데 면적이
+        # 0.29~1.3% 라 문턱(3%)에 걸렸다 — 전부 `별첨N` 번호 배지·머리 띠였다.
+        # 나머지 4장은 text·chart 로 분류돼 다른 경로 몫이다.
+        _report_no_jobs(pages)
         return 0
 
     cfg = llm_api_config()
@@ -104,11 +137,13 @@ def read_picture_regions(
         }
         for future in as_completed(futures):
             page, info = futures[future]
+            failure = ""
             try:
                 markdown = future.result()
             except Exception as exc:             # noqa: BLE001 - 한 건 실패가 전체를 막지 않는다
                 _log.warning("%s 내용 읽기 실패: %s", info.id, exc)
                 markdown = None
+                failure = f"읽기 실패 — {exc}"
             if markdown:
                 info.vlm_markdown = markdown
                 info.vlm_model = str((cfg or {}).get("model") or "vlm")
@@ -117,21 +152,134 @@ def read_picture_regions(
                 done += 1
                 _log.info("%s 의 내용을 VLM 으로 읽었습니다 (%d자)",
                           info.id, len(markdown))
+            else:
+                # **시도했다 못 읽은 것도 남긴다** (0.5.18). 이것이 없으면
+                # `vlm_markdown` 이 없는 그림 앞에서 "걸러진 것" 과
+                # "불렀는데 실패한 것" 이 똑같아 보인다 — 연결 문제인지
+                # 문턱 문제인지 결과물로 가릴 수 없다.
+                info.read_skipped = failure or "모델이 읽을 내용이 없다고 답했습니다"
             bar.update()
     bar.close()
     return done
 
 
-def _should_read(info) -> bool:
-    """이 그림을 VLM 으로 읽어야 하는지.
+def _skip_reason(info, page=None) -> str:
+    """이 그림을 왜 안 읽는지 한 마디.
 
     입력: info — ImageInfo
+    출력: 사유 문자열 (읽을 대상이면 빈 문자열)
+    """
+    if getattr(info, "vlm_markdown", None):
+        return "이미 읽음"
+    kind = getattr(info, "region_kind", None)
+    if kind not in (None, "image"):
+        return f"{kind} 경로 담당"
+    if not getattr(info, "image_path", None):
+        return "그림 파일 없음"
+    ratio = _area_ratio(info)
+    if ratio < MIN_AREA_RATIO and not (page is not None and _beside_heading(info, page)):
+        return f"면적 {ratio:.1%} < 문턱 {MIN_AREA_RATIO:.0%}"
+    return ""
+
+
+def _report_no_jobs(pages) -> None:
+    """읽을 그림이 하나도 없을 때 사유를 모아 남긴다.
+
+    입력: pages — 대상 페이지 목록
+    출력: 없음 (로그 + trace)
+    비고:
+        **그림이 아예 없으면 말하지 않는다** — 그때는 건너뛴 것이 아니라
+        할 일이 없던 것이다.
+    """
+    from collections import Counter
+
+    reasons = Counter()
+    for page in pages:
+        for info in (page.images or []):
+            reasons[_skip_reason(info, page) or "대상"] += 1
+    if not reasons:
+        return
+    summary = " · ".join(f"{why} {n}장" for why, n in reasons.most_common())
+    _log.info("VLM 으로 읽을 그림이 없습니다 — %s", summary)
+    for page in pages:
+        if page.images:
+            page.trace.add("docstruct.images.vlm_read", "그림 판독 없음",
+                           summary, status="skip")
+            break
+
+
+#: 그림 블록 앞뒤로 볼 줄 수. 붙어 있어야 그 제목의 표지다 —
+#: 멀면 남의 제목이다.
+HEADING_NEAR_LINES = 1
+
+
+def _beside_heading(info, page) -> bool:
+    """이 그림이 **제목 바로 옆**에 있는가 (0.5.28).
+
+    입력: info — ImageInfo, page — 그 그림이 놓인 PageContent
+    출력: 제목에 붙어 있으면 True
+    비고:
+        `별첨2` 처럼 절 표지를 이루는 작은 배지를 살리려는 것이다. 면적
+        문턱(3%)은 로고·아이콘을 거르려고 둔 것인데, 이 배지들도 함께
+        걸렀다 — 45×32 · 면적 0.3%.
+
+        실측(개인정보보호위원회):
+
+            <image 6> </image 6> # 성과목표체계별 예산현황 (단위: 백만원)
+            # 복합 프로그램 성과지표 관리 별첨8 <image 9> </image 9> # <복합…
+
+        배지는 **제목 바로 옆**에 붙는다. 로고는 그렇지 않다. 크기나
+        가로세로비보다 이 자리 관계가 확실하다 — 배지는 거의 정사각
+        (1.4)이라 "가로로 긴 띠" 로는 가릴 수 없었다.
+
+        긴 제목 띠(`성과목표체계별 예산현황`)는 그림이 아니라 **텍스트로
+        이미 읽힌다.** 잃는 것은 `별첨N` 세 글자뿐이므로, 문턱을 통째로
+        낮추는 대신 이 자리만 연다.
+    """
+    import re
+
+    num = getattr(info, "image_num", None)
+    content = getattr(page, "content", "") or ""
+    if num is None or not content:
+        return False
+    match = re.search(rf"<image {num}>.*?</image {num}>", content, re.DOTALL)
+    if match is None:
+        return False
+
+    def _is_heading(lines: list[str]) -> bool:
+        """빈 줄을 건너뛴 **첫 줄**이 제목인가."""
+        seen = 0
+        for line in lines:
+            text = line.strip()
+            if not text:
+                continue
+            seen += 1
+            if seen > HEADING_NEAR_LINES:
+                return False
+            if re.match(r"#{1,6} ", text):
+                return True
+        return False
+
+    before = content[:match.start()].split("\n")[::-1]
+    after = content[match.end():].split("\n")
+    return _is_heading(after) or _is_heading(before)
+
+
+def _should_read(info, page=None) -> bool:
+    """이 그림을 VLM 으로 읽어야 하는지.
+
+    입력: info — ImageInfo, page — 그 그림이 놓인 PageContent (없어도 된다)
     출력: 대상이면 True
     비고:
         · 좌표 판정이 IMAGE 여야 한다 (표·도표는 다른 경로가 맡는다)
         · 저장된 그림 파일이 있어야 한다 (근거가 없으면 물어볼 수 없다)
         · 이미 읽었으면 다시 하지 않는다
-        · 면적이 작으면 로고·아이콘이므로 건너뛴다
+        · 면적이 작으면 로고·아이콘이므로 건너뛴다 —
+          **단 제목 바로 옆이면 절 표지이므로 읽는다** (0.5.28)
+
+        면적 판정은 `bbox` 가 있어야 하므로 사실상 **PDF 경로에만** 걸린다.
+        HWPX·HWP 는 지면 좌표가 없어 `_area_ratio` 가 1.0 을 내고 언제나
+        통과한다 — 이 예외도 그쪽 동작을 바꾸지 않는다.
     """
     if getattr(info, "vlm_markdown", None):
         return False
@@ -139,7 +287,9 @@ def _should_read(info) -> bool:
         return False
     if not getattr(info, "image_path", None):
         return False
-    return _area_ratio(info) >= MIN_AREA_RATIO
+    if _area_ratio(info) >= MIN_AREA_RATIO:
+        return True
+    return page is not None and _beside_heading(info, page)
 
 
 def _area_ratio(info) -> float:
@@ -330,7 +480,7 @@ def _read_one(page: PageContent, info, cfg: dict[str, Any]) -> str | None:
         text = _strip_fence(text)
     if not text or text.replace(" ", "") == _EMPTY_ANSWER.replace(" ", ""):
         return None
-    if len(text) < MIN_RESULT_CHARS:
+    if _too_short(text, info):
         return None
 
     repeats = _repetition_ratio(text)
@@ -427,3 +577,33 @@ def _insert_after_placeholder(page: PageContent, placeholder: str, markdown: str
         page.content = content.replace(placeholder, f"{placeholder}\n\n{markdown}", 1)
     else:
         page.content = f"{content}\n\n{markdown}" if content else markdown
+
+
+def read_new_pictures(pages: list[PageContent], *, progress: bool = False) -> int:
+    """**판독 단계 뒤에 생긴 그림**만 다시 읽는다 (0.5.30).
+
+    입력: pages — 대상 페이지 목록 (제자리 갱신), progress — 진행 표시
+    출력: 읽은 그림 수
+    비고:
+        구간 9 에서 표가 그림으로 판정되면 그 자리에 `ImageInfo` 가 새로
+        생긴다(`tables.fill._group_to_image`). 그런데 그림 판독은 구간 7 —
+        이미 지나갔다. 그래서 이 그림들은 **내용도 사유도 없이** 남았다:
+
+            img_from_table_5  0×0  read_skipped=None  vlm_markdown=None
+
+        0.5.18 이 "모든 그림은 내용이 있거나 이유가 있다" 고 못 박았는데
+        이 자리만 그 약속 밖이었다. 게다가 표가 그림으로 판정됐다는 것은
+        **그 자리에 읽을 내용이 있다**는 신호다 — 버릴 이유가 없다.
+
+        **새로 생긴 것만 본다.** 앞 단계에서 읽혔거나 사유가 붙은 그림은
+        건드리지 않는다 — 실패한 그림을 다시 부르면 엔드포인트가 죽어
+        있을 때 호출이 두 배가 된다.
+    """
+    fresh = [page for page in pages
+             if any(getattr(i, "vlm_markdown", None) is None
+                    and getattr(i, "read_skipped", None) is None
+                    for i in (page.images or []))]
+    if not fresh:
+        return 0
+    _log.info("판독 뒤에 생긴 그림을 읽습니다 (쪽 %d개)", len(fresh))
+    return read_picture_regions(fresh, progress=progress)

@@ -54,7 +54,7 @@ _EPILOG = """예시:
   document.json  전체 구조     document.md   본문
   tables.md      표 판정       pipeline.md   처리 경로·소요 시간
   layout.md      레이아웃 인식 (PDF)
-  aligned.json / aligned.md   쪽 맞춤 결과 (--align 일 때)
+  aligned.json / aligned.md   쪽 맞춤 결과 (--align 일 때 · 이름은 --align-name)
   pages/         페이지 PNG    images/       추출된 그림
 
 종료 코드: 0 성공 · 1 실패 · 2 인자 오류
@@ -130,6 +130,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("json", "markdown", "both"),
         default="both",
         help="쪽 맞춤 산출 형식 (기본: both — aligned.json·aligned.md)",
+    )
+    p.add_argument(
+        "--align-name",
+        default="aligned",
+        metavar="이름",
+        help="쪽 맞춤 산출 파일 이름 (기본: aligned → aligned.json·aligned.md)",
     )
 
     render = p.add_argument_group("렌더링")
@@ -295,18 +301,14 @@ def _run_align(args) -> int:
         print(f"  {line}")
     result = got.result
 
-    out_dir = out_root / out_folder_name(left)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    written = []
-    if args.align_format in ("json", "both"):
-        path = out_dir / "aligned.json"
-        path.write_text(json.dumps(result, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
-        written.append(path)
-    if args.align_format in ("markdown", "both"):
-        path = out_dir / "aligned.md"
-        path.write_text(to_markdown(result), encoding="utf-8")
-        written.append(path)
+    # **저장 규칙은 `AlignPair.save` 하나뿐이다** (0.5.40). 예전에는 CLI 가
+    # 직접 썼고 API 로 맞춘 쪽은 부르는 사람이 따로 썼다 — 같은 일을 두
+    # 벌로 하면 반드시 어긋난다(이 프로젝트에서 여러 번 겪었다).
+    try:
+        written = got.save(out_root, formats=args.align_format,
+                           stem=args.align_name)
+    except ValueError as exc:                    # 이름이 쓸 수 없는 모양
+        raise SystemExit(f"--align-name: {exc}") from exc
 
     for line in summary_lines(result):
         print(f"  {line}")
@@ -572,39 +574,76 @@ def _print_code_guide(query: str) -> int:
 
 
 def _print_where() -> None:
-    """설치 위치·버전을 출력한다.
+    """지금 **실제로 실행되는** docstruct 의 자리와 판을 낸다.
 
     입력: 없음
     출력: 없음 (표준출력)
     비고:
-        업그레이드했는데 옛 동작이 그대로면 **다른 파이썬에 설치**했거나
-        캐시된 옛 버전이 남은 것이다. 여기서 바로 확인한다.
+        **불러온 자리가 먼저다** (0.5.12). 예전에는 `importlib.metadata`
+        를 먼저 물어 pip 정보가 있으면 그것을 찍었다. 그런데 pip 설치본과
+        폴더 배포본이 **함께 있을 수 있다** — 폴더 안에서 실행하면 폴더가
+        이기는데 화면에는 pip 의 판이 나왔다.
+
+        실측 제보: 폴더 `docstruct-local-0_3_55` 안에서 돌렸는데
+
+            docstruct 위치 : ...(윈도우 경로)...\\docstruct-local\\docstruct
+            버전           : 0.4.99 (pip 설치본)      ← 저 폴더의 판이 아니다
+
+        **고친 코드가 안 고쳐진 것처럼 보이는 가장 흔한 원인**이 이것이다.
+        이제 불러온 자리 옆의 `VERSION` 을 권위로 삼고, pip 이 함께 있고
+        판이 다르면 **둘 다 보여 주며 어느 쪽이 실행 중인지 밝힌다.**
     """
     import sys
     from pathlib import Path
 
     import docstruct
 
+    from docstruct.core.version import details as version_details
+
+    got = version_details()
+    here = Path(got["location"])
     print(f"실행 중인 파이썬 : {sys.executable}")
-    print(f"docstruct 위치   : {Path(docstruct.__file__).resolve().parent}")
+    print(f"docstruct 위치   : {here}")
 
-    try:
-        from importlib.metadata import version
+    folder_version = got["version"] if got["source"] == "folder" else None
+    pip_version = got["pip_version"]
+    pip_path = None
+    if pip_version:
+        try:
+            from importlib.metadata import distribution
 
-        print(f"버전             : {version('docstruct')} (pip 설치본)")
-    except Exception:
-        for base in (Path(docstruct.__file__).parent, Path(docstruct.__file__).parent.parent):
-            f = base / "VERSION"
-            if f.is_file():
-                print(f"버전             : {f.read_text(encoding='utf-8').strip()} (압축본)")
-                break
-        else:
-            print("버전             : 알 수 없음")
+            pip_path = Path(str(distribution("docstruct").locate_file("docstruct"))).resolve()
+        except Exception:                        # noqa: BLE001
+            pip_path = None
+    running_from_folder = got["source"] == "folder"
+
+    if running_from_folder:
+        print(f"버전             : {folder_version} (폴더 배포본 — 지금 이것이 돕니다)")
+    elif pip_version:
+        print(f"버전             : {pip_version} (pip 설치본)")
+    else:
+        print("버전             : 알 수 없음")
+
+    # **둘이 함께 있으면 반드시 말한다.** 어느 쪽이 도는지 모르면
+    # "갱신했는데 그대로" 를 계속 겪는다.
+    if running_from_folder and pip_version:
+        print()
+        print(f"⚠ pip 설치본도 있습니다: {pip_version} @ {pip_path}")
+        print("  지금은 **폴더 쪽**이 돕니다 (이 폴더 안에서 실행 중).")
+        print("  다른 디렉터리에서 실행하면 pip 쪽이 돌아 판이 달라집니다.")
+        print(f'  pip 쪽을 지우려면: "{sys.executable}" -m pip uninstall docstruct')
 
     print()
-    print("업그레이드가 반영되지 않았다면:")
-    print(f'  "{sys.executable}" -m pip install -U --force-reinstall --no-cache-dir \\')
-    print('    "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@v0.1.46"')
+    if running_from_folder:
+        print("이 설치는 **폴더 배포본**입니다. 갱신하려면 폴더를 통째로")
+        print("바꾸세요 — 덮어쓰기(cp -r)는 사라진 파일을 남깁니다:")
+        print("  rsync -a --delete <새 폴더>/ <이 폴더>/")
+        print("  (윈도우: 옛 폴더를 지우고 새로 풀어 쓰세요)")
+    else:
+        print("업그레이드가 반영되지 않았다면:")
+        print(f'  "{sys.executable}" -m pip install -U --force-reinstall --no-cache-dir \\')
+        print(f'    "docstruct @ git+http://183.96.152.133/mjseo/docstruct.git@'
+              f'v{pip_version or folder_version or "<판>"}"')
 
 
 def _print_options() -> None:

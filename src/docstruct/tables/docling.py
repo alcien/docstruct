@@ -244,65 +244,79 @@ def empty_cell_ratio(item) -> dict:
 structure_gap = empty_cell_ratio
 
 
+def grid_from_cells(cells: list[dict], header_count: int = 0) -> list[list[str]]:
+    """정규화된 셀 목록으로 글자 격자를 만든다 (0.5.10).
+
+    입력: cells — `cell_grid` 형태 (row·col·rowspan·colspan·text), header_count — 머리행 수
+    출력: 글자 격자 (list[list[str]])
+    비고:
+        **markdown 과 `cells` 가 같은 재료를 쓰게 하는 함수다.** 예전에는
+        `docling_table_to_markdown` 이 Docling 객체에서 **따로** 격자를
+        만들고 `cell_grid` 가 또 따로 만들었다. 둘이 어긋나면 결과물의 두
+        필드가 다른 말을 한다 — 0.4.83 의 `repair_leaks` 와 같은 병이다.
+
+        실측(개인정보보호위원회 PDF): 51표 중 8표에서 markdown 이 `cells`
+        보다 값이 적었고, 한 표는 `신규` 하나를 잃고 `30` 이 '27 에서
+        '26 으로 **한 칸 밀렸다.** HWPX 경로는 같은 문서에서 0표였다 —
+        거기서는 렌더러가 셀 목록을 그대로 읽기 때문이다.
+
+        격자 크기는 `num_rows`·`num_cols` 가 아니라 **셀이 실제로 덮는
+        범위**로 잡는다. 선언값이 작으면 바깥 셀이 조용히 잘렸다.
+    """
+    if not cells:
+        return []
+    rows = max(c["row"] + max(c.get("rowspan", 1), 1) for c in cells)
+    cols = max(c["col"] + max(c.get("colspan", 1), 1) for c in cells)
+    grid: list[list[str]] = [[""] * cols for _ in range(rows)]
+
+    for cell in sorted(cells, key=lambda c: (c["row"], c["col"])):
+        text = (cell.get("text") or "").strip()
+        if not text:
+            continue
+        r0, c0 = cell["row"], cell["col"]
+        r1 = r0 + max(cell.get("rowspan", 1), 1)
+        c1 = c0 + max(cell.get("colspan", 1), 1)
+        grid[r0][c0] = text
+
+        if r0 < header_count:
+            # 머리는 span 전체에 퍼뜨린다 — 열별로 접어야 하기 때문이다.
+            for r in range(r0, min(r1, rows)):
+                for c in range(c0, min(c1, cols)):
+                    if not grid[r][c]:
+                        grid[r][c] = text
+            continue
+
+        # 세로 병합으로 덮인 칸을 채운다. 무엇으로 채울지는
+        # `converters.common.table` 한 곳이 정한다 (0.5.6).
+        if _merge_mark_enabled() and r1 - r0 > 1:
+            filler = merge_continuation(text)
+            for r in range(r0 + 1, min(r1, rows)):
+                if not grid[r][c0]:
+                    grid[r][c0] = filler
+    return grid
+
+
 def docling_table_to_markdown(item) -> str:
     """TableItem 을 GFM 표로 변환한다.
 
-    입력: item — Docling TableItem (data.table_cells, num_rows, num_cols 사용)
+    입력: item — Docling TableItem
     출력: GFM 표 문자열. 변환 불가 시 빈 문자열
-    동작: 헤더 셀은 span 전체에 값을 전파하고, 다단 헤더는 열별로 이어 붙인다.
-          데이터 셀은 좌상단 칸에만 두어 값이 중복 집계되지 않게 한다.
+    동작:
+        `cell_grid(item)` 이 낸 **같은 셀 목록**으로 격자를 세운다 —
+        markdown 과 `cells` 가 어긋날 수 없다 (0.5.10). 머리 셀은 span
+        전체에 값을 전파하고, 다단 머리는 열별로 이어 붙인다.
     """
     data = getattr(item, "data", None)
     if not data or not data.table_cells:
         return ""
 
-    num_rows = int(getattr(data, "num_rows", 0) or 0)
-    num_cols = int(getattr(data, "num_cols", 0) or 0)
-    if num_rows <= 0 or num_cols <= 0:
+    cells = cell_grid(item)
+    if not cells:
         return ""
+    rows = max(c["row"] + max(c.get("rowspan", 1), 1) for c in cells)
+    header_count = _header_row_count(list(data.table_cells), rows)
 
-    cells = list(data.table_cells)
-    header_count = _header_row_count(cells, num_rows)
-    merge_mark = _merge_mark_enabled()
-
-    grid: list[list[str]] = [[""] * num_cols for _ in range(num_rows)]
-
-    for cell in cells:
-        text = (getattr(cell, "text", "") or "").strip()
-        if not text:
-            continue
-        r0, r1 = _cell_span(cell, "row")
-        c0, c1 = _cell_span(cell, "col")
-        if not (0 <= r0 < num_rows and 0 <= c0 < num_cols):
-            continue
-
-        is_header = bool(getattr(cell, "column_header", False)) or r0 < header_count
-        if is_header:
-            # 헤더는 span 전체에 전파 — 열별 병합이 가능해야 합니다.
-            for r in range(r0, min(r1, num_rows)):
-                for c in range(c0, min(c1, num_cols)):
-                    if not grid[r][c]:
-                        grid[r][c] = text
-        else:
-            # 데이터는 좌상단에만 — 값 복제는 집계를 왜곡합니다.
-            grid[r0][c0] = text
-            # 세로 병합이 이어지는 칸에는 `〃` 를 남깁니다. 빈 칸으로 두면
-            # **값이 맨 윗행만의 것으로 읽힙니다** — HWP 경로에서 같은
-            # 문제로 `페이스북+인스타그램 합계` 가 `페이스북 단독` 으로
-            # 잘못 읽혔습니다.
-            #
-            # 실측(행정안전부 성과계획서 PDF): 이 표기가 없어 표 322개 중
-            # 273개(85%)가 "병합 셀이 풀렸다" 는 판정을 받았습니다. 같은
-            # 문서를 HWPX 로 읽으면 4/580 입니다.
-            if merge_mark and r1 - r0 > 1:
-                # 덮인 칸을 무엇으로 채울지는 한 곳이 정한다 (0.5.6) —
-                # 기본은 닻의 값을 되풀이한다. `〃` 는 표를 통째로 볼 때만
-                # 뜻이 통하는데, 이 결과물은 RAG 에서 행 단위로 잘린다.
-                filler = merge_continuation(grid[r0][c0])
-                for r in range(r0 + 1, min(r1, num_rows)):
-                    if not grid[r][c0]:
-                        grid[r][c0] = filler
-
+    grid = grid_from_cells(cells, header_count)
     while grid and not any(cell.strip() for cell in grid[-1]):
         grid.pop()
     if not grid:

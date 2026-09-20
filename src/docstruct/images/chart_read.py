@@ -207,6 +207,11 @@ def read_charts(pages: list[PageContent], *, progress: bool = False) -> int:
         if info.region_kind == "chart" and info.image_path
     ]
     if not targets:
+        charts = sum(1 for page in pages for info in page.images
+                     if info.region_kind == "chart")
+        if charts:
+            # 그래프로 판정됐는데 **그림 파일이 없어** 물어볼 근거가 없다.
+            _log.info("그래프 %d개에 그림 파일이 없어 읽지 못합니다", charts)
         return 0
 
     cfg = llm_api_config()

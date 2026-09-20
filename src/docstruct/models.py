@@ -301,6 +301,17 @@ class ImageInfo:
     #: 같은 조직도가 HWPX 에서는 전사, PDF 에서는 도해로 갈린 일이 있다 —
     #: 문턱 하나가 결과의 성격을 가르는데 그 사실이 남지 않았다.
     chart_gate: dict | None = None
+    #: **VLM 으로 읽지 않은 이유** (0.5.18). 예: `면적 0.3% < 문턱 3%` ·
+    #: `text 경로 담당` · `그림 파일 없음` · `이미 읽음`.
+    #:
+    #: 왜 그림마다 두나 — 로그는 흘러가고 쪽 단위 요약만으로는 **어느
+    #: 그림이** 왜 빠졌는지 알 수 없다. 나중에 결과물만 보고 "이 조직도가
+    #: 왜 안 읽혔지" 를 물을 때 답이 그 자리에 있어야 한다. 실측
+    #: (개인정보보호위원회): 별첨 제목 상자 5장이 면적 문턱에 걸려
+    #: 조용히 빠졌고, 그 사실이 어디에도 없었다.
+    #:
+    #: 읽은 그림은 None 이다 — 사유가 없다는 뜻이다.
+    read_skipped: str | None = None
 
     promoted_table_id: str | None = None
 
@@ -548,7 +559,8 @@ class PageContent:
     """페이지 하나의 구조화 결과.
 
     입력(필드):
-        page_no / page_no_kind   페이지 번호와 그 성격 (exact | document)
+        page_no / page_no_kind   **물리** 쪽 번호와 그 성격 (exact | document)
+        printed_page_no          **인쇄(논리)** 쪽 번호 — 문서가 찍어 둔 값
         content                  본문 markdown (표는 `<table N>` 블록으로 치환)
         tables / images          페이지에 속한 표·이미지 메타
         page_image_path          렌더된 페이지 PNG 경로 (PDF 만)
@@ -559,9 +571,34 @@ class PageContent:
     """
     page_no: int | str
     page_no_kind: str                # exact | document
+    #: **인쇄 쪽번호** — 문서가 지면에 찍어 둔 번호 (0.5.25).
+    #:
+    #: `page_no` 는 **물리 쪽**(PDF 의 몇 번째 장)이고, 이것은 **논리 쪽**
+    #: (문서가 스스로 `- 54 -` 라고 적은 번호)이다. 공공문서는 표지·목차
+    #: 뒤부터 1 쪽을 매기므로 둘이 어긋난다 — 실측(세 부처): 물리 6쪽이
+    #: 인쇄 1쪽, 차이 5.
+    #:
+    #: 사람이 "54쪽 보세요" 라고 할 때 가리키는 것은 이 번호다. 인용·목차
+    #: 대조가 전부 이 값을 쓴다.
+    #:
+    #: 표지·목차처럼 번호가 붙기 전 지면은 None 이다 — 0 이나 음수를 적으면
+    #: 있지도 않은 쪽을 가리키게 된다.
     content: str
     tables: list[TableInfo] = field(default_factory=list)
     images: list[ImageInfo] = field(default_factory=list)
+    #: **인쇄 쪽번호** — 문서가 지면에 찍어 둔 번호 (0.5.25).
+    #:
+    #: `page_no` 는 **물리 쪽**(PDF 의 몇 번째 장)이고, 이것은 **논리 쪽**
+    #: (문서가 스스로 `- 54 -` 라고 적은 번호)이다. 공공문서는 표지·목차
+    #: 뒤부터 1 쪽을 매기므로 둘이 어긋난다 — 실측(세 부처): 물리 6쪽이
+    #: 인쇄 1쪽, 차이 5.
+    #:
+    #: 사람이 "54쪽 보세요" 라고 할 때 가리키는 것은 이 번호다. 인용·목차
+    #: 대조가 전부 이 값을 쓴다.
+    #:
+    #: 표지·목차처럼 번호가 붙기 전 지면은 None 이다 — 0 이나 음수를 적으면
+    #: 있지도 않은 쪽을 가리키게 된다.
+    printed_page_no: int | None = None
     page_image_path: str | None = None   # 렌더된 페이지 PNG (PDF 전용)
     trace: PageTrace = field(default_factory=PageTrace)
     #: 레이아웃 모델이 인식한 영역 목록 (PDF 만). docstruct.output.layout.LayoutItem
@@ -642,6 +679,7 @@ class PageContent:
         return {
             "page_no": self.page_no,
             "page_no_kind": self.page_no_kind,
+            "printed_page_no": self.printed_page_no,
             "page_image_path": self.page_image_path,
             "trace": self.trace.to_dict(),
             "layout": [i.to_dict() for i in self.layout],

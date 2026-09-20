@@ -298,6 +298,66 @@ def find_toc(pages: list[PageContent]) -> list[dict]:
     return items
 
 
+#: 제목 대조로 오프셋을 믿을 최소 근거 수.
+MIN_TITLE_SAMPLES = 3
+#: 다수결이 이 비율을 넘어야 믿는다.
+MIN_TITLE_RATIO = 0.6
+
+
+def title_page_offset(items: list[dict], pages: list) -> tuple[int | None, int]:
+    """목차 **제목이 실제로 실린 쪽**을 찾아 오프셋을 잰다 (0.5.24).
+
+    입력: items — find_toc 결과, pages — PageContent 목록
+    출력: (오프셋, 근거 수). 알 수 없으면 (None, 0)
+    비고:
+        **가장 곧은 방법이다.** 목차가 `1. 임무와 비전 … 1` 이라 적었고
+        그 제목이 PDF 6쪽에 있으면 오프셋은 5다. 세어서 다수결로 정한다.
+
+        예전 `page_offset` 은 `source_page − page` 를 썼는데, `source_page`
+        는 그 항목이 **적힌** 쪽(= 목차 쪽)이지 **가리키는** 쪽이 아니다.
+        둘의 차이는 오프셋과 아무 관계가 없다. 실측(세 부처): 목차가 5쪽에
+        있고 `3. 목표 및 과제현황 … 4` 항목의 차이가 1 이라 `min(gaps)` 가
+        **1** 을 냈다. 실제 오프셋은 세 문서 모두 **5** 였다.
+
+        목차 쪽 자체는 뺀다 — 거기에는 모든 제목이 실려 있어 언제나 맞는다.
+        제목이 여러 쪽에 나오면 그 항목은 세지 않는다(모호하므로).
+    """
+    import collections
+    import re
+
+    if not items or not pages:
+        return None, 0
+    squeeze = lambda text: re.sub(r"\s+", "", text or "")   # noqa: E731
+    toc_pages = {item.get("source_page") for item in items}
+
+    body = {}
+    for page in pages:
+        text = getattr(page, "content", "") or ""
+        tables = getattr(page, "tables", None) or []
+        text += "".join(getattr(t, "markdown", "") or "" for t in tables)
+        body[getattr(page, "page_no", None)] = squeeze(text)
+
+    gaps: collections.Counter = collections.Counter()
+    for item in items:
+        title = squeeze(item.get("title"))
+        printed = item.get("page")
+        if not title or not printed or printed <= 0:
+            continue
+        hits = [no for no, text in body.items()
+                if no not in toc_pages and no is not None and title in text]
+        if len(hits) != 1:                       # 여러 쪽에 나오면 모호하다
+            continue
+        gaps[hits[0] - printed] += 1
+
+    total = sum(gaps.values())
+    if total < MIN_TITLE_SAMPLES:
+        return None, total
+    offset, count = gaps.most_common(1)[0]
+    if count / total < MIN_TITLE_RATIO:
+        return None, total
+    return offset, count
+
+
 def page_offset(items: list[dict]) -> int | None:
     """인쇄 쪽번호와 PDF 쪽번호의 차이.
 
@@ -307,6 +367,11 @@ def page_offset(items: list[dict]) -> int | None:
         목차가 가리키는 쪽과 실제 PDF 쪽이 어긋난다 — 표지·간지 때문이다.
         실측(행안부)에서 5쪽 차이였다. 이 값을 알면 목차로 본문을 찾아갈
         수 있다.
+
+        ⚠ **이 방법은 믿을 것이 못 된다** (0.5.24). `source_page` 는 그
+        항목이 **적힌** 쪽(목차 쪽)이지 **가리키는** 쪽이 아니어서, 둘의
+        차이는 오프셋과 관계가 없다. 실측(세 부처): 전부 1 을 냈고 실제는
+        5 였다. `title_page_offset` 이 실패했을 때의 마지막 수단으로만 둔다.
 
         목차 자체가 실린 쪽에서는 잴 수 없으므로, 항목이 가리키는 쪽과
         목차가 있던 쪽의 차이 중 **가장 작은 양수**를 쓴다.
@@ -361,7 +426,13 @@ def _printed_page(page: PageContent) -> int | None:
     lines = [ln.strip() for ln in (page.content or "").splitlines() if ln.strip()]
     if not lines:
         return None
-    edges = lines[:HEADER_LINES] + lines[-FOOTER_LINES:]
+    # **바닥글을 먼저 본다** (0.5.43). 예전에는 머리글부터 훑어 첫 일치를
+    # 돌려줬는데, 본문에 `- 24 -` 같은 글머리가 있으면 그것이 걸린다.
+    #
+    # 실측(병무청 원본 PDF 물리 73쪽): `- 24 -` 와 `- 68 -` 이 함께 있었고
+    # 앞엣것을 쓰면 차이가 49 로 튀었다. 뒤에서부터 보면 92쪽 전부 5 로
+    # 일치한다. 쪽번호는 지면 **끝**에 있으므로 뒤가 먼저다.
+    edges = lines[-FOOTER_LINES:][::-1] + lines[:HEADER_LINES]
     for line in edges:
         if _BROWSER_RE.match(line):
             continue

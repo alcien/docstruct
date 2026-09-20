@@ -1515,6 +1515,16 @@ def build_document(
                         "LLM 미사용 — 원본 파싱 결과 그대로", status="skip",
                     )
 
+    # **구간 9 에서 새로 생긴 그림을 읽는다** (0.5.30). 표가 그림으로
+    # 판정되면 그 자리에 ImageInfo 가 생기는데, 그림 판독(구간 7)은 이미
+    # 지나갔다. 앞서 읽혔거나 사유가 붙은 그림은 건드리지 않는다.
+    if read_pictures:
+        from docstruct.images.vlm_read import read_new_pictures
+
+        late = read_new_pictures(pages, progress=progress)
+        if late:
+            _log.info("표에서 승격된 그림 %d개를 읽었습니다", late)
+
     # OCR 검증은 **표 재추출이 끝난 뒤에** 한다.
     #
     # 재추출은 지면을 보고 표를 다시 쓰므로, 그전에 검증하면 곧 고쳐질
@@ -1568,13 +1578,22 @@ def build_document(
     if get_settings().detect_toc:
         # 형식과 무관하다 — 목차 줄 모양은 어디서나 같다.
         from docstruct.outline.toc import (find_toc, page_offset,
-                                           printed_page_offset)
+                                           printed_page_offset, title_page_offset)
 
         doc.toc = find_toc(pages)
         # 바닥글 쪽번호로 재는 쪽이 정확하다. 목차만으로는 잴 수 없는
         # 경우가 있다 — 목차가 앞쪽인데 항목이 뒤를 가리키면 그렇다.
+        # **세 가지를 순서대로 본다** (0.5.24).
+        #   ① 바닥글 쪽번호      지면에 찍힌 값 — 가장 곧다
+        #   ② 목차 제목 대조     제목이 실제로 실린 쪽을 찾아 뺀다
+        #   ③ source_page 차이   마지막 수단 (실측에서 틀렸다)
         measured, samples = printed_page_offset(pages)
+        if measured is None:
+            measured, by_title = title_page_offset(doc.toc, pages)
+            if measured is not None:
+                samples = by_title
         doc.toc_offset = measured if measured is not None else page_offset(doc.toc)
+        _fill_printed_pages(pages, doc.toc_offset)
         if doc.toc or measured is not None:
             _log.info("목차 항목 %d개 · 쪽 차이 %s (근거 %d쪽)",
                       len(doc.toc), doc.toc_offset, samples)
@@ -1660,6 +1679,31 @@ def _gate_format(fmt: str, pages: list[PageContent]) -> str:
            for page in pages):
         return "hwpx"
     return fmt
+
+
+def _fill_printed_pages(pages: list[PageContent], offset: int | None) -> None:
+    """물리 쪽에서 **인쇄 쪽번호**를 계산해 채운다 (0.5.25).
+
+    입력: pages — 쪽 목록, offset — 인쇄 쪽과 물리 쪽의 차이
+    출력: 없음 (page.printed_page_no 갱신)
+    비고:
+        `인쇄 = 물리 − offset`. 공공문서는 표지·목차 뒤부터 1 쪽을 매기므로
+        둘이 어긋난다 — 사람이 "54쪽" 이라 할 때 가리키는 것은 인쇄 쪽이다.
+
+        **표지·목차 지면은 비워 둔다.** 계산값이 1 보다 작으면 그 지면에는
+        아직 번호가 붙지 않은 것이다. 0 이나 음수를 적으면 있지도 않은 쪽을
+        가리키게 된다.
+
+        오프셋을 모르면 아무것도 채우지 않는다 — 틀린 번호보다 없는 편이
+        낫다. 어느 쪽인지는 `toc_offset` 이 None 인지로 구별된다.
+    """
+    if offset is None:
+        return
+    for page in pages:
+        if not isinstance(page.page_no, int):
+            continue
+        printed = page.page_no - offset
+        page.printed_page_no = printed if printed >= 1 else None
 
 
 def _report_unused_steps(fmt: str) -> None:
@@ -1825,8 +1869,18 @@ def _pipeline_settings(
     입력: fmt, assess_tables, fill_tables, fill_all 과 전역 설정
     출력: dict — pdf_backend, ocr_backend, llm_model 등 (document.json 의 pipeline)
     """
+    from docstruct.core.version import details as version_details
+
     settings = get_settings()
-    info: dict = {"source_format": fmt}
+    # **판을 결과물에 적는다** (0.5.13). 없으면 "이 JSON 은 몇 판이
+    # 만든 것인가" 를 증상으로 되짚어야 한다 — `〃` 가 있는지, markdown 이
+    # cells 보다 짧은지 따위로. 세 번 연속 그렇게 추측했다.
+    got = version_details()
+    info: dict = {
+        "source_format": fmt,
+        "docstruct_version": got["version"],
+        "docstruct_install": got["source"],
+    }
 
     if fmt == "pdf":
         info.update(

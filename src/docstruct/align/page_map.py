@@ -169,8 +169,77 @@ ANCHOR_TRIES = 6
 #: 비교에 쓸 글자 수. 길수록 유일해지지만 판독 차이에 약해진다.
 ANCHOR_KEY_LEN = 35
 
-#: 눈금으로 쓰면 안 되는 줄 — placeholder·표 조각·쪽번호.
-_SKIP_LINE = re.compile(r"^\s*(?:<!--|<--|\||-{3,}|\d+\s*$)")
+#: **제목 줄의 길이 문턱** (0.5.35). 본문 글은 12자를 요구하지만 제목은
+#: 8자면 받는다 — 제목은 짧아도 절이 바뀌는 확실한 신호이기 때문이다.
+#:
+#: 실측(세 부처)에서 문턱 12 에 걸려 떨어진 제목들:
+#:
+#:     '2. 성과계획 목표체계도'   → 10자
+#:     '3. 목표 및 과제현황'      →  9자
+#:     '성과목표체계별 예산현황'   → 11자
+#:
+#: 그 쪽은 눈금을 잃고 보간으로 떨어졌다. 병무청 쪽7·개인정보보호위 쪽9 가
+#: 각각 한 쪽 앞으로 밀린 원인이 이것이었다 — **목차 잣대가 아니었으면
+#: 못 봤을 자리**다(본문 잣대는 두 쪽 다 판정 불가였다).
+#:
+#: 8 로 내린 근거: 목차 잣대 23/33 → 27/33, `exact` 쪽 160 → 164,
+#: 별첨 23/23 유지. 6 까지 내려도 더 나아지지 않았다.
+MIN_HEADING_CHARS = 8
+
+#: 후보가 문서에 몇 번까지 나와도 되는지 (본문 글).
+MAX_REPEATS = 2
+#: **제목은 더 봐준다** (0.5.31). 공공문서는 절마다 같은 표제를 되풀이하고,
+#: 그 표제가 목차·본문·제목 상자 **세 곳**에 나온다:
+#:
+#:     # 신규 프로그램 성과지표 현황      목차 1 + 본문 1 + 상자 1 = 3회
+#:
+#: 문턱이 2 라 이런 제목이 전부 버려졌고, 그 쪽은 눈금이 0개가 되어 보간으로
+#: 떨어졌다 — 실측(대통령비서실 쪽31·32): 별첨4·5 가 한 쪽씩 밀렸다.
+#:
+#: 본문 글까지 함께 풀면 **연쇄로 밀린다.** 문턱을 3 으로 올려 재 봤더니
+#: 별첨은 17/21 → 22/23 로 올랐지만 잣대가 70/70 → 69/70 으로 떨어졌다
+#: (개인정보보호위 쪽32, 본문 한 줄). 그래서 **제목에만** 푼다.
+MAX_HEADING_REPEATS = 3
+
+#: **표지·목표 표식**은 더 봐준다 (0.5.49). 절마다 다른 번호이므로 여러 번
+#: 나와도 가리는 힘을 잃지 않는다 — 실측(문체부): 정확히 3회씩.
+MAX_MARKER_REPEATS = 4
+
+#: **절 표지** — 짧아도 눈금으로 받는다 (0.5.32).
+#:
+#: `별첨2` 는 세 글자라 길이 문턱(12)에 걸린다. 그런데 이것은 절이 바뀌는
+#: **가장 확실한 표시**다 — 문서에 절마다 한 번, 목차에 한 번 나와 정확히
+#: 두 번이므로 되풀이 문턱(2)도 넘지 않는다.
+#:
+#: 실측(병무청 PDF 88쪽): 첫 줄이 `별첨2`, 둘째 줄이
+#: `# 성과목표체계별 예산현황`(납작하게 11자) — **둘 다 문턱 미달**이라
+#: 후보가 0개였고 그 쪽은 보간으로 떨어져 별첨2 가 한 쪽 밀렸다.
+_SECTION_MARK = re.compile(r"^(?:별첨|붙임|참고|별표|서식)\s*\d+$")
+
+#: **번호 붙은 목표 표식** — 절 표지와 같은 대접을 한다 (0.5.49).
+#:
+#: `프로그램 목표 Ⅰ-7` 처럼 문서가 절마다 붙이는 고유 번호다. 절 이름
+#: (`□ 전략목표와의 부합성`)은 프로그램마다 같아 33번 되풀이되지만, 이
+#: 번호는 **절마다 다르다** — 사람이 "어느 절인지" 가리는 표식이 바로
+#: 이것이다.
+#:
+#: 실측(문체부): `프로그램목표Ⅰ-7` 꼴 33종이 **정확히 3회씩** 나온다.
+#: 첫 번째는 본문 간지, 나머지 둘은 뒤쪽 별첨 표 안이다. 본문 글 문턱(2)에
+#: 걸려 전부 버려졌고, 그 표식이 있는 43쪽 중 34쪽이 눈금을 못 얻었다.
+_GOAL_MARK = re.compile(
+    r"^(?:프로그램|전략|성과)\s*목표\s*[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ0-9]+(?:\s*-\s*\d+)?\.?$")
+
+#: 눈금으로 쓰면 안 되는 줄 — placeholder·표 조각·쪽번호·그림 블록 태그.
+#:
+#: **`<image …>` 계열을 거르는 이유** (0.5.31). 0.5.29 가 배지를 읽히기
+#: 시작하면서 PDF 본문에 `<image-read 9>` 같은 블록이 생겼는데, 그것이
+#: 눈금 후보로 뽑혔다. 태그는 **HWPX 본문에 있을 리가 없으므로** 그 쪽은
+#: 눈금이 0개가 되고 보간으로 떨어진다.
+#:
+#: 실측(대통령비서실 쪽31·32, 병무청 쪽91): 후보 세 개 중 둘이
+#: `<image-read9` · `</image-read9` 였고 세 쪽 다 별첨이 한 쪽 밀렸다.
+#: **판독을 늘린 것이 쪽 맞춤을 망가뜨린** 자리다.
+_SKIP_LINE = re.compile(r"^\s*(?:<!--|<--|</?image\b|</?table\b|\||-{3,}|\d+\s*$)")
 
 
 def _flatten(text: str) -> str:
@@ -189,6 +258,28 @@ def _flatten(text: str) -> str:
     return re.sub(r"\s+", "", re.sub(r"[#*>|]", "", stripped))
 
 
+def _heading_keys(page) -> set[str]:
+    """이 쪽에서 **제목 줄**로부터 나온 후보들 (0.5.31).
+
+    입력: page — PageContent 또는 dict
+    출력: 제목에서 나온 후보 문자열 집합
+    비고:
+        제목은 절마다 되풀이되므로 문서에 여러 번 나오는 것이 정상이다.
+        본문 글과 달리 되풀이를 봐줘야 그 쪽이 눈금을 얻는다.
+    """
+    content = (page.get("content") if isinstance(page, dict)
+               else getattr(page, "content", "")) or ""
+    out: set[str] = set()
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        flat = _flatten(stripped)
+        if len(flat) >= MIN_ANCHOR_CHARS and not flat.isdigit():
+            out.add(flat[:ANCHOR_KEY_LEN])
+    return out
+
+
 def _anchor_keys(page, tail: bool = False) -> list[str]:
     """이 쪽에서 눈금으로 쓸 후보들.
 
@@ -202,17 +293,35 @@ def _anchor_keys(page, tail: bool = False) -> list[str]:
     content = (page.get("content") if isinstance(page, dict)
                else getattr(page, "content", "")) or ""
     out: list[str] = []
+    fallback: list[str] = []
     for line in content.split("\n"):
         stripped = line.strip()
         if not stripped or _SKIP_LINE.match(stripped):
             continue
         flat = _flatten(stripped)
-        if len(flat) < MIN_ANCHOR_CHARS or flat.isdigit():
+        if flat.isdigit():
+            continue
+        floor = (MIN_HEADING_CHARS if stripped.startswith("#") else MIN_ANCHOR_CHARS)
+        if len(flat) < floor:
+            # **절 표지는 마지막 수단으로만** (0.5.32). 짧지만 확실한
+            # 신호이므로 버리지는 않되, 다른 후보보다 **뒤에** 둔다.
+            #
+            # 앞에 두면 오히려 나빠진다 — HWPX 는 제목을 배지보다 **먼저**
+            # 담기 때문이다:
+            #
+            #     …</table118 신규프로그램성과지표현황 별첨4 신규프로그램…
+            #                  ↑ 제목이 앞            ↑ 배지
+            #
+            # 배지에 눈금을 찍으면 쪽이 제목 뒤에서 시작하고, 줄 경계로
+            # 스냅하면서 배지마저 앞 쪽으로 넘어간다. 실측: 절 표지를 첫
+            # 후보로 썼더니 별첨4 가 **세 문서 모두** 한 쪽 밀렸다.
+            if _SECTION_MARK.match(stripped) or _GOAL_MARK.match(stripped):
+                fallback.append(flat[:ANCHOR_KEY_LEN])
             continue
         out.append(flat[:ANCHOR_KEY_LEN])
     if tail:
-        return out[::-1][:ANCHOR_TRIES]
-    return out[:ANCHOR_TRIES]
+        return (out[::-1] + fallback)[:ANCHOR_TRIES]
+    return (out + fallback)[:ANCHOR_TRIES]
 
 
 def text_anchors(pdf_pages, hwpx_text: str) -> list[tuple[int, int]]:
@@ -246,13 +355,14 @@ def text_anchors(pdf_pages, hwpx_text: str) -> list[tuple[int, int]]:
         # 꼬리는 끝나는 자리를 가리킨다 — 실측(행안부): 머리만 쓰면
         # 257쪽이 잡히는데 꼬리를 더하면 놓친 쪽을 메울 수 있다.
         # 꼬리로 잡은 것은 **다음 쪽의 시작**으로 삼는다.
-        head = _find_unique(flat, _anchor_keys(page), cursor)
+        heads = _heading_keys(page)
+        head = _find_unique(flat, _anchor_keys(page), cursor, heads)
         if head is not None:
             anchors.append((head, page_no))
             cursor = head + 1
             continue
 
-        tail = _find_unique(flat, _anchor_keys(page, tail=True), cursor)
+        tail = _find_unique(flat, _anchor_keys(page, tail=True), cursor, heads)
         if tail is not None:
             # **꼬리는 그 쪽이 *끝나는* 자리다.** 그것을 시작으로 삼으면
             # 잘린 덩어리가 앞쪽 내용을 담는다 — 실측(행안부): 덩어리의
@@ -265,7 +375,28 @@ def text_anchors(pdf_pages, hwpx_text: str) -> list[tuple[int, int]]:
     return anchors
 
 
-def _find_unique(flat: str, keys: list[str], cursor: int) -> int | None:
+def _is_marker(key: str) -> bool:
+    """이 후보가 **절 표지·목표 표식**인가 (0.5.49).
+
+    입력: key — 납작하게 편 후보
+    출력: 표지 꼴이면 True
+    비고:
+        표지는 절마다 다르므로 문서에 여러 번 나와도 **어느 절인지 가리는
+        힘**을 잃지 않는다. 실측(문체부): `프로그램목표Ⅰ-7` 이 3회씩
+        나오는데 첫 번째가 본문 간지, 나머지는 뒤쪽 별첨 표 안이다.
+        커서는 앞으로만 가므로 본문에서 먼저 만난다.
+    """
+    return bool(_SECTION_MARK.match(key) or _GOAL_MARK.match(key))
+
+
+#: 앞 눈금에서 이만큼(쪽 분량의 배수) 넘게 떨어진 자리는 의심한다 (0.5.49).
+#: 쪽 하나가 평균 700자 안팎이므로, 스무 쪽을 건너뛰는 후보는 **같은 문구가
+#: 우연히 다른 곳에 한 번 나온 것**일 때가 많다.
+MAX_ANCHOR_LEAP = 15000
+
+
+def _find_unique(flat: str, keys: list[str], cursor: int,
+                 headings: set[str] | None = None) -> int | None:
     """앞 눈금 이후에서 **유일하게** 나오는 첫 후보의 위치.
 
     입력: flat — 납작하게 편 본문, keys — 후보 목록, cursor — 탐색 시작
@@ -274,14 +405,32 @@ def _find_unique(flat: str, keys: list[str], cursor: int) -> int | None:
         구간을 좁혀도 세 번 넘게 나오면 믿지 않는다 — `ㅇ 현원(정원)`
         처럼 문서 전체에 흩어진 문구다.
     """
+    far: int | None = None
     for key in keys:
         found = flat.find(key, cursor)
         if found < 0:
             continue
-        if flat.find(key, found + 1) >= 0 and flat.count(key) > 2:
+        limit = (MAX_MARKER_REPEATS if _is_marker(key)
+                 else MAX_HEADING_REPEATS if headings and key in headings
+                 else MAX_REPEATS)
+        if flat.find(key, found + 1) >= 0 and flat.count(key) > limit:
+            continue
+        # **너무 멀리 뛰는 후보는 뒤로 미룬다** (0.5.49). 유일하다고 바로
+        # 믿으면 엉뚱한 자리에 눈금을 찍고, 커서는 앞으로만 가므로 **그
+        # 뒤의 쪽들이 제 자리를 영영 못 찾는다.**
+        #
+        # 실측(문체부 쪽144): 후보 둘째가 유일해서 147,868 에 찍혔는데
+        # 앞 눈금은 81,868 이었다 — 66,000자(90여 쪽) 점프. 셋째 후보가
+        # 82,552 로 바로 뒤에 있었는데 보지 못했다. 그 한 번으로 145~165
+        # 쪽이 무너졌다.
+        #
+        # 가까운 후보가 하나도 없으면 멀더라도 쓴다 — 없는 것보다 낫다.
+        if cursor and found - cursor > MAX_ANCHOR_LEAP:
+            if far is None:
+                far = found
             continue
         return found
-    return None
+    return far
 
 
 def toc_anchors(toc: list[dict], hwpx_text: str) -> list[tuple[int, int]]:
@@ -415,6 +564,77 @@ def align(detected: list[tuple[int, dict]], gt: list[list[dict]]) -> list[Pair]:
     return pairs
 
 
+
+#: 표 눈금을 제목까지 당길 때 허용할 최대 거리(글자).
+#: 넓히면 앞 쪽의 본문까지 삼켜 **반대로** 밀린다.
+HEADING_PULL_MAX = 200
+#: "배치용 작은 표" 로 볼 최대 길이. `<일반회계>` · `(단위:백만원)` 처럼
+#: 제목과 본문 사이에 끼는 한 칸짜리 상자들이다.
+SMALL_TABLE_CHARS = 70
+#: 제목으로 볼 글 토막의 최대 길이. 제목은 짧다.
+HEADING_RUN_CHARS = 60
+
+_TABLE_OPEN = re.compile(r"<table\d+")
+_TABLE_CLOSE = re.compile(r"</table\d+")
+
+
+def pull_back_to_heading(flat: str, position: int) -> int:
+    """표 눈금을 **그 표를 소개하는 제목** 앞으로 당긴다 (0.5.27).
+
+    입력: flat — 납작하게 편 본문, position — 표 눈금 자리
+    출력: 당겨진 자리 (당길 것이 없으면 그대로)
+    비고:
+        표 눈금은 표 **본문**이 시작하는 자리에 찍힌다. 그런데 문서에서
+        표는 혼자 오지 않는다 — `별첨3` · `예산사업별 성과관리 현황` 같은
+        제목이 앞에 붙고, 그 사이에 `<일반회계>` · `(단위:백만원)` 처럼
+        **한 칸짜리 배치용 표**가 낀다. PDF 에서는 이 덩어리가 한 쪽이다.
+
+        눈금이 표 본문에 찍히면 제목은 그보다 앞이므로 **앞 쪽으로
+        떨어진다.** 실측(개인정보보호위원회): 쪽54 표 눈금 26,446 ·
+        `별첨3` 26,321 — 125자 앞이라 쪽53 으로 밀렸다. PDF 54쪽은
+        `별첨3` 으로 시작한다.
+
+        **줄 경계로는 못 당긴다** — `_flatten` 이 줄바꿈을 지운다. 대신
+        눈금 앞을 거슬러 가며 **작은 표 블록**과 **짧은 글 토막**만 건너뛴다.
+        큰 표(앞 절의 본문)를 만나면 멈춘다 — 거기서부터는 앞 쪽이다.
+    """
+    limit = max(0, position - HEADING_PULL_MAX)
+    pos = position
+    while pos > limit:
+        # 바로 앞이 닫힌 표 블록인가 — `…<tableK …</tableK` 를 통째로 본다
+        prev_close = flat.rfind("</table", limit, pos)
+        prev_open = flat.rfind("<table", limit, pos)
+        if prev_close >= 0 and prev_close > prev_open:
+            end = _TABLE_CLOSE.match(flat, prev_close)
+            tail = flat[end.end():pos] if end else ""
+            if tail.strip():                     # 표 뒤에 글이 남아 있다
+                if len(tail) > HEADING_RUN_CHARS:
+                    break
+                pos = end.end()
+                continue
+            start = flat.rfind("<table", limit, prev_close)
+            if start < 0 or prev_close - start > SMALL_TABLE_CHARS:
+                break                            # 큰 표 — 앞 절의 본문이다
+            pos = start
+            continue
+        if prev_open >= 0:
+            tail = flat[prev_open:pos]
+            if len(tail) > HEADING_RUN_CHARS:
+                break
+            pos = prev_open
+            continue
+        break
+
+    # 남은 앞쪽 글 토막이 제목이면 그 앞까지 당긴다
+    prev = max(flat.rfind("</table", limit, pos), flat.rfind("<table", limit, pos))
+    if prev >= 0:
+        marker = _TABLE_CLOSE.match(flat, prev) or _TABLE_OPEN.match(flat, prev)
+        head = marker.end() if marker else prev
+        if 0 < pos - head <= HEADING_RUN_CHARS * 2:
+            pos = head
+    return pos
+
+
 def table_anchors(hwpx_text: str, hwpx_tables, pdf_tables) -> list[tuple[int, int]]:
     """표를 눈금으로 쓴다 — 본문 글이 없는 쪽을 메운다.
 
@@ -451,7 +671,7 @@ def table_anchors(hwpx_text: str, hwpx_tables, pdf_tables) -> list[tuple[int, in
             continue
         found = flat.find(key)
         if found >= 0 and flat.find(key, found + 1) < 0:   # 유일할 때만
-            out.append((found, pair.page_no))
+            out.append((pull_back_to_heading(flat, found), pair.page_no))
     out.sort()
     return out
 
@@ -483,7 +703,8 @@ def merge_anchors(*groups: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def interpolate(anchors: list[tuple[int, int]], last_page: int,
-                total_chars: int) -> list[tuple[int, int]]:
+                total_chars: int,
+                blank_pages: set[int] | None = None) -> list[tuple[int, int]]:
     """눈금 사이의 빈 쪽을 **비례로 채운다.**
 
     입력: anchors — text_anchors 결과, last_page — 마지막 쪽 번호,
@@ -514,9 +735,37 @@ def interpolate(anchors: list[tuple[int, int]], last_page: int,
         gap_pages = next_page - page
         if gap_pages <= 1 or next_position <= position:
             continue
-        step = (next_position - position) / gap_pages
+        # **빈 쪽은 몫을 받지 않는다** (0.5.44). 그 지면에는 HWPX 에 대응
+        # 하는 내용이 아예 없다 — HWP 는 쪽을 저장하지 않고, 인쇄할 때
+        # 구역을 홀수 쪽에서 시작시키려고 간지를 끼운다. 원본 확인(병무청
+        # 물리 31·54·68): 쪽번호 `- 26 -` 만 찍힌 빈 지면이었다.
+        #
+        # 글자 수로 고르게 나누면 그 빈 쪽이 앞뒤의 글을 가져간다. 실측:
+        # 빈 쪽 셋이 각각 504·1015·978자를 받았고, **바로 그 자리에서 표가
+        # 갈렸다**(table_47·49·85·109). 빈 쪽을 건너뛰면 그 표들이 온전해진다.
+        blanks = blank_pages or set()
+        # 빈 쪽을 뺀 나머지가 글을 나눠 갖는다. 빈 쪽의 시작 자리는 **바로
+        # 다음 쪽과 같게** 두어 길이 0 이 되게 한다 — 그래야 그 지면이
+        # 앞뒤의 글을 가져가지 않는다.
+        share = [offset for offset in range(1, gap_pages)
+                 if page + offset not in blanks]
+        step = ((next_position - position) / (len(share) + 1)) if share else 0
+        cuts: dict[int, int] = {}
+        seen = 0
         for offset in range(1, gap_pages):
-            filled.append((int(position + step * offset), page + offset))
+            if page + offset in blanks:
+                continue
+            seen += 1
+            cuts[offset] = int(position + step * seen)
+        for offset in range(1, gap_pages):
+            if offset in cuts:
+                filled.append((cuts[offset], page + offset))
+                continue
+            # 빈 쪽 — **뒤에 오는 자리**를 그대로 쓴다. 뒤에 실제 쪽이 있으면
+            # 그 시작 자리, 구간 끝이면 다음 눈금 자리다. 어느 쪽이든 길이가
+            # 0 이 되어 그 지면이 앞뒤의 글을 가져가지 않는다.
+            later = [cuts[o] for o in sorted(cuts) if o > offset]
+            filled.append((later[0] if later else next_position, page + offset))
     filled.sort()
     return filled
 
@@ -558,14 +807,67 @@ def _raw_positions(text: str, wanted: set[int]) -> dict[int, int]:
     return out
 
 
-def _snap_to_line(text: str, position: int, window: int = SNAP_WINDOW) -> int:
+#: 표 블록 앞으로 되물릴 때 허용할 최대 거리(글자).
+#: 넓히면 표 한복판에서 자른 것까지 통째로 당겨 앞 쪽 내용을 삼킨다.
+TABLE_HEAD_PULL = 120
+
+_TABLE_OPEN_TAG = re.compile(r"<table \d+>")
+
+
+def _pull_out_of_table_head(text: str, position: int) -> int:
+    """자를 자리가 **여는 표 태그 바로 뒤**면 태그 앞으로 되물린다 (0.5.37).
+
+    입력: text — 원문, position — 자를 자리
+    출력: 되물린 자리 (해당 없으면 그대로)
+    비고:
+        쪽 경계가 `<table N>` 과 그 첫 행 사이에 떨어지면 **여는 태그만
+        앞 쪽에 남는다.** 블록 계약(`<table N> … </table N>`)이 깨져 그 쪽만
+        떼어 읽으면 표가 반쪽이 된다.
+
+            쪽6 끝   … </table 12> <table 13>
+            쪽7 앞   | 2. 성과계획 목표체계도 | … </table 13> …
+
+        눈금이 표의 **첫 행**에 찍히기 때문에 생긴다 — 그 행이 그 쪽의 첫
+        글이니 눈금 자체는 옳다. 태그가 그보다 앞에 있을 뿐이다.
+
+        실측(세 부처): 여는 태그만 남은 80건 중 **57건이 태그만 덜렁 남은**
+        모양이었다. 그 자리는 태그 앞으로 물리면 깨끗이 풀린다.
+
+        표 한복판(태그에서 먼 자리)은 건드리지 않는다 — 거기서 되물리면
+        표 전체가 다음 쪽으로 옮겨 가 앞 쪽 내용을 삼킨다.
+    """
+    low = max(0, position - TABLE_HEAD_PULL)
+    best = None
+    for match in _TABLE_OPEN_TAG.finditer(text, low, position + 1):
+        if match.end() <= position:
+            best = match
+    if best is None:
+        return position
+    between = text[best.end():position]
+    if between.strip():                          # 태그와 자를 자리 사이에 글이 있다
+        return position
+    return best.start()
+
+
+def _snap_to_line(text: str, position: int, window: int = SNAP_WINDOW,
+                  backward_only: bool = False) -> int:
     """가장 가까운 줄 시작으로 옮긴다.
 
-    입력: text — 원문, position — 자를 자리, window — 찾을 범위(글자)
+    입력: text — 원문, position — 자를 자리, window — 찾을 범위(글자),
+          backward_only — 뒤로(앞쪽으로)만 옮길지
     출력: 옮긴 자리
     비고:
         표 한복판에서 자르면 `<table 15>` 가 `able 15>` 가 된다. 빈 줄
         (문단 경계)을 먼저 찾고, 없으면 아무 줄바꿈이나 쓴다.
+
+        **눈금으로 잡은 자리는 앞으로만 옮긴다** (0.5.33). 그 자리는 이미
+        "PDF 쪽의 첫 글이 여기서 시작한다" 는 뜻이다. 뒤로 옮기면 그 글이
+        **앞 쪽으로 넘어간다** — 언제나 틀린 방향이다.
+
+        실측(개인정보보호위 쪽32): 눈금은 14,346 으로 정확했는데 가장
+        가까운 줄 경계가 그 뒤에 있어 46자짜리 쪽 하나가 통째로 31쪽에
+        붙었다. 글자 수로 채운 보간 자리는 근거가 없으므로 그대로
+        가까운 쪽을 쓴다.
     """
     if position <= 0 or position >= len(text):
         return max(0, min(position, len(text)))
@@ -577,14 +879,14 @@ def _snap_to_line(text: str, position: int, window: int = SNAP_WINDOW) -> int:
     # 있다.
     candidates = []
     before = text.rfind("\n\n", low, position)
-    after = text.find("\n\n", position, high)
+    after = -1 if backward_only else text.find("\n\n", position, high)
     if before >= 0:
         candidates.append(before + 2)
     if after >= 0:
         candidates.append(after + 2)
     if not candidates:                           # 빈 줄이 없으면 아무 줄바꿈
         before = text.rfind("\n", low, position)
-        after = text.find("\n", position, high)
+        after = -1 if backward_only else text.find("\n", position, high)
         if before >= 0:
             candidates.append(before + 1)
         if after >= 0:
@@ -594,12 +896,146 @@ def _snap_to_line(text: str, position: int, window: int = SNAP_WINDOW) -> int:
     return min(candidates, key=lambda value: abs(value - position))
 
 
+#: 경계가 표 블록 안에 떨어졌을 때 블록을 통째로 옮길 최대 거리(글자).
+#: 표 하나가 이보다 길면 옮기는 쪽이 더 크게 어긋난다 — 그때는 그대로 둔다.
+BLOCK_MOVE_MAX = 4000
+
+_BLOCK_OPEN = re.compile(r"<table (\d+)>")
+
+
+def block_span_at(text: str, position: int) -> tuple[int, int, str] | None:
+    """이 자리가 **표 블록 안**이면 그 블록의 범위를 낸다 (0.5.38).
+
+    입력: text — 원문, position — 자를 자리
+    출력: (블록 시작, 블록 끝, 표 번호). 블록 밖이면 None
+    비고:
+        `<table N>` 뒤이면서 대응하는 `</table N>` 앞인 자리를 찾는다.
+        블록이 겹치지 않으므로 가장 가까운 여는 태그 하나만 보면 된다.
+    """
+    best = None
+    for match in _BLOCK_OPEN.finditer(text, 0, position):
+        best = match
+    if best is None:
+        return None
+    num = best.group(1)
+    close = text.find(f"</table {num}>", best.end())
+    if close < 0 or close < position:
+        return None                              # 이미 닫힌 블록이다
+    return best.start(), close + len(f"</table {num}>"), num
+
+
+def rows_of_block(cells: list[dict]) -> list[list[str]]:
+    """셀 목록을 **행별 글자 묶음**으로 (0.5.38).
+
+    입력: cells — 표의 셀 목록
+    출력: 행마다 [셀 글자] — 빈 셀은 뺀다
+    """
+    rows: dict[int, list[str]] = {}
+    for cell in cells or []:
+        value = _flatten(cell.get("text"))
+        if value:
+            rows.setdefault(cell["row"], []).append(value)
+    return [values for _row, values in sorted(rows.items())]
+
+
+def row_is_on(row: list[str], page_text: str) -> bool:
+    """이 행이 그 쪽에 실렸는가.
+
+    입력: row — 행의 셀 글자들, page_text — 납작하게 편 쪽 내용
+    출력: 실렸으면 True
+    비고:
+        **네 글자 이상인 셀의 과반**이 그 쪽에 있으면 실린 것으로 본다.
+        짧은 셀(`1` · `-` · `계`)은 아무 쪽에나 있어 근거가 못 된다.
+    """
+    strong = [value for value in row if len(value) >= 4]
+    if not strong:
+        return False
+    hits = sum(1 for value in strong if value in page_text)
+    return hits * 2 >= len(strong)
+
+
+def whole_block_side(cells: list[dict], before_text: str,
+                     after_text: str) -> str | None:
+    """이 표가 **어느 쪽에 통째로** 실렸는지 PDF 에게 묻는다 (0.5.38).
+
+    입력: cells — 표의 셀 목록, before_text — 앞 쪽(P) 내용,
+          after_text — 뒤 쪽(Q) 내용 (둘 다 납작하게 편 PDF 쪽 글)
+    출력: "before" · "after" · None(모르겠음 또는 걸쳐 있음)
+    비고:
+        쪽 경계가 표 블록 한복판에 떨어지면 블록 계약이 깨진다. 그때
+        **표를 나누기 전에 먼저 물어야 할 것**은 "이 표가 정말 두 쪽에
+        걸쳐 있나" 다.
+
+        실측(세 부처, 잘린 25건): 진짜로 걸친 표는 **1건**뿐이었다.
+        11건은 표가 앞 쪽에만, 3건은 뒤 쪽에만 온전히 있었다 — 경계가
+        엉뚱한 자리에 떨어졌을 뿐이다. 그 22건은 블록을 통째로 옮기면
+        풀리고, `cells` 도 `markdown` 도 건드리지 않는다.
+
+        한쪽에서만 행이 보이면 그쪽이다. 양쪽에서 보이면 걸친 것일 수도
+        있고 머리행이 되풀이된 것일 수도 있어 **판단하지 않는다** — 행
+        단위로 나누는 일은 근거가 확실할 때만 한다.
+    """
+    rows = rows_of_block(cells)
+    if not rows:
+        return None
+    on_before = sum(1 for row in rows if row_is_on(row, before_text))
+    on_after = sum(1 for row in rows if row_is_on(row, after_text))
+
+    # **행의 과반이 보여야 옮긴다** (0.5.38). 한두 행이 우연히 걸린 것으로
+    # 표를 통째로 옮기면 그 쪽의 첫 글까지 딸려간다 — 실측: 근거 없이
+    # 옮겼더니 다섯 쪽이 한 쪽씩 밀렸다(본문 잣대 65/65 → 62/67).
+    enough = max(2, (len(rows) + 1) // 2)
+    if on_before >= enough and not on_after:
+        return "before"
+    if on_after >= enough and not on_before:
+        return "after"
+    return None
+
+
+def _drain_blank_pages(chunks: list[dict], blank_pages: set[int]) -> None:
+    """빈 지면에 들어간 글을 **앞 쪽으로 되돌린다** (0.5.44).
+
+    입력: chunks — 쪽별 조각 (제자리 갱신), blank_pages — PDF 가 빈 지면이라 한 쪽
+    출력: 없음
+    비고:
+        그 지면에는 HWPX 에 대응하는 내용이 아예 없다 — HWP 는 쪽을
+        저장하지 않고, 인쇄할 때 구역을 홀수 쪽에서 시작시키려 간지를
+        끼운다. 원본 확인(병무청 물리 31·54·68): 쪽번호만 찍힌 빈 지면.
+
+        **자르는 자리를 얼리는 것으로는 부족하다.** 보간이 길이 0 을 줘도
+        줄 경계 스냅과 블록 이동이 그 자리를 다시 움직여 글이 끼어든다
+        (실측: 보간 0자 → 최종 883자). 자른 **뒤에** 비우는 편이 확실하다.
+
+        되돌리는 곳은 **앞 쪽**이다. 그 글은 원래 앞 쪽에서 이어지던 것이고,
+        뒤로 보내면 뒤 쪽의 첫 글이 밀린다.
+    """
+    for index, chunk in enumerate(chunks):
+        if chunk.get("page_no") not in blank_pages:
+            continue
+        body = chunk.get("content") or ""
+        chunk["content"] = ""
+        chunk["blank"] = True
+        if not body.strip():
+            continue
+        for back in range(index - 1, -1, -1):
+            if chunks[back].get("page_no") not in blank_pages:
+                before = chunks[back].get("content") or ""
+                joiner = "\n\n" if before and not before.endswith("\n") else ""
+                chunks[back]["content"] = before + joiner + body
+                break
+
+
 def split_text_by_page(hwpx_text: str, anchors: list[tuple[int, int]],
-                       measured: set[int] | None = None) -> list[dict]:
+                       measured: set[int] | None = None,
+                       blocks: dict[str, list[dict]] | None = None,
+                       page_text: dict[int, str] | None = None,
+                       blank_pages: set[int] | None = None) -> list[dict]:
     """눈금으로 HWPX 본문을 쪽 단위로 자른다.
 
     입력: hwpx_text — HWPX 본문 markdown, anchors — 눈금 목록,
-          measured — 실제로 찾은 쪽 번호 집합 (나머지는 추정으로 표시)
+          measured — 실제로 찾은 쪽 번호 집합 (나머지는 추정으로 표시),
+          blocks — 표 번호 → 셀 목록 (경계가 표 안일 때 쓴다),
+          page_text — PDF 쪽 번호 → 납작하게 편 내용 (같은 용도)
     출력: [{page_no, content, estimated}] — 쪽 번호 오름차순
     비고:
         눈금이 없는 쪽은 앞 눈금의 쪽에 딸린다. 실측(행안부): 429쪽 중
@@ -629,15 +1065,65 @@ def split_text_by_page(hwpx_text: str, anchors: list[tuple[int, int]],
     # 반토막 난 쪽이 나왔다. 가장 가까운 줄바꿈으로 옮긴다.
     # **첫 눈금은 물리지 않는다.** 앞에 아무것도 없는데 물리면 그
     # 조각이 머리말로 떨어져 나가 첫 쪽이 사라진다.
-    cuts = [(position if index == 0 else _snap_to_line(hwpx_text, position), page)
+    # 눈금으로 잡은 쪽은 **앞으로만** 물린다 — 뒤로 물리면 그 쪽의 첫
+    # 글이 앞 쪽으로 넘어간다. 보간으로 채운 쪽은 근거가 없으므로 그대로.
+    measured_pages = measured or set()
+    cuts = [(position if index == 0
+             else _pull_out_of_table_head(
+                 hwpx_text,
+                 _snap_to_line(hwpx_text, position,
+                               backward_only=page in measured_pages)), page)
             for index, (position, page) in enumerate(cuts)]
-    cuts.sort()
+
+    # **경계가 표 블록 안이면 블록을 통째로 한쪽에 보낸다** (0.5.38).
+    #
+    # 표를 반으로 자르면 블록 계약(`<table N> … </table N>`)이 깨져 그 쪽만
+    # 떼어 읽을 때 표가 반쪽이 된다. 나누기 전에 먼저 물어야 할 것은
+    # **"이 표가 정말 두 쪽에 걸쳐 있나"** 다 — 실측(세 부처, 잘린 25건):
+    # 진짜로 걸친 표는 1건뿐이고 14건은 한 쪽에 온전히 있었다.
+    #
+    # PDF 가 "앞 쪽에만 있다" 고 하면 경계를 블록 뒤로, "뒤 쪽에만" 이면
+    # 블록 앞으로 옮긴다. 양쪽에서 보이면 판단하지 않는다 — 걸친 것일
+    # 수도, 머리행이 되풀이된 것일 수도 있다.
+    if blocks and page_text:
+        moved: list[tuple[int, int]] = []
+        for index, (position, page) in enumerate(cuts):
+            if index == 0:
+                moved.append((position, page))
+                continue
+            span = block_span_at(hwpx_text, position)
+            if span is None or span[1] - span[0] > BLOCK_MOVE_MAX:
+                moved.append((position, page))
+                continue
+            start, end, num = span
+            cells = blocks.get(num)
+            prev_page = cuts[index - 1][1]
+            side = whole_block_side(cells or [],
+                                    page_text.get(prev_page, ""),
+                                    page_text.get(page, ""))
+            if side == "before":
+                moved.append((end, page))        # 표는 앞 쪽 몫
+            elif side == "after":
+                moved.append((start, page))      # 표는 뒤 쪽 몫
+            else:
+                moved.append((position, page))
+        cuts = sorted(moved, key=lambda item: (item[0], item[1]))
+    # **자리가 같으면 쪽 번호 순.** 빈 쪽은 다음 쪽과 같은 자리에서
+    # 시작하므로(0.5.44) 여기서 순서가 뒤집히면 쪽이 거꾸로 나온다.
+    cuts.sort(key=lambda item: (item[0], item[1]))
 
     out: list[dict] = []
     for index, (start, page_no) in enumerate(cuts):
         end = cuts[index + 1][0] if index + 1 < len(cuts) else len(hwpx_text)
         body = (hwpx_text[start:end] or "").strip()
-        if body:
+        # **빈 쪽도 자리를 지킨다** (0.5.45). 예전에는 글이 없으면 조각을
+        # 만들지 않아 그 쪽이 결과에서 통째로 빠졌다 — 0.5.44 가 빈 지면을
+        # 0자로 만들자 그 쪽들이 사라졌고(align 94쪽 · PDF 97쪽),
+        # `blank: true` 표시도 함께 없어졌다.
+        #
+        # 판독 쪽에서 같은 잘못을 0.5.42 에 고쳤다. 쪽은 지면의 사실이다 —
+        # 내용이 없다고 없어지지 않는다.
+        if body or page_no in (blank_pages or set()):
             out.append({
                 "page_no": page_no,
                 "content": body,
@@ -649,6 +1135,8 @@ def split_text_by_page(hwpx_text: str, anchors: list[tuple[int, int]],
     # 첫 눈금 앞의 머리말도 잃지 않는다. **첫 눈금이 0 이면 머리말이
     # 없다** — 그런데 물림이 줄머리 기호 앞으로 옮기면 0 보다 작아질 수
     # 없으므로 빈 조각이 생기지 않아야 한다.
+    if blank_pages:
+        _drain_blank_pages(out, blank_pages)
     head = (hwpx_text[:cuts[0][0]] or "").strip()
     if head:
         out.insert(0, {"page_no": None, "content": head, "estimated": False})

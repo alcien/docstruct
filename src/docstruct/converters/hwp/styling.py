@@ -244,7 +244,7 @@ def format_body_text(text: str) -> str:
 
     depth, rest = _bullet_depth(inner)
     if depth is not None:
-        return "  " * depth + "- " + _wrap(rest)
+        return "  " * depth + bullet_prefix(inner, depth) + _wrap(rest)
     return body
 
 
@@ -263,6 +263,59 @@ def _numbered_heading_level(text: str) -> int | None:
         if pattern.match(text):
             return level
     return None
+
+
+#: 글머리 기호를 어떻게 낼지 (0.5.20).
+BULLET_STYLE_ENV = "DOCSTRUCT_BULLET_STYLE"
+
+
+def bullet_style() -> str:
+    """글머리 표기 방식.
+
+    입력: 없음 (`DOCSTRUCT_BULLET_STYLE`)
+    출력: "keep" | "dash" | "both"
+    비고:
+        **기본은 `keep`** — 원문 기호를 그대로 살린다.
+
+        예전에는 `□ → ○ → - → *` 를 수준으로만 바꾸고 기호를 버렸다:
+
+            원문   □ 조직 / ㅇ 개념 및 의미 / - (개념) …
+            결과   - 조직 /   - 개념 및 의미 /     - (개념) …
+
+        수준은 들여쓰기에 남지만 **어느 기호였는지는 사라진다.** 표 셀
+        안에는 들여쓰기가 없으므로 거기서는 수준마저 사라진다. 같은
+        문서를 PDF 로 읽으면 `- ㅇ 개인정보 …` 처럼 기호가 남아, 두
+        결과가 다른 모양이 되고 쪽 맞춤의 본문 눈금도 어긋난다.
+
+        원문에 있던 글자를 버리지 않는 쪽이 기본이어야 한다.
+
+            keep   □ 조직          기호 그대로 · 수준은 들여쓰기
+            dash   - 조직          0.5.19 까지의 동작
+            both   - □ 조직        PDF 산출과 같은 모양
+    """
+    import os
+
+    value = os.environ.get(BULLET_STYLE_ENV, "").strip().lower()
+    return value if value in ("keep", "dash", "both") else "keep"
+
+
+def bullet_prefix(text: str, depth: int) -> str:
+    """이 문단 앞에 붙일 글머리 문자열.
+
+    입력: text — 기호를 포함한 원문, depth — `_bullet_depth` 가 낸 수준
+    출력: `"□ "` · `"- "` · `"- □ "` 중 하나
+    비고:
+        `keep` 에서도 markdown 목록으로 읽히는 기호(`-`·`*`)는 그대로
+        두면 되고, `□`·`○` 는 목록 기호가 아니므로 그 자체로 낸다.
+    """
+    match = _BULLET_RE.match(text or "")
+    marker = match.group(1) if match else "-"
+    style = bullet_style()
+    if style == "dash":
+        return "- "
+    if style == "both":
+        return f"- {marker} " if marker not in ("-", "*") else "- "
+    return f"{marker} "
 
 
 def _bullet_depth(text: str) -> tuple[int | None, str]:

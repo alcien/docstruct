@@ -32,6 +32,7 @@ OCR·판독은 형식마다 따로 돈다 — HWPX 는 XML 을 걷고 PDF 는 Do
 from __future__ import annotations
 
 import json
+import re
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,6 +78,82 @@ class AlignPair:
     hwpx: Prepared
     pdf: Prepared
     notes: list[str] = field(default_factory=list)
+    #: `align_pair` 에 준 산출 뿌리 — `save()` 가 기본으로 쓴다.
+    out_dir: Path | None = None
+
+    def save(self, out_dir: str | Path | None = None, *,
+             formats: str = "both", stem: str = "aligned") -> list[Path]:
+        """맞춘 결과를 파일로 쓴다 (0.5.40).
+
+        입력:
+            out_dir  산출 뿌리. 비우면 `align_pair` 에 준 곳을 쓴다
+            formats  "json" · "markdown" · "both"
+            stem     파일 이름의 앞부분 (기본 `aligned`) — 확장자는 붙이지 않는다
+        출력: 쓴 파일 경로 목록
+        예외: 갈 곳을 모르거나 이름이 비면 ValueError
+        비고:
+            CLI(`--align`)와 **같은 자리에 같은 이름**으로 쓴다:
+
+                out/<문서.hwpx>/aligned.json
+                out/<문서.hwpx>/aligned.md
+
+            예전에는 API 로 맞추면 결과가 `got.result` 로만 오고 저장은
+            부르는 쪽이 직접 해야 했다. 그러다 보니 CLI 와 다른 이름·다른
+            자리에 쌓였다 — **같은 일을 두 벌로 하면 반드시 어긋난다.**
+
+            `as_markdown=True` 로 맞춘 결과는 이미 문자열이므로 markdown
+            으로만 쓴다. json 을 달라고 하면 그렇게 말한다.
+
+            **이름은 고를 수 있다** (0.5.41). 한 폴더에 여러 번 맞춰 두거나
+            (`aligned-v2`), 다른 도구가 기대하는 이름을 맞출 때 쓴다.
+            경로 구분자·확장자는 받지 않는다 — 저장 자리는 `out_dir` 이
+            정하고, 확장자는 형식이 정한다. 파일 이름 규칙은
+            `images.page_render.safe_file_stem` 하나를 쓴다 — 0.4.98 이 정한
+            경계대로 **파일 안쪽 이름**은 확장자를 떼는 쪽이다.
+        """
+        from docstruct.images.page_render import safe_file_stem
+        from docstruct.align.documents import to_markdown
+
+        root = Path(out_dir) if out_dir else self.out_dir
+        if root is None:
+            raise ValueError(
+                "저장할 곳을 모릅니다 — align_pair 에 out_dir 을 주거나 "
+                "save(out_dir=...) 로 알려 주세요")
+        if formats not in ("json", "markdown", "both"):
+            raise ValueError(f"formats 는 json·markdown·both 중 하나입니다: {formats}")
+        if any(sep in stem for sep in ("/", "\\")):
+            raise ValueError(
+                f"이름에 경로를 넣을 수 없습니다 — 자리는 out_dir 이 정합니다: {stem!r}")
+        # **조용히 다른 이름을 쓰지 않는다.** `safe_file_stem` 은 쓸 수 없는
+        # 이름에 `document` 를 돌려주는데, 그러면 부른 사람이 모르는 자리에
+        # 파일이 생긴다 — 빈 이름·`..` 처럼 글자가 남지 않는 것은 거부한다.
+        if not re.sub(r"[^\w\-]", "", stem):
+            raise ValueError(f"쓸 수 있는 이름이 아닙니다: {stem!r}")
+        name = safe_file_stem(stem)
+
+        target = Path(root) / out_folder_name(self.hwpx.source)
+        target.mkdir(parents=True, exist_ok=True)
+
+        written: list[Path] = []
+        if isinstance(self.result, str):
+            if formats == "json":
+                raise ValueError(
+                    "as_markdown=True 로 맞춘 결과라 json 으로 쓸 수 없습니다")
+            path = target / f"{name}.md"
+            path.write_text(self.result, encoding="utf-8")
+            return [path]
+
+        if formats in ("json", "both"):
+            path = target / f"{name}.json"
+            path.write_text(
+                json.dumps(self.result, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            written.append(path)
+        if formats in ("markdown", "both"):
+            path = target / f"{name}.md"
+            path.write_text(to_markdown(self.result), encoding="utf-8")
+            written.append(path)
+        return written
 
 
 def out_folder_name(name: str | Path) -> str:
@@ -255,7 +332,8 @@ def align_pair(hwpx: str | Path, pdf: str | Path,
     result = align_documents(prepared_hwpx.document, prepared_pdf.document,
                              as_markdown=as_markdown)
     return AlignPair(result=result, hwpx=prepared_hwpx, pdf=prepared_pdf,
-                     notes=notes)
+                     notes=notes,
+                     out_dir=Path(out_dir) if out_dir else None)
 
 
 def find_counterpart(src: str | Path) -> Path | None:
