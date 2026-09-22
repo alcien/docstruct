@@ -1096,6 +1096,20 @@ def split_text_by_page(hwpx_text: str, anchors: list[tuple[int, int]],
                 moved.append((position, page))
                 continue
             start, end, num = span
+            # **다른 경계도 이 블록 안에 있으면 옮기지 않는다** (0.5.66).
+            # 경계 둘이 한 표 안에 있다는 것은 그 표가 **세 쪽 이상**에
+            # 걸쳤다는 뜻이다 — 통째로 한 쪽에 둘 수 없다. 그런데도 한
+            # 경계만 블록 끝으로 옮기면 **다음 쪽 경계를 앞질러** 글 순서가
+            # 뒤집힌다. 실측(외교부 157~159쪽, 프로그램 논리도 table_191):
+            #
+            #     158쪽 경계 → 191 끝으로 옮김 · 159쪽 경계 → 191 안 그대로
+            #     158쪽  <table 192> □법·제도…        ← 뒤 글이 먼저
+            #     159쪽  191 나머지 행 </table 191>   ← 앞 글이 나중
+            others = [pos for other, (pos, _pg) in enumerate(cuts)
+                      if other != index and start < pos < end]
+            if others:
+                moved.append((position, page))
+                continue
             cells = blocks.get(num)
             prev_page = cuts[index - 1][1]
             side = whole_block_side(cells or [],
@@ -1107,10 +1121,21 @@ def split_text_by_page(hwpx_text: str, anchors: list[tuple[int, int]],
                 moved.append((start, page))      # 표는 뒤 쪽 몫
             else:
                 moved.append((position, page))
-        cuts = sorted(moved, key=lambda item: (item[0], item[1]))
-    # **자리가 같으면 쪽 번호 순.** 빈 쪽은 다음 쪽과 같은 자리에서
-    # 시작하므로(0.5.44) 여기서 순서가 뒤집히면 쪽이 거꾸로 나온다.
-    cuts.sort(key=lambda item: (item[0], item[1]))
+        cuts = moved
+    # **쪽 순서가 곧 글 순서다** (0.5.66). 예전에는 자리 순으로 정렬했다 —
+    # 조정 때문에 뒤 쪽 경계가 앞 쪽 경계를 앞지르면 **쪽 번호와 글 순서가
+    # 어긋났다**(뒤 쪽에 앞 글이 실린다). 쪽 순으로 두고, 자리가 거꾸로
+    # 가면 앞 경계에 붙인다 — 그 쪽이 비더라도 글 순서는 지킨다.
+    #
+    # 자리가 같으면 쪽 번호 순이다 — 빈 쪽은 다음 쪽과 같은 자리에서
+    # 시작한다(0.5.44).
+    cuts.sort(key=lambda item: item[1])
+    floor = 0
+    ordered: list[tuple[int, int]] = []
+    for position, page in cuts:
+        floor = max(floor, position)
+        ordered.append((floor, page))
+    cuts = ordered
 
     out: list[dict] = []
     for index, (start, page_no) in enumerate(cuts):

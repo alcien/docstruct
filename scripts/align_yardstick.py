@@ -137,8 +137,37 @@ def measure(hwpx_doc: dict, pdf_doc: dict) -> dict:
 
     checked = sum(offsets.values())
     return {"checked": checked, "exact": offsets[0], "skipped": len(unjudged),
+            "inversions": order_inversions(hwpx_doc, aligned),
             "offsets": dict(sorted(offsets.items())),
             "unjudged": unjudged, "wrong": wrong}
+
+
+def order_inversions(hwpx_doc: dict, aligned: dict) -> list[tuple[int, str]]:
+    """쪽을 이어 읽었을 때 **글 순서가 거꾸로 가는 자리** (0.5.66).
+
+    입력: hwpx_doc — HWPX 판독 결과, aligned — 맞춤 결과
+    출력: [(쪽, 표 태그)] — 앞 쪽에서 이미 지나간 자리로 되돌아간 곳
+    비고:
+        쪽 맞춤은 글을 **자르기만** 해야 한다. 쪽을 차례로 이어 붙이면
+        HWPX 본문과 같은 순서여야 한다 — 표 태그 순서로 잰다.
+
+        실측(외교부 0.5.65): 1곳. 한 경계가 블록 끝으로 옮겨지며 다음 쪽
+        경계를 앞질러, 159쪽에 158쪽보다 앞의 글이 실렸다.
+    """
+    import re as _re
+
+    body = "\n".join(page.get("content") or "" for page in hwpx_doc.get("pages") or [])
+    rank = {tag: index for index, tag in
+            enumerate(_re.findall(r"</?table \d+>", body))}
+    out: list[tuple[int, str]] = []
+    seen = -1
+    for page in sorted(aligned.get("pages") or [], key=lambda item: item["page_no"]):
+        for tag in _re.findall(r"</?table \d+>", page.get("content") or ""):
+            at = rank.get(tag, -1)
+            if at < seen:
+                out.append((page["page_no"], tag))
+            seen = max(seen, at)
+    return out
 
 
 #: 목차 항목의 핵심어가 이보다 짧으면 재지 않는다. `전략목표Ⅱ` 처럼

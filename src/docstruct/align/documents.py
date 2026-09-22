@@ -786,11 +786,144 @@ def _mark_disputed_tables(by_page: dict, pdf_tables: list,
                     # 짝지어져 11쪽에 실렸다.
                     table["pairing_doubt"] = True
                     table["doubt_reason"] = "PDF 에 대응 표가 없는데 짝이 잡힘"
+                    # 어느 쪽이 약한지 적어 둔다 — 본문 쪽이 아니라 **짝이
+                    # 가리킨 쪽**이 근거 없는 쪽이다(0.5.64).
+                    table["paired_page"] = at_field
+                    table["body_page"] = at_body
                 else:
                     table["page_span"] = span
                     table["span_reason"] = "본문 위치와 표 짝이 한 쪽 다름"
         marked.append(f"table_{num}")
     return sorted(marked)
+
+
+def _settle_tables(by_page: dict, unmatched: list) -> tuple[int, int]:
+    """**한 표는 한 쪽에** — 본문 블록이 있는 쪽으로 (0.5.65).
+
+    입력: by_page — 쪽별 슬롯 (제자리 갱신), unmatched — 짝 못 지은 표
+          (제자리 갱신 — 쪽을 얻은 것은 빠진다)
+    출력: (짝 쪽에서 본문 쪽으로 옮긴 수, unmatched 에서 쪽을 얻은 수)
+    비고:
+        표는 두 군데에 있다 — `content` 안의 블록과 `tables` 필드. 걸린
+        표에서는 둘이 다른 말을 했다(실측: 병무청):
+
+            table_22 조직도   content → 10쪽 · tables → 11쪽 (짝 오인)
+            table_23 명단     content → 10쪽 · tables → 어디에도 없음
+
+        `pages[].tables` 를 돌며 색인하는 쪽이면 조직도는 틀린 11쪽으로,
+        명단은 쪽 없이 들어간다. markdown 에서 걷어낸 문제(0.5.64)가 json
+        에 그대로 남아 있었다.
+
+        **본문 블록이 있는 쪽이 맞는 쪽이다** — 쪽 맞춤은 본문으로 쟀고
+        잣대도 본문으로 검증했다. 짝짓기 결과는 버리지 않고 필드로 남긴다
+        (`paired_page`, `pair_similarity`) — 정보는 잃지 않는다.
+
+        블록이 쪽 경계에 걸리면 **여는 태그가 있는 쪽**을 집으로 삼는다 —
+        표가 시작하는 쪽이다. 블록이 비었으면(자리표시자만) 옮기지 않는다.
+    """
+    pages = sorted(by_page)
+    open_at: dict[str, int] = {}
+    close_at: dict[str, int] = {}
+    for page_no in pages:
+        content = by_page[page_no].get("content") or ""
+        for match in re.finditer(r"<table (\d+)>", content):
+            open_at.setdefault(match.group(1), page_no)
+        for match in re.finditer(r"</table (\d+)>", content):
+            close_at[match.group(1)] = page_no
+    joined = "\n\n".join(by_page[page_no].get("content") or "" for page_no in pages)
+    filled = {match.group(1) for match in
+              re.finditer(r"<table (\d+)>(.*?)</table \1>", joined, re.DOTALL)
+              if match.group(2).strip()}
+
+    # 짝짓기 닮음을 표에 붙여 둔다 — 옮겨도 따라가도록.
+    #
+    # **같은 표가 여러 쪽에 짝지어진 경우가 있다.** PDF 가 한 표를 두 쪽에
+    # 나눠 인쇄하면 조각 둘이 같은 HWPX 표에 붙는다 — 실측(조달청
+    # table_117): 75쪽 0.38 · 76쪽 0.34. 이것은 **걸친 표라는 가장 확실한
+    # 증거**이므로 범위로 남기고, 표는 한 번만 싣는다.
+    seen_on: dict[int, list[int]] = {}
+    for page_no in pages:
+        slot = by_page[page_no]
+        for table, score in zip(slot.get("tables") or [], slot.get("similarity") or []):
+            table["pair_similarity"] = max(table.get("pair_similarity") or 0, score)
+        for table in slot.get("tables") or []:
+            seen_on.setdefault(id(table), []).append(page_no)
+
+    moved = 0
+    for page_no in pages:
+        slot = by_page[page_no]
+        keep = []
+        for table in slot.get("tables") or []:
+            num = str(table.get("table_num") or "")
+            home = open_at.get(num) if num in filled else None
+            if home is None or home == page_no:
+                keep.append(table)
+                continue
+            table.setdefault("paired_page", page_no)
+            table["body_page"] = home
+            by_page[home].setdefault("tables", []).append(table)
+            moved += 1
+        slot["tables"] = keep
+
+    # 한 쪽에 같은 표가 두 번 들지 않게 — 여러 쪽에 짝지어졌던 표는 범위를 단다.
+    for page_no in pages:
+        slot = by_page[page_no]
+        unique, ids = [], set()
+        for table in slot.get("tables") or []:
+            if id(table) in ids:
+                continue
+            ids.add(id(table))
+            unique.append(table)
+            # **짝지어졌던 쪽이 둘 이상일 때만** 범위를 단다. 옮긴 쪽(집)을
+            # 섞어 세면 안 된다 — 한 번 옮긴 표(짝 11쪽 → 본문 10쪽)가
+            # "여러 쪽에 짝지어짐" 으로 잘못 읽힌다(실측: 조직도 table_22 가
+            # 걸치지도 않았는데 [10, 11] 을 받았다). 짝 오인 표에는 달지 않는다.
+            paired_on = sorted(set(seen_on.get(id(table)) or []))
+            if (len(paired_on) > 1 and not table.get("page_span")
+                    and not table.get("pairing_doubt")):
+                spread = sorted(set(paired_on) | {page_no})
+                table["page_span"] = [spread[0], spread[-1]]
+                table["span_reason"] = "PDF 조각 여럿이 이 표와 짝지어짐"
+                table["paired_pages"] = paired_on
+        slot["tables"] = unique
+
+    placed = 0
+    still: list = []
+    for table in unmatched:
+        num = str(table.get("table_num") or "")
+        home = open_at.get(num) if num in filled else None
+        if home is None:
+            still.append(table)
+            continue
+        table = {**table, "page_source": "body", "body_page": home}
+        parts = (table.get("align_note") or {}).get("pdf_parts") or 0
+        end = close_at.get(num, home)
+        if parts >= 2:
+            table["page_span"] = [home, max(end, home + 1)]
+            table["span_reason"] = "표가 두 쪽에 걸쳐 인쇄됨"
+        elif end != home:
+            table["page_span"] = [home, end]
+            table["span_reason"] = "표 블록이 쪽 경계에 걸림"
+        by_page[home].setdefault("tables", []).append(table)
+        placed += 1
+    unmatched[:] = still
+
+    # 짝으로 얻은 표를 앞에 두고 `similarity` 를 다시 맞춘다 — 예전처럼
+    # `zip(tables, similarity)` 로 읽어도 어긋나지 않게.
+    for page_no in pages:
+        slot = by_page[page_no]
+        content = slot.get("content") or ""
+
+        def where(table, text=content):
+            at = text.find(f"<table {table.get('table_num')}>")
+            return at if at >= 0 else len(text)
+
+        tables = slot.get("tables") or []
+        paired = sorted((t for t in tables if "pair_similarity" in t), key=where)
+        others = sorted((t for t in tables if "pair_similarity" not in t), key=where)
+        slot["tables"] = paired + others
+        slot["similarity"] = [t["pair_similarity"] for t in paired]
+    return moved, placed
 
 
 def _mark_page_spans(by_page: dict, pdf_pages: list[dict]) -> list[int]:
@@ -1332,19 +1465,24 @@ def align_documents(hwpx: dict, pdf: dict, *,
     _reorder_by_pdf(by_page, pdf_pages, hwpx_tables=tables_of(hwpx))
     disputed = _mark_disputed_tables(by_page, pdf_tables=tables_of(pdf),
                                      hwpx_tables=tables_of(hwpx))
+    # 짝짓기 성적은 **정착 전에** 센다 — 정착은 쪽을 옮길 뿐 짝을 지은 것이
+    # 아니다. 뒤에서 세면 제목 상자 68개가 3개로 줄어 보였다(실측: 병무청).
+    paired_unmatched = len(unmatched)
+    layout_like = sum(1 for t in unmatched if t["align_note"]["layout_like"])
+    moved_tables, placed_by_body = _settle_tables(by_page, unmatched)
     _mark_split_blocks(by_page)
     wide_gap_pages = _mark_wide_gaps(by_page, measured)
     span_pages = _mark_page_spans(by_page, pdf_pages)
 
     pages = [by_page[key] for key in sorted(by_page)]
-    layout_like = sum(1 for t in unmatched
-                      if t["align_note"]["layout_like"])
     # **성적은 맞출 수 있는 표로만 잰다** (0.4.75). 제목 상자·빈 상자는
     # PDF 에 대응 표가 없으므로 분모에 넣으면 수치가 거짓으로 나빠진다.
     matchable = [t for _page_no, t in hwpx_tables if is_matchable(t)]
+    # 본문 위치로 옮겨 넣은 표(`page_source: body`, 0.5.65)는 **짝을 지은
+    # 것이 아니므로** 성적에 넣지 않는다 — 넣으면 배정률이 거짓으로 오른다.
     matchable_matched = sum(
         1 for slot in by_page.values() for t in slot["tables"]
-        if is_matchable(t))
+        if is_matchable(t) and t.get("page_source") != "body")
     result = {
         "filename": hwpx.get("filename"),
         "source": "hwpx+pdf 쪽 맞춤",
@@ -1385,7 +1523,13 @@ def align_documents(hwpx: dict, pdf: dict, *,
         "split_block_pages": sum(1 for page in pages if page.get("split_blocks")),
         "matched_tables": matched,
         "total_tables": len(hwpx_tables),
-        "unmatched_tables": len(unmatched),
+        #: PDF 표와 **짝을 못 지은** 표 수 — 짝짓기 성적이다(0.5.65 에도
+        #: 뜻은 그대로). 그중 본문에 블록이 있어 쪽을 얻은 것은
+        #: `placed_by_body`, 끝내 쪽을 모르는 것만 `unmatched` 에 남는다.
+        "unmatched_tables": paired_unmatched,
+        "placed_by_body": placed_by_body,
+        #: 짝이 가리킨 쪽과 본문 쪽이 달라 **본문 쪽으로 옮긴** 표 수.
+        "moved_to_body_page": moved_tables,
         # 맞출 수 있는 표만으로 잰 성적 — 지면 장식을 뺀 것이다.
         "matchable_tables": len(matchable),
         "matchable_matched": matchable_matched,
@@ -1470,8 +1614,36 @@ def _table_note(table: dict) -> str:
         return (f" · {span[0]}~{span[1]}쪽에 걸친 표"
                 f" ({table.get('span_reason') or ''})")
     if table.get("pairing_doubt"):
-        return f" · 이 쪽에 실린 근거가 약함 ({table.get('doubt_reason') or ''})"
+        # **본문 위치를 따른다는 것을 분명히** (0.5.64). 이 주석은 이제 본문
+        # 블록 태그에만 붙는다 — "이 쪽 근거가 약함" 이라 쓰면 맞는 쪽을
+        # 의심하는 말이 된다. 약한 것은 짝이 가리킨 다른 쪽이다.
+        paired = table.get("paired_page")
+        where = f"{paired}쪽" if paired else "다른 쪽"
+        return (f" · 표 짝이 {where}을 가리켰으나 PDF 에 대응 표가 없어"
+                f" 본문 위치를 따름")
     return ""
+
+
+def _tables_in_body(result: dict) -> set[str]:
+    """본문 어딘가에 **내용째** 실린 표 번호들 (0.5.64).
+
+    입력: result — 맞춤 결과
+    출력: 표 번호 집합
+    비고:
+        자리표시자만 있고 내용이 비면 세지 않는다 — 그런 표는 따로 실어야
+        하류가 빈손이 되지 않는다(0.4.64 의 취지).
+    """
+    # **쪽을 이어 붙여 찾는다.** 블록이 쪽 경계에 걸리면 여는 태그는 앞
+    # 쪽, 닫는 태그는 뒤 쪽에 있다(`split_blocks`) — 쪽마다 따로 찾으면
+    # 놓친다. 실측(외교부): 남은 재수록 26개가 전부 그랬다.
+    joined = "\n\n".join([result.get("head") or ""]
+                         + [page.get("content") or ""
+                            for page in result.get("pages") or []])
+    found: set[str] = set()
+    for match in re.finditer(r"<table (\d+)>(.*?)</table \1>", joined, re.DOTALL):
+        if match.group(2).strip():
+            found.add(match.group(1))
+    return found
 
 
 def _collect_notes(result: dict, pdf_tables: list | None = None) -> dict[str, str]:
@@ -1589,6 +1761,7 @@ def to_markdown(result: dict) -> str:
     lines = [f"# {result.get('filename') or '문서'}", ""]
     layout_like = result.get("unmatched_layout_like", 0)
     notes = _collect_notes(result)
+    in_body = _tables_in_body(result)
     unaligned = result.get("unaligned_pages") or []
     lines.append(f"쪽 {result['page_count']}"
                  + (f" (대응 {result.get('aligned_pages', 0)}쪽 · "
@@ -1616,6 +1789,14 @@ def to_markdown(result: dict) -> str:
             markdown = (table.get("markdown") or "").strip()
             if not markdown or markdown in body:
                 continue
+            # **다른 쪽 본문에 이미 있는 표는 다시 싣지 않는다** (0.5.64).
+            # 예전에는 이 쪽 본문만 보고 없으면 꼬리에 붙였다 — 표 짝이 다른
+            # 쪽을 가리킨 표가 **두 쪽에 한 번씩** 실렸다. 실측(외교부):
+            # 46개 표 · md 의 15%. RAG 에서는 같은 표가 다른 쪽 번호로 두 번
+            # 걸리고, 짝 오인(`pairing_doubt`)이면 **틀린 쪽의 사본**이 걸린다.
+            # 그 사실은 본문 블록 태그의 주석이 이미 말한다(`_collect_notes`).
+            if str(table.get("table_num") or "") in in_body:
+                continue
             # **쪽이 갈린 표에는 범위를 적는다** (0.5.58). 본문 위치와 표
             # 짝이 다른 쪽을 가리킨 표는 대개 쪽 경계에 걸쳐 있다 — 표만
             # 덩그러니 실으면 읽는 사람이 앞 쪽에서 본 것과 같은 표인지
@@ -1625,7 +1806,11 @@ def to_markdown(result: dict) -> str:
 
     # **짝을 못 지은 표도 싣는다** (0.4.64). 본문에 `<table 46>` 자리표시자가
     # 남아 있는데 그 표가 어디에도 없으면 하류가 빈손이 된다.
-    unmatched = result.get("unmatched") or []
+    # **본문에 내용째 있는 표는 부록에서 뺀다** (0.5.64). 이 목록은 본문에
+    # 자리표시자만 남던 시절(0.4.64)에 넣은 것이다 — 지금은 본문 블록에 표
+    # 내용이 통째로 들어가므로 대부분 중복이다. 실측(외교부): 162개 중 134개.
+    unmatched = [table for table in (result.get("unmatched") or [])
+                 if str(table.get("table_num") or "") not in in_body]
     if unmatched:
         lines += ["---", "",
                   f"## (쪽 미상 — 짝을 못 지은 표 {len(unmatched)}개)", "",
@@ -1743,10 +1928,14 @@ def summary_lines(result: dict) -> list[str]:
         lines.append(line)
     if result.get("unmatched_tables"):
         layout_like = result.get("unmatched_layout_like", 0)
+        placed = result.get("placed_by_body", 0)
+        left = len(result.get("unmatched") or [])
         # **버린 것이 아니라 따로 실었다**는 사실을 적는다. 수치만 보면
         # 사라진 줄 안다.
         lines.append(
-            f"쪽 미상 표: {result['unmatched_tables']}개 (unmatched 필드)"
-            + (f" · 그중 {layout_like}개는 제목 상자로 보입니다 — PDF 에 "
-               "대응 표가 없는 것이 정상입니다" if layout_like else ""))
+            f"짝 못 지은 표: {result['unmatched_tables']}개"
+            + (f" · 그중 {placed}개는 본문 위치로 쪽을 얻음" if placed else "")
+            + f" · 쪽 미상 {left}개 (unmatched 필드)"
+            + (f" · 제목 상자로 보이는 것 {layout_like}개 — PDF 에 대응 표가 "
+               "없는 것이 정상입니다" if layout_like else ""))
     return lines

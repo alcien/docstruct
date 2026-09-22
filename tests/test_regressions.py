@@ -21645,3 +21645,277 @@ def test_verified_images_get_no_note():
     assert "옮김" in _image_note({"number_check": "verified",
                                 "page_moved_from": 27,
                                 "move_reason": "PDF 에서 그림이 실린 쪽"})
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.64 — markdown 의 중복을 걷어낸다
+#
+# 실측(외교부 246쪽 · md 326KB):
+#
+#     쪽 꼬리 재수록   46개 표 · md 의 15%   ← 다른 쪽 본문에 이미 있는 표
+#     끝 부록         162개 중 134개가 본문에 내용째 있음 (7%)
+#
+# RAG 에서는 같은 표가 **다른 쪽 번호로 두 번** 걸리고, 짝 오인이면 틀린
+# 쪽의 사본이 걸린다. ±1 이 치명적이라는 목표에 정면으로 걸린다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _dedupe_result(pages, unmatched=()):
+    return {"filename": "가.hwpx", "page_count": len(pages), "total_tables": 0,
+            "matched_tables": 0, "matchable_tables": 0, "matchable_matched": 0,
+            "matched_by_text": 0, "unmatched_tables": len(unmatched),
+            "unmatched_layout_like": 0, "estimated_pages": 0,
+            "unmatched": list(unmatched), "head": "", "head_chars": 0,
+            "pages": pages}
+
+
+def test_table_in_another_page_body_is_not_repeated():
+    """다른 쪽 본문에 이미 있는 표를 이 쪽 꼬리에 다시 싣지 않는다."""
+    from docstruct.align.documents import to_markdown
+
+    table = {"id": "table_22", "table_num": 22, "markdown": "| 조직도 표입니다 |",
+             "pairing_doubt": True, "paired_page": 11, "body_page": 10}
+    result = _dedupe_result([
+        {"page_no": 10, "page_no_kind": "exact", "tables": [],
+         "content": "앞글\n\n<table 22>\n| 조직도 표입니다 |\n</table 22>"},
+        {"page_no": 11, "page_no_kind": "exact", "tables": [table],
+         "content": "다음 쪽 글"},
+    ])
+    md = to_markdown(result)
+    assert md.count("조직도 표입니다") == 1, "같은 표가 두 번 실렸다"
+    # 주석은 본문 블록 태그에 남는다
+    assert "<table 22><!--" in md
+
+
+def test_block_spanning_pages_counts_as_in_body():
+    """블록이 쪽 경계에 걸려도 본문에 있는 것으로 센다.
+
+    여는 태그는 앞 쪽, 닫는 태그는 뒤 쪽에 있다 — 쪽마다 따로 찾으면
+    놓친다(실측: 외교부의 남은 재수록 26개가 전부 그랬다).
+    """
+    from docstruct.align.documents import _tables_in_body
+
+    result = _dedupe_result([
+        {"page_no": 10, "tables": [], "content": "앞\n\n<table 5>\n| 가 |"},
+        {"page_no": 11, "tables": [], "content": "| 나 |\n</table 5>\n\n뒤"},
+    ])
+    assert "5" in _tables_in_body(result)
+
+
+def test_empty_block_is_not_counted():
+    """자리표시자만 있으면 본문에 있는 것이 아니다 — 부록에 남겨야 한다."""
+    from docstruct.align.documents import _tables_in_body
+
+    result = _dedupe_result([
+        {"page_no": 1, "tables": [], "content": "<table 7>\n</table 7>"}])
+    assert "7" not in _tables_in_body(result)
+
+
+def test_appendix_keeps_only_tables_missing_from_body():
+    """끝 부록에는 본문에 없는 표만 남긴다."""
+    from docstruct.align.documents import to_markdown
+
+    inside = {"id": "table_1", "table_num": 1, "placeholder": "<table 1>",
+              "markdown": "| 본문에 있는 표 |"}
+    outside = {"id": "table_2", "table_num": 2, "placeholder": "<table 2>",
+               "markdown": "| 본문에 없는 표 |"}
+    result = _dedupe_result(
+        [{"page_no": 1, "page_no_kind": "exact", "tables": [],
+          "content": "<table 1>\n| 본문에 있는 표 |\n</table 1>"}],
+        unmatched=[inside, outside])
+    md = to_markdown(result)
+    assert md.count("본문에 있는 표") == 1
+    assert "본문에 없는 표" in md
+    assert "짝을 못 지은 표 1개" in md
+
+
+def test_doubt_note_does_not_cast_doubt_on_the_body_page():
+    """짝 오인 주석은 **본문 위치를 따른다**고 말한다.
+
+    주석이 본문 블록 태그에만 붙게 되었으므로, "이 쪽 근거가 약함" 이라
+    쓰면 맞는 쪽을 의심하는 말이 된다. 약한 것은 짝이 가리킨 다른 쪽이다.
+    """
+    from docstruct.align.documents import _table_note
+
+    note = _table_note({"pairing_doubt": True, "paired_page": 11})
+    assert "11쪽" in note
+    assert "본문 위치를 따름" in note
+    assert "이 쪽에 실린 근거가 약함" not in note
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.65 — json 도 **한 표는 한 쪽에** (본문 블록이 있는 쪽)
+#
+# 표는 두 군데에 있다 — `content` 안의 블록과 `tables` 필드. 걸린 표에서
+# 둘이 다른 말을 했다(병무청):
+#
+#     table_22 조직도   content → 10쪽 · tables → 11쪽 (짝 오인)
+#     table_23 명단     content → 10쪽 · tables → 어디에도 없음 (unmatched)
+#
+# `pages[].tables` 로 색인하면 0.5.64 가 md 에서 걷어낸 문제가 그대로 남는다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _settle_pages():
+    shared = {"id": "table_117", "table_num": 117, "markdown": "| 걸친 표 |"}
+    return {
+        10: {"page_no": 10, "similarity": [0.57],
+             "content": "<table 22>\n| 조직도 |\n</table 22>\n\n<table 23>\n| 명단 |\n</table 23>",
+             "tables": []},
+        11: {"page_no": 11, "similarity": [0.57],
+             "content": "뒷글",
+             "tables": [{"id": "table_22", "table_num": 22, "markdown": "| 조직도 |",
+                         "pairing_doubt": True}]},
+        75: {"page_no": 75, "similarity": [0.38],
+             "content": "<table 117>\n| 걸친 표 |\n</table 117>", "tables": [shared]},
+        76: {"page_no": 76, "similarity": [0.34], "content": "다음 쪽", "tables": [shared]},
+    }
+
+
+def test_paired_table_moves_to_its_body_page():
+    """짝이 다른 쪽을 가리킨 표는 본문 쪽으로 — 짝 쪽은 기록으로 남긴다."""
+    from docstruct.align.documents import _settle_tables
+
+    by_page = _settle_pages()
+    moved, _placed = _settle_tables(by_page, [])
+    assert moved >= 1
+    ids10 = [t["id"] for t in by_page[10]["tables"]]
+    assert "table_22" in ids10
+    assert all(t["id"] != "table_22" for t in by_page[11]["tables"])
+    table = next(t for t in by_page[10]["tables"] if t["id"] == "table_22")
+    assert table["paired_page"] == 11
+    assert table["pair_similarity"] == 0.57
+
+
+def test_unmatched_table_gets_its_body_page():
+    """짝 못 지은 표도 본문에 블록이 있으면 그 쪽으로 — 걸쳤으면 범위를 단다."""
+    from docstruct.align.documents import _settle_tables
+
+    by_page = _settle_pages()
+    unmatched = [{"id": "table_23", "table_num": 23, "markdown": "| 명단 |",
+                  "align_note": {"layout_like": False, "pdf_parts": 2}},
+                 {"id": "table_99", "table_num": 99, "markdown": "| 본문에 없음 |",
+                  "align_note": {"layout_like": False}}]
+    _moved, placed = _settle_tables(by_page, unmatched)
+    assert placed == 1
+    table = next(t for t in by_page[10]["tables"] if t["id"] == "table_23")
+    assert table["page_source"] == "body"
+    assert table["page_span"] == [10, 11]
+    # 본문에 없는 표는 쪽 미상으로 남는다
+    assert [t["id"] for t in unmatched] == ["table_99"]
+
+
+def test_table_paired_on_two_pages_is_listed_once_with_a_span():
+    """PDF 조각 둘이 같은 표에 붙었으면 한 번만 싣고 범위를 단다.
+
+    실측(조달청 table_117): 75쪽 0.38 · 76쪽 0.34 — 같은 표 객체가 두 쪽에
+    있었고, 배정 성적도 **두 번 세고** 있었다.
+    """
+    from docstruct.align.documents import _settle_tables
+
+    by_page = _settle_pages()
+    _settle_tables(by_page, [])
+    on75 = [t for t in by_page[75]["tables"] if t["id"] == "table_117"]
+    assert len(on75) == 1
+    assert not by_page[76]["tables"]
+    assert on75[0]["page_span"] == [75, 76]
+    assert on75[0]["pair_similarity"] == 0.38
+
+
+def test_similarity_stays_parallel_to_paired_tables():
+    """`zip(tables, similarity)` 로 읽어도 어긋나지 않는다."""
+    from docstruct.align.documents import _settle_tables
+
+    by_page = _settle_pages()
+    _settle_tables(by_page, [{"id": "table_23", "table_num": 23, "markdown": "| 명단 |",
+                              "align_note": {"layout_like": False}}])
+    slot = by_page[10]
+    paired = [t for t in slot["tables"] if "pair_similarity" in t]
+    assert slot["tables"][:len(paired)] == paired
+    assert slot["similarity"] == [t["pair_similarity"] for t in paired]
+
+
+def test_body_placed_tables_do_not_inflate_the_score():
+    """본문 위치로 쪽을 얻은 표는 짝을 지은 것이 아니다 — 성적에 넣지 않는다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    assert 't.get("page_source") != "body"' in source
+    # 짝짓기 통계는 정착 **전에** 센다
+    assert source.index("layout_like = sum(") < source.index("_settle_tables(by_page")
+
+
+def test_a_single_move_is_not_a_span():
+    """한 번 옮긴 표를 걸친 표로 읽지 않는다.
+
+    실측(병무청 table_22 조직도): 짝 11쪽 → 본문 10쪽으로 옮겼을 뿐인데
+    옮긴 쪽을 섞어 세어 `page_span [10, 11]` 을 받았다. 조직도는 걸치지
+    않았다 — 걸친 것은 명단(table_23)이다.
+    """
+    from docstruct.align.documents import _settle_tables
+
+    by_page = _settle_pages()
+    _settle_tables(by_page, [])
+    organ = next(t for t in by_page[10]["tables"] if t["id"] == "table_22")
+    assert "page_span" not in organ, "옮긴 표에 범위를 달았다"
+    assert organ["paired_page"] == 11
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.66 — 쪽 번호와 글 순서가 어긋났다
+#
+# 실측(외교부 157~159쪽, 프로그램 논리도 table_191 이 세 쪽에 걸침):
+#
+#     HWPX    …191 행들… </table 191> <table 192> □법·제도·정책…
+#     align   158쪽  <table 192> □법·제도…       ← 뒤 글이 먼저
+#             159쪽  191 나머지 행 </table 191>  ← 앞 글이 나중
+#
+# 158·159쪽 경계가 **둘 다 191 안**에 있었는데, 158쪽 경계만 블록 끝으로
+# 옮겨져(0.5.38) 159쪽 경계를 앞질렀다. 그 뒤 **자리 순으로 정렬**하니
+# 쪽 번호와 글이 엇갈렸다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_block_with_two_cuts_is_not_moved_whole():
+    """경계 둘이 한 표 안에 있으면 그 표는 세 쪽에 걸친 것 — 옮기지 않는다."""
+    from docstruct.align.page_map import _flatten, split_text_by_page
+
+    rows = "\n".join(f"| 행 {i:02d} 의 내용입니다 |" for i in range(30))
+    text = f"앞 글입니다\n\n<table 7>\n{rows}\n</table 7>\n\n뒤 글입니다"
+    flat = _flatten(text)
+    a = flat.index("행10")
+    b = flat.index("행20")
+    got = split_text_by_page(
+        text, [(0, 1), (a, 2), (b, 3), (flat.index("뒤글"), 4)], measured={1, 2, 3, 4},
+        blocks={"7": [{"row": i, "col": 0, "text": f"행 {i:02d} 의 내용입니다"}
+                      for i in range(30)]},
+        page_text={1: _flatten("앞 글입니다" + rows), 2: "", 3: "", 4: ""})
+    joined = "".join(chunk["content"] for chunk in sorted(got, key=lambda c: c["page_no"] or 0))
+    # 쪽을 이어 읽으면 원문 순서 그대로여야 한다
+    assert joined.index("</table 7>") < joined.index("뒤 글입니다")
+    assert _flatten(joined) == _flatten(text)
+
+
+def test_cuts_never_run_backwards():
+    """쪽 순서가 곧 글 순서 — 뒤 쪽 경계가 앞 쪽보다 앞서면 앞 경계에 붙인다."""
+    import inspect
+
+    from docstruct.align import page_map
+
+    source = inspect.getsource(page_map.split_text_by_page)
+    assert "cuts.sort(key=lambda item: item[1])" in source
+    assert "floor = max(floor, position)" in source
+
+
+def test_yardstick_reports_order_inversions():
+    """잣대가 글 순서 역전을 센다 — 쪽 맞춤의 불변식이다."""
+    module = _yardstick()
+    hwpx = {"pages": [{"content": "<table 1>\n</table 1>\n<table 2>\n</table 2>"}]}
+    good = {"pages": [{"page_no": 1, "content": "<table 1>\n</table 1>"},
+                      {"page_no": 2, "content": "<table 2>\n</table 2>"}]}
+    bad = {"pages": [{"page_no": 1, "content": "<table 2>\n</table 2>"},
+                     {"page_no": 2, "content": "<table 1>\n</table 1>"}]}
+    assert module.order_inversions(hwpx, good) == []
+    assert module.order_inversions(hwpx, bad)
