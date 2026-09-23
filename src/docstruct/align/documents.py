@@ -951,6 +951,44 @@ def _mark_page_spans(by_page: dict, pdf_pages: list[dict]) -> list[int]:
     return sorted(marked)
 
 
+def _mark_block_boundaries(by_page: dict,
+                           moves: list[tuple[str, int, int]]) -> None:
+    """**쪽 경계가 표 안에 떨어진 자리**를 적는다 (0.5.68).
+
+    입력: by_page — 쪽별 슬롯 (제자리 갱신),
+          moves — [(표 번호, 앞 쪽, 뒤 쪽)] — 0.5.38 이 표를 앞 쪽에 통째로
+          두기로 한 자리
+    출력: 없음 (`page_span` · `boundary_inside` 추가)
+    비고:
+        PDF 는 그 표를 두 쪽에 인쇄했는데 HWPX 는 한 블록이다. 0.5.38 은
+        "표가 앞 쪽에만 보인다" 는 근거로 블록을 앞 쪽에 통째로 두는데,
+        그래도 **뒤 쪽의 첫 글은 그 표 안에 있다.**
+
+        실측(외교부 61·217쪽 · 행안부 164쪽): 남은 오차 12건 중 3건이
+        정확히 이 자리였고, 아무 표시가 없었다. 쪽 맞춤이 **이미 아는
+        사실**이므로 적기만 하면 된다.
+
+        표에는 범위를, 뒤 쪽에는 "이 쪽은 앞 쪽 표 안에서 시작한다" 를
+        남긴다 — 인용하는 쪽이 ±1 을 범위로 읽을 수 있다.
+    """
+    for num, before, after in moves:
+        for slot in by_page.values():
+            for table in (slot.get("tables") or []):
+                if str(table.get("table_num") or "") != num:
+                    continue
+                if not table.get("page_span"):
+                    table["page_span"] = [min(before, after), max(before, after)]
+                    table["span_reason"] = "쪽 경계가 이 표 안에 떨어짐"
+        slot = by_page.get(after)
+        if slot is not None:
+            slot.setdefault("starts_inside_table", f"table_{num}")
+            span = slot.get("page_span")
+            low, high = min(before, after), max(before, after)
+            slot["page_span"] = ([min(span[0], low), max(span[1], high)]
+                                 if span else [low, high])
+            slot.setdefault("span_reason", "앞 쪽 표 안에서 시작함")
+
+
 def _mark_split_blocks(by_page: dict) -> None:
     """쪽 경계에 걸려 **반쪽만 든 표 블록**을 쪽마다 적는다 (0.5.39).
 
@@ -1303,9 +1341,11 @@ def align_documents(hwpx: dict, pdf: dict, *,
             + "".join((t.get("markdown") or "") for t in (page.get("tables") or [])))
         for page in pdf_pages
     }
+    block_moves: list[tuple[str, int, int]] = []
     text_pages = (split_text_by_page(hwpx_body, filled, measured,
                                      blocks=hwpx_blocks, page_text=pdf_page_text,
-                                     blank_pages=blank_pages)
+                                     blank_pages=blank_pages,
+                                     moved_blocks=block_moves)
                   if filled else [])
     # **자른 뒤 원본으로 되돌린다** (0.5.56). 가린 본문은 자리를 재기 위한
     # 것이지 산출물이 아니다 — `<br>` 이 공백으로 남으면 GFM 표가 깨지고,
@@ -1388,7 +1428,17 @@ def align_documents(hwpx: dict, pdf: dict, *,
     floor = _text_page_floor()
     by_text = 0
     for index, (_page_no, table) in enumerate(hwpx_tables):
-        if index in placed or not is_matchable(table):
+        # **제목 상자도 본문으로 찾아본다** (0.5.67). 예전에는 `is_matchable`
+        # 로 걸러 제목 상자를 아예 보지 않았다 — PDF 에 **대응 표**가 없는
+        # 것은 맞지만, 그 글은 PDF **본문**에 그대로 있다.
+        #
+        # 실측(행안부): 표지 상자 `table_1`(2027년도 성과계획서)과 제출 문구
+        # `table_3` 이 쪽을 못 얻어 미매핑으로 남았다. PDF 1·3쪽에 그 글이
+        # 그대로 있는데도.
+        #
+        # 되풀이되는 상자(`1. 프로그램 주요내용` 등)는 `margin` 이 막는다 —
+        # 1위와 2위가 비슷하면 주지 않는다.
+        if index in placed:
             continue
         got = page_from_text(table, page_grams, floor)
         if got is None:
@@ -1470,6 +1520,7 @@ def align_documents(hwpx: dict, pdf: dict, *,
     paired_unmatched = len(unmatched)
     layout_like = sum(1 for t in unmatched if t["align_note"]["layout_like"])
     moved_tables, placed_by_body = _settle_tables(by_page, unmatched)
+    _mark_block_boundaries(by_page, block_moves)
     _mark_split_blocks(by_page)
     wide_gap_pages = _mark_wide_gaps(by_page, measured)
     span_pages = _mark_page_spans(by_page, pdf_pages)

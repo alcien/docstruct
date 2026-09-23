@@ -38,7 +38,10 @@ def safe_file_stem(name: str) -> str:
         `output.names.safe_file_name` 이 그 규칙이고, 폴더 이름을 정하는
         자리는 전부 그것 하나를 쓴다(0.4.98). 시험이 이 경계를 지킨다.
     """
-    stem = Path(name).stem if name else "document"
+    import unicodedata
+
+    # 한글 이름은 NFC 로 — macOS 의 NFD 이름이 다른 파일 이름이 되지 않게(0.5.70)
+    stem = unicodedata.normalize("NFC", Path(name).stem) if name else "document"
     safe = re.sub(r"[^\w\-.]", "_", stem).strip("._")
     return safe or "document"
 

@@ -98,6 +98,8 @@ from docstruct.output import preview, report  # noqa: E402,F401
 from docstruct.align.documents import align_documents  # noqa: E402,F401
 from docstruct.align.pair import (AlignPair, Prepared,  # noqa: E402,F401
                                   align_pair, find_counterpart, prepare)
+# 폴더 쌍 일괄 맞춤 (0.5.70) — HWPX 폴더와 PDF 폴더를 **둘 다** 받는다.
+from docstruct.align.batch import AlignBatch, align_folders  # noqa: E402,F401
 
 # winfix 는 core 안에 있지만 `from docstruct import winfix` 로 쓰도록
 # README 가 안내해 왔습니다. 여기서 붙여 두면 패키지 배포본과
@@ -128,6 +130,8 @@ __all__ = [
     # 하위 수준
     "build_document",
     "align_pair",
+    "align_folders",
+    "AlignBatch",
     "align_documents",
     "prepare",
     "find_counterpart",

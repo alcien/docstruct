@@ -57,6 +57,24 @@ from pathlib import Path
 import re
 
 
+def _nfc(name: str) -> str:
+    """한글 이름을 **유니코드 정규화(NFC)** 한다 (0.5.70).
+
+    입력: name — 파일 이름
+    출력: NFC 이름
+    비고:
+        macOS 는 한글 파일 이름을 자모로 풀어(NFD) 넘긴다. 같은 문서가
+        바이트로는 다른 이름이 되어, 리눅스 서버에서는 **다른 폴더**를 쓴다 —
+        돌려 둔 판독 결과를 찾지 못하고 다시 판독한다.
+
+        실측: 폴더 쌍 맞춤에서 NFD 이름의 PDF 가 짝은 지었지만(짝짓기는
+        정규화했다) 판독 결과 폴더를 못 찾아 다시 판독하려다 실패했다.
+    """
+    import unicodedata
+
+    return unicodedata.normalize("NFC", name)
+
+
 def safe_file_name(name: str) -> str:
     """폴더 이름으로 쓸 수 있게 정리한 **확장자 포함** 파일 이름.
 
@@ -69,7 +87,7 @@ def safe_file_name(name: str) -> str:
     """
     from pathlib import Path as _Path
 
-    raw = _Path(name).name if name else "document"
+    raw = _nfc(_Path(name).name) if name else "document"
     safe = re.sub(r"[^\w\-.]", "_", raw).strip("._")
     return safe or "document"
 

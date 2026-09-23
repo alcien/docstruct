@@ -405,7 +405,6 @@ def _find_unique(flat: str, keys: list[str], cursor: int,
         구간을 좁혀도 세 번 넘게 나오면 믿지 않는다 — `ㅇ 현원(정원)`
         처럼 문서 전체에 흩어진 문구다.
     """
-    far: int | None = None
     for key in keys:
         found = flat.find(key, cursor)
         if found < 0:
@@ -415,22 +414,31 @@ def _find_unique(flat: str, keys: list[str], cursor: int,
                  else MAX_REPEATS)
         if flat.find(key, found + 1) >= 0 and flat.count(key) > limit:
             continue
-        # **너무 멀리 뛰는 후보는 뒤로 미룬다** (0.5.49). 유일하다고 바로
-        # 믿으면 엉뚱한 자리에 눈금을 찍고, 커서는 앞으로만 가므로 **그
-        # 뒤의 쪽들이 제 자리를 영영 못 찾는다.**
+        # **너무 멀리 뛰는 후보는 쓰지 않는다** (0.5.49 · 0.5.67 에서 강화).
+        # 유일하다고 바로 믿으면 엉뚱한 자리에 눈금을 찍고, 커서는 앞으로만
+        # 가므로 **그 뒤의 쪽들이 제 자리를 영영 못 찾는다.**
         #
         # 실측(문체부 쪽144): 후보 둘째가 유일해서 147,868 에 찍혔는데
         # 앞 눈금은 81,868 이었다 — 66,000자(90여 쪽) 점프. 셋째 후보가
         # 82,552 로 바로 뒤에 있었는데 보지 못했다. 그 한 번으로 145~165
         # 쪽이 무너졌다.
         #
-        # 가까운 후보가 하나도 없으면 멀더라도 쓴다 — 없는 것보다 낫다.
+        # **가까운 후보가 없으면 눈금을 포기한다** (0.5.67). 0.5.49 는
+        # "없는 것보다 낫다" 며 멀더라도 썼는데, 그 한 번이 **커서를 끌고
+        # 가** 뒤쪽을 통째로 버린다.
+        #
+        # 실측(행안부 433쪽): 쪽183 의 후보가 HWPX 에 없어 먼 자리
+        # 152,881 을 집었다(쪽179 는 105,138). 쪽184~186 의 진짜 자리는
+        # 107,889~108,761 인데 커서 뒤라 영영 못 찾았고, **73쪽 구간이
+        # 통째로 눈금을 잃었다.** 본문 잣대 61%.
+        #
+        # 눈금이 없는 쪽은 보간이 메운다(`approximate`). 틀린 눈금 하나보다
+        # 눈금이 없는 편이 낫다 — 실측: 61% → **97%**, 다른 네 부처는 한
+        # 자리도 바뀌지 않았다.
         if cursor and found - cursor > MAX_ANCHOR_LEAP:
-            if far is None:
-                far = found
             continue
         return found
-    return far
+    return None
 
 
 def toc_anchors(toc: list[dict], hwpx_text: str) -> list[tuple[int, int]]:
@@ -1029,7 +1037,8 @@ def split_text_by_page(hwpx_text: str, anchors: list[tuple[int, int]],
                        measured: set[int] | None = None,
                        blocks: dict[str, list[dict]] | None = None,
                        page_text: dict[int, str] | None = None,
-                       blank_pages: set[int] | None = None) -> list[dict]:
+                       blank_pages: set[int] | None = None,
+                       moved_blocks: list[tuple[str, int, int]] | None = None) -> list[dict]:
     """눈금으로 HWPX 본문을 쪽 단위로 자른다.
 
     입력: hwpx_text — HWPX 본문 markdown, anchors — 눈금 목록,
@@ -1117,6 +1126,11 @@ def split_text_by_page(hwpx_text: str, anchors: list[tuple[int, int]],
                                     page_text.get(page, ""))
             if side == "before":
                 moved.append((end, page))        # 표는 앞 쪽 몫
+                # **경계가 이 표 안에 떨어졌다는 사실을 남긴다** (0.5.68).
+                # 표는 앞 쪽에 통째로 두었지만, 뒤 쪽의 첫 글은 그 표 안에
+                # 있다 — 그 쪽을 인용하면 표 안 글을 가리키게 된다.
+                if moved_blocks is not None:
+                    moved_blocks.append((num, prev_page, page))
             elif side == "after":
                 moved.append((start, page))      # 표는 뒤 쪽 몫
             else:

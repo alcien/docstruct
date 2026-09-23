@@ -123,7 +123,8 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PDF",
         help="같은 문서의 PDF 를 지정해 쪽 번호를 붙입니다. 두 자리 모두 "
              "원본 문서(.hwpx/.pdf) 또는 이미 돌린 document.json 을 받습니다. "
-             "원본을 주면 그 자리에서 판독까지 합니다",
+             "원본을 주면 그 자리에서 판독까지 합니다. **두 자리 모두 폴더**를 "
+             "주면 이름이 같은 쌍을 한꺼번에 맞춥니다 (HWPX 폴더 --align PDF 폴더)",
     )
     align.add_argument(
         "--align-format",
@@ -265,6 +266,15 @@ def _run_align(args) -> int:
 
     left = Path(args.input).expanduser()
     right = Path(args.align).expanduser()
+    # **폴더 둘이면 일괄** (0.5.70). 쪽 맞춤은 두 결과가 모두 있어야 되는
+    # 일이므로 한쪽만 폴더인 것은 받지 않는다 — 짝을 추측하지 않는다.
+    if left.is_dir() or right.is_dir():
+        if not (left.is_dir() and right.is_dir()):
+            print("오류: 둘 다 폴더이거나 둘 다 파일이어야 합니다 — "
+                  f"{'폴더' if left.is_dir() else '파일'} {left} · "
+                  f"{'폴더' if right.is_dir() else '파일'} {right}", file=sys.stderr)
+            return 1
+        return _run_align_folders(args, left, right)
     for path in (left, right):
         if not path.is_file():
             print(f"오류: 파일이 없습니다 — {path}", file=sys.stderr)
@@ -320,6 +330,48 @@ def _run_align(args) -> int:
     # PDF 에 표로 잡히지 않는 것이 늘 남는다 (실측: HWPX 580표 중 348개가
     # 레이아웃 표). 수치를 보여 주고 판단은 쓰는 쪽에 맡긴다.
     return 0
+
+
+def _run_align_folders(args: argparse.Namespace, left: Path, right: Path) -> int:
+    """HWPX 폴더 · PDF 폴더의 이름이 같은 쌍을 모두 맞춘다 (0.5.70).
+
+    입력: args — 명령줄 인자, left — HWPX 폴더, right — PDF 폴더
+    출력: 종료 코드 (실패한 쌍이 없으면 0)
+    비고:
+        짝 없는 파일은 실패로 치지 않지만 **반드시 알린다** — 조용히 건너뛰면
+        빠진 줄 모른다.
+    """
+    from docstruct.align.batch import align_folders
+
+    out_root = Path(args.out).expanduser().resolve()
+    use_llm = not args.no_llm
+    print(f"\n=== 쪽 맞춤 (폴더): {left} ← {right} ===")
+
+    def show(index: int, total: int, name: str) -> None:
+        print(f"  [{index}/{total}] {name}")
+
+    try:
+        batch = align_folders(
+            left, right, out_root,
+            reuse=not getattr(args, "align_rebuild", False),
+            formats=args.align_format, stem=args.align_name, on_pair=show,
+            assess_tables=use_llm and not args.no_assess,
+            fill_tables=use_llm and not args.no_fill,
+            fill_all=args.fill_all,
+            render_pages=not args.no_render,
+            render_all=args.render,
+            render_scale=args.scale,
+            progress=getattr(args, "progress", False),
+        )
+    except ValueError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    print()
+    for line in batch.summary():
+        print(f"  {line}")
+    if not args.quiet:
+        print(f"  기록: {out_root / 'align_batch.json'}")
+    return 0 if batch.ok else 1
 
 
 def _targets(input_path: Path, pattern: str) -> list[Path]:

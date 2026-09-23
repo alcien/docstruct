@@ -661,7 +661,10 @@ class _SettingsMixin:
     def set(self, key: str | None = None, value: Any = None, **options: Any):
         """설정값을 지정한다.
 
-        입력: key/value 또는 키워드 인자
+        입력:
+            key      설정 키 하나 — value 와 함께 쓴다
+            value    그 값
+            options  키=값 여러 개를 한 번에 (option_keys() 의 키)
         출력: self (연쇄 호출 가능)
         예외: 알 수 없는 키면 DocStructError
         """
@@ -891,7 +894,7 @@ class DocStruct(_SettingsMixin):
     def to_dict(self, *, slim: bool = False) -> dict[str, Any]:
         """구조화 결과를 dict 로 얻는다.
 
-        입력: 없음
+        입력: slim — True 면 실행 기록(trace)을 빼고 본문·표만 담는다
         출력: document.json 과 같은 구조의 dict
         """
         return self.document.to_dict(slim=slim)
@@ -899,7 +902,7 @@ class DocStruct(_SettingsMixin):
     def to_json_str(self, *, indent: int = 2, slim: bool = False) -> str:
         """구조화 결과를 JSON 문자열로 얻는다 (파일 저장 없음).
 
-        입력: indent — 들여쓰기 칸 수. None 이면 한 줄로 압축
+        입력: indent — 들여쓰기 칸 수. None 이면 한 줄로 압축, slim — True 면 실행 기록(trace)을 뺀다
         출력: JSON 문자열
         비고:
             파이썬 자료구조로 다루려면 to_dict(), 파일로 쓰려면 to_json() 을
@@ -1158,7 +1161,7 @@ class DocStructBatch(_SettingsMixin):
     def to_dict(self, *, slim: bool = False) -> dict[str, Any]:
         """전체 결과를 dict 로 얻는다.
 
-        입력: 없음
+        입력: slim — True 면 문서마다 실행 기록(trace)을 뺀다
         출력:
             {total, succeeded, failed, documents[], failures[]}
         """
@@ -1220,7 +1223,7 @@ class DocStructBatch(_SettingsMixin):
     def to_json_str(self, *, indent: int = 2, slim: bool = False) -> str:
         """전체 결과를 JSON 문자열로 얻는다 (파일 저장 없음).
 
-        입력: indent — 들여쓰기 칸 수. None 이면 한 줄로 압축
+        입력: indent — 들여쓰기 칸 수. None 이면 한 줄로 압축, slim — True 면 실행 기록(trace)을 뺀다
         출력: JSON 문자열 (to_dict() 와 같은 구조)
         """
         return json.dumps(self.to_dict(slim=slim), ensure_ascii=False, indent=indent)

@@ -943,7 +943,8 @@ def build_document(
     """문서 파일 하나를 구조화한다.
 
     입력:
-        src           문서 경로 (.pdf | .hwp | .hwpx)
+        path          문서 경로 (.pdf | .hwp | .hwpx)
+        split_chars   쪽 경계가 없는 문서를 이 글자 수로 조각낸다 (0 이면 나누지 않음)
         out_dir       산출물 디렉터리. None 이면 렌더·이미지 저장 생략
         assess_tables LLM 표 판정 수행 여부
         fill_tables   판정 결과에 따른 표 재추출 수행 여부
@@ -953,6 +954,8 @@ def build_document(
         render_pages  페이지 PNG 렌더 여부 (PDF 만 해당)
         render_all    표가 없는 쪽까지 전부 렌더할지
         render_scale  렌더 배율
+        source_filename  결과에 적을 원본 파일 이름 — 임시 경로로 받은 파일을
+                      원래 이름으로 남길 때 (없으면 경로의 이름)
         progress      단계별 진행 막대 표시 여부
     출력:
         PageDocument

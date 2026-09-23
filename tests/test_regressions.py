@@ -20785,13 +20785,23 @@ def test_far_candidate_yields_to_a_near_one():
     assert got == flat.index(near), got
 
 
-def test_far_candidate_used_when_nothing_is_near():
-    """가까운 후보가 없으면 멀더라도 쓴다 — 없는 것보다 낫다."""
+def test_far_candidate_is_dropped_when_nothing_is_near():
+    """가까운 후보가 없으면 **눈금을 포기한다** (0.5.67 에서 뒤집힘).
+
+    0.5.49 는 "없는 것보다 낫다" 며 멀더라도 썼는데, 그 한 번이 커서를
+    끌고 가 뒤쪽을 통째로 버린다 — 실측(행안부 433쪽): 쪽183 이 먼 자리를
+    집어 **73쪽 구간이 눈금을 잃었고** 본문 잣대가 61% 였다. 포기하니 97%
+    로 올랐고 다른 네 부처는 한 자리도 바뀌지 않았다.
+
+    눈금이 없는 쪽은 보간이 메운다 — 틀린 눈금보다 없는 편이 낫다.
+    """
     from docstruct.align.page_map import MAX_ANCHOR_LEAP, _find_unique
 
     far = "멀리떨어진자리의뚜렷한문장입니다"
     flat = ("앞" * 100) + ("중" * (MAX_ANCHOR_LEAP + 500)) + far
-    assert _find_unique(flat, [far], cursor=100) == flat.index(far)
+    assert _find_unique(flat, [far], cursor=100) is None
+    # 첫 눈금(커서 0)에는 걸지 않는다 — 잴 기준이 없다
+    assert _find_unique(flat, [far], cursor=0) == flat.index(far)
 
 
 def test_leap_guard_does_not_apply_at_the_start():
@@ -21919,3 +21929,302 @@ def test_yardstick_reports_order_inversions():
                      {"page_no": 2, "content": "<table 1>\n</table 1>"}]}
     assert module.order_inversions(hwpx, good) == []
     assert module.order_inversions(hwpx, bad)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.67 — 제목 상자도 본문으로 쪽을 찾는다
+#
+# 하류 제보(행안부): 표지 상자 `table_1`(2027년도 성과계획서)과 제출 문구
+# `table_3` 이 쪽을 못 얻어 미매핑으로 남았다 — PDF 1·3쪽에 그 글이 그대로
+# 있는데도. `is_matchable` 로 걸러 **본문 대조를 아예 하지 않았다.**
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_title_box_can_get_a_page_from_text():
+    """제목 상자도 본문 대조 대상이다 — PDF 에 대응 표가 없을 뿐이다."""
+    import inspect
+
+    from docstruct.align import documents
+
+    source = inspect.getsource(documents.align_documents)
+    spot = source.index("got = page_from_text(table, page_grams, floor)")
+    guard = source[max(0, spot - 700):spot]
+    assert "if index in placed:" in guard
+    assert "not is_matchable(table)" not in guard, "제목 상자를 걸러 낸다"
+
+
+def test_repeated_boxes_still_get_no_page():
+    """되풀이되는 상자는 여전히 쪽을 얻지 못한다 — `margin` 이 막는다."""
+    from docstruct.align.documents import _page_grams, page_from_text
+
+    table = {"markdown": "| 1. 프로그램 주요내용 |"}
+    pdf = {"pages": [{"page_no": n, "content": "1. 프로그램 주요내용", "tables": []}
+                     for n in (10, 20, 30)]}
+    assert page_from_text(table, _page_grams(pdf)) is None
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.68 — 쪽 경계가 표 안에 떨어진 자리를 적는다
+#
+# PDF 는 표를 두 쪽에 인쇄했는데 HWPX 는 한 블록이다. 0.5.38 은 "표가 앞
+# 쪽에만 보인다" 는 근거로 블록을 앞 쪽에 통째로 두는데, **뒤 쪽의 첫 글은
+# 그 표 안에 있다.**
+#
+# 실측: 남은 오차 12건 중 3건(외교부 61·217 · 행안부 164)이 정확히 이
+# 자리였고 아무 표시가 없었다. 쪽 맞춤이 이미 아는 사실이므로 적기만 하면
+# 된다 — 덮인 오차 9 → **11/12**.
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_boundary_inside_a_table_is_recorded():
+    """표를 앞 쪽에 두었어도 뒤 쪽이 그 표 안에서 시작함을 남긴다."""
+    from docstruct.align.documents import _mark_block_boundaries
+
+    by_page = {
+        60: {"page_no": 60, "tables": [{"id": "table_47", "table_num": 47}]},
+        61: {"page_no": 61, "tables": []},
+    }
+    _mark_block_boundaries(by_page, [("47", 60, 61)])
+
+    assert by_page[60]["tables"][0]["page_span"] == [60, 61]
+    assert "표 안에 떨어짐" in by_page[60]["tables"][0]["span_reason"]
+    assert by_page[61]["starts_inside_table"] == "table_47"
+    assert by_page[61]["page_span"] == [60, 61]
+
+
+def test_existing_span_is_not_overwritten():
+    """이미 까닭이 적힌 표는 그대로 둔다 — 더 구체적인 사실이 먼저다."""
+    from docstruct.align.documents import _mark_block_boundaries
+
+    table = {"id": "table_47", "table_num": 47, "page_span": [59, 61],
+             "span_reason": "표가 두 쪽에 걸쳐 인쇄됨"}
+    by_page = {60: {"page_no": 60, "tables": [table]}, 61: {"page_no": 61, "tables": []}}
+    _mark_block_boundaries(by_page, [("47", 60, 61)])
+    assert table["page_span"] == [59, 61]
+    assert table["span_reason"] == "표가 두 쪽에 걸쳐 인쇄됨"
+
+
+def test_splitter_reports_the_moves():
+    """자르기가 그 자리를 알려 준다 — 판단한 곳에서 기록한다."""
+    import inspect
+
+    from docstruct.align import documents, page_map
+
+    assert "moved_blocks.append((num, prev_page, page))" in \
+        inspect.getsource(page_map.split_text_by_page)
+    assert "moved_blocks=block_moves" in inspect.getsource(documents.align_documents)
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.69 — 함수 정의서를 코드에서 만든다 (`tools/api_doc.py`)
+#
+# 정의서를 만들다 **docstring 결함**이 드러났다: `build_document` 는
+# `src` 라고 적혀 있는데 매개변수는 `path` 였고, `split_chars` ·
+# `source_filename` · `slim` · `set(**options)` 에는 설명이 없었다.
+# 손으로 적은 문서는 코드와 어긋난다 — 그래서 정의서는 코드에서 만들고,
+# 공개 함수의 매개변수가 모두 설명돼 있는지를 시험으로 건다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _api_doc():
+    import importlib.util
+    import pathlib
+
+    import pytest
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "tools" / "api_doc.py"
+    if not path.exists():
+        # 정의서 생성기는 pkg 배치(src/ · pyproject.toml)에서만 돈다
+        pytest.skip("tools/api_doc.py 는 pkg 트리 전용")
+    spec = importlib.util.spec_from_file_location("api_doc", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_every_public_parameter_is_documented():
+    """공개 함수·메서드의 매개변수는 모두 docstring `입력` 칸에 설명이 있다."""
+    import inspect
+
+    import docstruct
+
+    doc = _api_doc()
+    items = [(n, getattr(docstruct, n), False) for n in docstruct.__all__
+             if inspect.isfunction(getattr(docstruct, n))]
+    for cls in (docstruct.DocStruct, docstruct.DocStructBatch, docstruct.AlignPair,
+                docstruct.AlignBatch):
+        for name in dir(cls):
+            if name.startswith("_"):
+                continue
+            raw = inspect.getattr_static(cls, name)
+            fn = getattr(raw, "__func__", raw)
+            if inspect.isfunction(fn):
+                items.append((f"{cls.__name__}.{name}", fn, True))
+    missing = []
+    for name, fn, member in items:
+        entry = doc.entry(name, fn, kind="함수", drop_self=member,
+                          member_of=name.split(".")[0] if member else "")
+        missing += [f"{name}({row['name']})" for row in entry["rows"] if not row["desc"]]
+    assert not missing, f"설명 없는 매개변수: {missing}"
+
+
+def test_api_doc_hides_private_addresses(tmp_path):
+    """정의서는 밖으로 나갈 수 있다 — 설치 환경의 내부 주소를 싣지 않는다."""
+    import re
+
+    doc = _api_doc()
+    html = doc.build()
+    assert not re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", html)
+    assert "설치 환경의 주소" in html or "http" not in html.split("<main>")[0]
+
+
+def test_param_parser_uses_real_names():
+    """이름이 길어 한 칸만 띈 줄과, 설명 안의 `—` 를 헷갈리지 않는다."""
+    doc = _api_doc()
+    block = ("hwpx        쪽이 **없는** 쪽 — .hwpx 원본\n"
+             "as_markdown True 면 markdown 문자열로\n"
+             "options     build_document 에 넘길 값")
+    got = doc.parse_params(block, {"hwpx", "as_markdown", "options"})
+    assert got["hwpx"].startswith("쪽이")
+    assert got["as_markdown"].startswith("True")
+    assert set(got) == {"hwpx", "as_markdown", "options"}
+
+
+# ────────────────────────────────────────────────────────────────────
+# 0.5.70 — 폴더 쌍 일괄 쪽 맞춤 (`align_folders`)
+#
+# 쪽 맞춤은 두 결과가 모두 있어야 되는 일이다 — 그래서 **HWPX 폴더와 PDF
+# 폴더를 둘 다** 받는다. 짝은 파일 이름이 같은 것끼리이고, 짝 없는 파일은
+# 조용히 건너뛰지 않고 알린다. 한 쌍이 실패해도 나머지는 계속 간다.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _fake_align(monkeypatch, fail=()):
+    """판독 없이 흐름만 재는 가짜 `align_pair`."""
+    from pathlib import Path
+
+    from docstruct.align import pair as pair_module
+
+    calls = []
+
+    class Got:
+        def __init__(self, hwpx):
+            self.result = {"page_count": 3, "aligned_pages": 3, "unaligned_pages": []}
+            self.notes = [f"{hwpx.name}: 가짜"]
+            self._name = hwpx.name
+
+        def save(self, out_dir, formats="both", stem="aligned"):
+            target = Path(out_dir) / self._name
+            target.mkdir(parents=True, exist_ok=True)
+            path = target / f"{stem}.json"
+            path.write_text("{}", encoding="utf-8")
+            return [path]
+
+    def fake(hwpx, pdf, out_dir=None, **kwargs):
+        calls.append((Path(hwpx).name, Path(pdf).name))
+        if Path(hwpx).stem in fail:
+            raise RuntimeError("일부러 실패")
+        return Got(Path(hwpx))
+
+    monkeypatch.setattr(pair_module, "align_pair", fake)
+    return calls
+
+
+def _folders(tmp_path, hwpx_names, pdf_names):
+    hwpx, pdf = tmp_path / "hwpx", tmp_path / "pdf"
+    hwpx.mkdir()
+    pdf.mkdir()
+    for name in hwpx_names:
+        (hwpx / name).write_bytes(b"")
+    for name in pdf_names:
+        (pdf / name).write_bytes(b"")
+    return hwpx, pdf
+
+
+def test_folders_pair_by_name_and_report_the_rest(tmp_path, monkeypatch):
+    """이름이 같은 것끼리 짝짓고, 짝 없는 파일은 양쪽 다 알린다."""
+    from docstruct import align_folders
+
+    calls = _fake_align(monkeypatch)
+    hwpx, pdf = _folders(tmp_path, ["가.hwpx", "나.hwpx", "외톨이.hwpx"],
+                         ["가.pdf", "나.pdf", "짝없음.pdf"])
+    batch = align_folders(hwpx, pdf, tmp_path / "out")
+    assert sorted(calls) == [("가.hwpx", "가.pdf"), ("나.hwpx", "나.pdf")]
+    assert batch.unpaired_hwpx == ["외톨이.hwpx"]
+    assert batch.unpaired_pdf == ["짝없음.pdf"]
+    assert batch.ok and len(batch.done) == 2
+    assert (tmp_path / "out" / "align_batch.json").is_file()
+
+
+def test_nfd_names_still_pair(tmp_path, monkeypatch):
+    """macOS 의 NFD 한글 이름도 짝을 짓는다."""
+    import unicodedata
+
+    from docstruct import align_folders
+
+    calls = _fake_align(monkeypatch)
+    hwpx, pdf = _folders(tmp_path, ["조달청.hwpx"],
+                         [unicodedata.normalize("NFD", "조달청.pdf")])
+    batch = align_folders(hwpx, pdf, tmp_path / "out")
+    assert len(calls) == 1 and not batch.unpaired_pdf
+
+
+def test_one_failure_does_not_stop_the_rest(tmp_path, monkeypatch):
+    """한 쌍이 실패해도 나머지는 끝까지 간다 — 실패는 모아서 알린다."""
+    from docstruct import align_folders
+
+    _fake_align(monkeypatch, fail={"가"})
+    hwpx, pdf = _folders(tmp_path, ["가.hwpx", "나.hwpx"], ["가.pdf", "나.pdf"])
+    batch = align_folders(hwpx, pdf, tmp_path / "out")
+    assert [d["name"] for d in batch.done] == ["나"]
+    assert batch.failures[0]["name"] == "가"
+    assert "일부러 실패" in batch.failures[0]["error"]
+    assert not batch.ok
+
+
+def test_hwpx_wins_over_hwp_with_the_same_name(tmp_path, monkeypatch):
+    """같은 이름의 HWP 와 HWPX 가 있으면 HWPX 를 쓰고 그렇다고 알린다."""
+    from docstruct import align_folders
+
+    calls = _fake_align(monkeypatch)
+    hwpx, pdf = _folders(tmp_path, ["가.hwp", "가.hwpx"], ["가.pdf"])
+    batch = align_folders(hwpx, pdf, tmp_path / "out")
+    assert calls == [("가.hwpx", "가.pdf")]
+    assert any("가.hwp" in note for note in batch.notes)
+
+
+def test_folders_are_checked_before_any_work(tmp_path, monkeypatch):
+    """폴더가 아니거나 · 자리가 바뀌었거나 · 짝이 하나도 없으면 판독 전에 멈춘다."""
+    import pytest
+
+    from docstruct import align_folders
+
+    calls = _fake_align(monkeypatch)
+    hwpx, pdf = _folders(tmp_path, ["가.hwpx"], ["나.pdf"])
+    with pytest.raises(ValueError, match="짝이 하나도 없습니다"):
+        align_folders(hwpx, pdf, tmp_path / "out")
+    with pytest.raises(ValueError, match="자리가 바뀌었습니다"):
+        align_folders(pdf, hwpx, tmp_path / "out")
+    with pytest.raises(ValueError, match="폴더"):
+        align_folders(hwpx / "가.hwpx", pdf, tmp_path / "out")
+    assert calls == [], "검사 전에 판독을 시작했다"
+
+
+def test_cli_refuses_folder_and_file_mixed(tmp_path, capsys):
+    """CLI 는 둘 다 폴더이거나 둘 다 파일일 때만 받는다."""
+    from docstruct import cli
+
+    hwpx, pdf = _folders(tmp_path, ["가.hwpx"], ["가.pdf"])
+    code = cli.main([str(hwpx), "--align", str(pdf / "가.pdf"), "-o", str(tmp_path / "out")])
+    assert code == 1
+    assert "둘 다 폴더이거나 둘 다 파일" in capsys.readouterr().err
+
+
+def test_folder_names_are_nfc():
+    """산출 폴더 이름도 NFC — NFD 이름이 다른 폴더를 쓰지 않는다."""
+    import unicodedata
+
+    from docstruct.output.names import safe_file_name
+
+    nfd = unicodedata.normalize("NFD", "조달청.pdf")
+    assert safe_file_name(nfd) == safe_file_name("조달청.pdf")
